@@ -10,6 +10,7 @@
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "dcp_present.h"
+#include "dcp_startup_watch.h"
 #include "dcp_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
@@ -239,6 +240,7 @@ void Swapchain::ReportResult(bool presenting, vk::Result result) {
     (presenting ? progress.last_present : progress.last_acquire) = code;
     if (presenting && PresentResult(result) != DcpPresent::SwapResult::Failure) {
         progress.presented.fetch_add(1, std::memory_order_relaxed);
+        DcpStartupWatch::Presented();
     }
     if (!gamescope || !(presenting ? present_reporter : acquire_reporter).Observe(code)) {
         return;

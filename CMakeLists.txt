@@ -92,6 +92,9 @@ set(SOS_RUNTIME_SOURCES
     src/runtime_extra.c
     src/runtime_umtx.c
     src/runtime_redzone.c
+    src/redzone_analysis.c
+    src/redzone_cache.c
+    src/startup_profile.c
     src/runtime_module.c
     src/runtime_history.c
     src/dcp_keys.c

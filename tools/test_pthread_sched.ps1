@@ -142,7 +142,7 @@ $clang = Join-Path $tc.Bin 'clang.exe'
 $exe = Join-Path $temp 'test.exe'
 & $clang '--target=x86_64-w64-mingw32' '-std=c11' '-Wall' '-Wextra' '-Werror' '-D_WIN32_WINNT=0x0A00' '-DNTDDI_VERSION=0x0A000007' `
     '-I' (Join-Path $root 'src') '-I' (Join-Path $root 'launcher') '-I' (Join-Path $root 'gpu\shim') `
-    $source (Join-Path $root 'src\runtime_thread.c') '-pthread' '-o' $exe
+    $source (Join-Path $root 'src\runtime_thread.c') (Join-Path $PSScriptRoot 'startup_profile_stubs.c') '-pthread' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the pthread scheduling test' }
 $env:PATH = "$($tc.Bin);$env:PATH"
 & $exe

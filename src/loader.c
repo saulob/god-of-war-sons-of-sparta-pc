@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include "runtime_log.h"
 #include "startup_phase.h"
+#include "startup_profile.h"
 #include "game_build.h"
 #include "dcpgpu.h"
 #include "sos_launcher.h"
@@ -130,7 +131,7 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, const uintptr_
     runtime_log_flush();
     _exit(20);
 }
-/* DEBUG_SAULO: diagnostic-only dump when startup stalls before the first VideoOut open. Never changes behavior. */
+/* A diagnostic dump when startup stalls before the first VideoOut open. Never changes behavior. */
 static void *stall_watchdog(void *unused) {
     (void)unused;
     for (int seconds = 0; seconds < 15; ++seconds) {
@@ -139,7 +140,7 @@ static void *stall_watchdog(void *unused) {
         dcpgpu_first_frame_summary(graphics, sizeof(graphics));
         if (!strstr(graphics, "VideoOut=0")) return NULL;
     }
-    printf("DEBUG_SAULO: startup stalled 15 s before VideoOut; phase %s\n", sos_startup_phase_current());
+    printf("Startup: stalled 15 s before VideoOut; phase %s\n", sos_startup_phase_current());
     runtime_thread_diag_dump();
     runtime_sema_diag_dump();
     runtime_signal_diag_dump();
@@ -255,7 +256,9 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         if (runtime_memory_wait_carve(fault_address) ||
             runtime_memory_commit_fault(fault_address, (int)record->ExceptionInformation[0]))
             return EXCEPTION_CONTINUE_EXECUTION;
+        const int64_t cost = sos_cost_begin();
         if (gpu_enabled && dcpgpu_handle_fault(info, (void *)record->ExceptionInformation[1])) {
+            sos_cost_end(SOS_COST_GPU_FAULT, cost, 1);
             runtime_redzone_after_fault(info->ContextRecord);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -280,8 +283,10 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         uint64_t flags = c->EFlags;
         uint8_t (*const xmm)[16] = (c->ContextFlags & CONTEXT_FLOATING_POINT) == CONTEXT_FLOATING_POINT
                                        ? (uint8_t (*)[16])c->FltSave.XmmRegisters : NULL;
+        const int64_t cost = sos_cost_begin();
         const size_t length = isa_emulate((const uint8_t *)(uintptr_t)c->Rip, c->Rip, &c->Rax, &flags, xmm);
         if (length) {
+            sos_cost_end(SOS_COST_EMULATED, cost, 1);
             c->EFlags = (DWORD)flags;
             c->Rip += length;
             return EXCEPTION_CONTINUE_EXECUTION;
@@ -302,6 +307,7 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
         for (; at <= end; ++at)
             if (at[0] == 0x65 && !memcmp(at, load, sizeof(load))) {
                 memcpy(at + 5, &displacement, 4);
+                runtime_redzone_add_volatile((uint64_t)(at + 5 - image), 4);
                 ++patched;
                 at += sizeof(load) - 1;
             }
@@ -365,6 +371,20 @@ static int has_import_relocation(uint64_t target, const Reloc *relocs, uint64_t 
     for (uint64_t i = 0; i < count; ++i)
         if (relocs[i].kind && relocs[i].target == target) return 1;
     return 0;
+}
+
+/* Only the values these sites hold change with the render resolution; the instructions a shape writes do not. */
+static void note_render_target_values(const SosGameBuild *build, const SosRenderTarget *target) {
+    const int height = sos_target_needs_height_sites(target);
+    for (size_t i = 0; i < build->resolution_site_count; ++i) {
+        const SosResolutionSite *site = &build->resolution_sites[i];
+        if (site->kind == SOS_SITE_WIDTH) {
+            runtime_redzone_add_volatile(site->offset, 4);
+            runtime_redzone_add_volatile(site->offset + 4, 4);
+        } else if (site->kind == SOS_SITE_HEIGHT_CALC && height) {
+            runtime_redzone_add_volatile(site->offset + 2, 4);
+        }
+    }
 }
 
 /* Unity's Il2cppUserAssemblies keeps direct `jmp rel32` stubs for a few imports (the scePthreadSem*
@@ -595,6 +615,8 @@ int main(int argc, char **argv) {
     runtime_log_set_detailed(sos_detailed_logging(settings_file));
     if (game_child) {
         puts("Startup: game-only child process");
+        sos_startup_inherit_play();
+        sos_startup_milestone("game process running");
     } else if (!check_imports && !cpu_only) {
         int game_process = 0;
 #ifdef _WIN32
@@ -609,6 +631,7 @@ int main(int argc, char **argv) {
         sos_startup_phase("launcher handoff");
         const SosLauncherResult launched = sos_launcher_run(&launcher);
         sos_startup_phase("launcher returned");
+        if (launched == SOS_LAUNCHER_PLAY) sos_startup_milestone("launcher closed");
         runtime_log_set_detailed(sos_detailed_logging(settings_file));
         if (launched == SOS_LAUNCHER_QUIT) {
             runtime_log_mark_clean_exit();
@@ -716,11 +739,10 @@ int main(int argc, char **argv) {
     if (fread(names, 128, import_count, f) != import_count) fail("truncated import names");
     for (uint64_t i = 0; i < import_count; ++i)
         if (!memchr(names[i], 0, 128)) fail("unterminated import name");
+    /* The table is four little-endian u64 per entry, as Reloc is on x86-64: one read, every entry still checked. */
+    _Static_assert(sizeof(Reloc) == 32, "boot file relocation layout");
+    if (fread(relocs, sizeof(*relocs), nr, f) != nr) fail("truncated boot file");
     for (uint64_t i = 0; i < nr; ++i) {
-        relocs[i].target = read64(f);
-        relocs[i].kind = read64(f);
-        relocs[i].value = read64(f);
-        relocs[i].addend = read64(f);
         if (!mapped(segments, ns, relocs[i].target, 8) || relocs[i].kind > 2 ||
             (relocs[i].kind && relocs[i].value >= import_count) ||
             (relocs[i].kind != 2 && relocs[i].addend) || relocs[i].addend >= page_size) fail("bad relocation");
@@ -749,6 +771,7 @@ int main(int argc, char **argv) {
 #endif
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+    sos_startup_milestone("guest image read, %" PRIu64 " relocations checked", nr);
     SosRenderTarget render_target = sos_native_render_target();
     {
         SosGameBuild game_build;
@@ -762,6 +785,7 @@ int main(int argc, char **argv) {
             if (sos_apply_render_target(image, size, game_build.resolution_sites, game_build.resolution_site_count,
                                         &requested, error, sizeof(error))) {
                 render_target = requested;
+                note_render_target_values(&game_build, &requested);
                 printf("Patch: render target %dx%d, Pro mode %s, direct memory pool +%llu MiB\n", render_target.width,
                        render_target.height, render_target.neo ? "on" : "off",
                        (unsigned long long)(sos_budget_growth(&render_target) >> 20));
@@ -780,9 +804,16 @@ int main(int argc, char **argv) {
     {
         SosGameBuild game_build;
         const int style = sos_controller_prompts_from_file(settings_file);
-        if (style == SOS_PROMPTS_XBOX && sos_game_build(paths.image_dir, &game_build)) {
-            char key[64], message[200];
+        const int known_build = sos_game_build(paths.image_dir, &game_build);
+        char key[64];
+        if (known_build) {
             snprintf(key, sizeof(key), "%s-%s", game_build.title_id, game_build.version);
+            uint64_t offsets[4];
+            const int values = sos_controller_prompts_value_offsets(image, size, key, offsets);
+            for (int i = 0; i < values; ++i) runtime_redzone_add_volatile(offsets[i], 1);
+        }
+        if (style == SOS_PROMPTS_XBOX && known_build) {
+            char message[200];
             sos_controller_prompts_apply(image, size, key, style, message, sizeof(message));
             printf("Controller prompts: %s\n", message);
         } else if (style == SOS_PROMPTS_XBOX) {
@@ -804,6 +835,7 @@ int main(int argc, char **argv) {
             gpu_enabled = 1;
 #endif
             printf("GPU: window and presenter ready, %u HLE symbols\n", dcpgpu_symbol_count());
+            sos_startup_milestone("GPU ready");
         } else
             printf("GPU: video core not started (see the log)\n");
     }
@@ -843,12 +875,23 @@ int main(int argc, char **argv) {
         t[at++] = 0x48; t[at++] = 0xb8; memcpy(t + at, &handler, 8); at += 8;
         t[at++] = 0xff; t[at++] = 0xe0;
     }
+    /* One lookup per import and kind: an import resolves the same way for every relocation that names it. */
+    uintptr_t *resolved_imports = calloc(import_count ? 2 * import_count : 1, sizeof(*resolved_imports));
+    unsigned char *looked_up = calloc(import_count ? 2 * import_count : 1, 1);
+    if (!resolved_imports || !looked_up) fail("allocation failed");
+    uint64_t lookups = 0;
     for (uint64_t i = 0; i < nr; ++i) {
         uintptr_t value = relocs[i].kind == 2 ? (uintptr_t)(data_traps + page_size * relocs[i].value + relocs[i].addend)
                         : relocs[i].kind == 1 ? (uintptr_t)(traps + 64 * relocs[i].value)
                         : (uintptr_t)image + relocs[i].value;
         if (relocs[i].kind) {
-            uintptr_t resolved = runtime_resolve(names[relocs[i].value], relocs[i].kind == 2);
+            const uint64_t slot = 2 * relocs[i].value + (relocs[i].kind == 2);
+            if (!looked_up[slot]) {
+                resolved_imports[slot] = runtime_resolve(names[relocs[i].value], relocs[i].kind == 2);
+                looked_up[slot] = 1;
+                ++lookups;
+            }
+            uintptr_t resolved = resolved_imports[slot];
             if (resolved) { value = resolved + relocs[i].addend; import_resolved[relocs[i].value] = 1; }
             else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address = bindings[relocs[i].value];
@@ -860,9 +903,18 @@ int main(int argc, char **argv) {
         }
         memcpy(image + relocs[i].target, &value, 8);
     }
+    free(resolved_imports);
+    free(looked_up);
     const uint64_t stubs = patch_import_stubs(relocs, nr);
     if (stubs) printf("Patched %" PRIu64 " direct import stubs to their GOT entries\n", stubs);
     sos_startup_phase("imports resolved");
+    sos_startup_milestone("relocations applied, %" PRIu64 " import lookups", lookups);
+    for (uint64_t s = 0; s < ns; ++s) {
+        if (!(segments[s].flags & 1)) continue;
+        for (uint64_t i = 0; i < nr; ++i)
+            if (relocs[i].target >= segments[s].address && relocs[i].target - segments[s].address < segments[s].size)
+                runtime_redzone_add_volatile(relocs[i].target, 8);
+    }
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
 
     if (check_imports) {
@@ -924,8 +976,12 @@ int main(int argc, char **argv) {
             triples[3 * i + 1] = segments[i].size;
             triples[3 * i + 2] = segments[i].flags;
         }
+        char redzone_cache[4200];
+        snprintf(redzone_cache, sizeof(redzone_cache), "%s/cache/CUSA57767/redzone", user_dir);
+        runtime_redzone_set_cache(redzone_cache);
         runtime_redzone_install(image, size, triples, ns);
         free(triples);
+        sos_startup_milestone("red zone ready");
     }
 #endif
     protect(traps, round_page((import_count + 1) * 64), 5);
@@ -968,12 +1024,15 @@ int main(int argc, char **argv) {
 #endif
             if (result) fail("module initializer failed");
         }
+        sos_startup_milestone("linked modules initialized");
     }
     sos_startup_phase("guest entry");
     start_stall_watchdog();
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     printf("Runtime: Unity bootstrap entered\n");
+    sos_startup_milestone("Unity bootstrap entered");
     sos_checkpoint("Unity bootstrap entered at guest image+0x%" PRIx64,entry);
+    sos_startup_profile_begin(image, image_size);
     struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));

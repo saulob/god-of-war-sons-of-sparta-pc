@@ -6,6 +6,7 @@
 #include "common/thread.h"
 #include "core/libraries/avplayer/avplayer_error.h"
 #include "core/libraries/avplayer/avplayer_state.h"
+#include "dcp_startup_watch.h"
 
 #include <magic_enum/magic_enum.hpp>
 
@@ -157,11 +158,13 @@ bool AvPlayerState::AddSource(std::string_view path, AvPlayerSourceType source_t
         }
 
         m_up_source = std::make_unique<AvPlayerSource>(*this);
+        dcpgpu_startup_video_requested();
         if (!m_up_source->Init(m_init_data, path)) {
             SetState(AvState::Error);
             m_up_source.reset();
             return false;
         }
+        dcpgpu_startup_video_source(m_up_source.get());
     }
     AddSourceEvent();
     return true;

@@ -75,7 +75,7 @@ ImVec4 Hex(int rgb) { return Rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
 ImU32 Col32(int rgb) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, 255); }
 
 const ImVec4 kAccent = Hex(palette::kAccent);
-constexpr double kPlayFeedbackSeconds = 0.4;
+constexpr double kPlayFeedbackSeconds = 0.0;
 constexpr char kPortTitle[] = "God of War: Sons of Sparta PC";
 constexpr char kInstallTitle[] = "Select your Sons of Sparta base game package";
 constexpr char kInstallUpdateTitle[] = "Select your Sons of Sparta update package";
@@ -369,6 +369,7 @@ public:
             host_.EndFrame(LauncherTheme().bg);
         }
         sos_startup_phase("launcher loop ended");
+        if (outcome == Outcome::kPlay) sos_startup_milestone("launcher closing");
         if (!skip_finish_save_) {
             SavePlacement(placement_.Flush());
         }
@@ -502,6 +503,7 @@ private:
         if (play_.starting()) {
             return;
         }
+        sos_startup_play();
         Recheck();
         if (files_ == GameFileState::kValid && !GraphicsUsable()) {
             return;

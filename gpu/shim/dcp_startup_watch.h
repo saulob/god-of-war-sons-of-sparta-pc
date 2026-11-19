@@ -39,6 +39,8 @@ enum Gauge : unsigned {
 };
 
 void Mark(Stage stage);
+// A present the swapchain accepted.
+void Presented();
 void SetGauge(Gauge gauge, std::int64_t value);
 void StartWatch();
 
@@ -55,3 +57,8 @@ private:
 };
 
 } // namespace DcpStartupWatch
+
+// The first AvPlayer source of the process (requested, then opened), and the first video frame it hands to the game.
+extern "C" void dcpgpu_startup_video_requested();
+extern "C" void dcpgpu_startup_video_source(const void* source);
+extern "C" void dcpgpu_startup_video_frame(const void* source);

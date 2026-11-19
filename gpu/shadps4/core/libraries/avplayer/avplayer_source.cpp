@@ -7,6 +7,7 @@
 #include "core/libraries/avplayer/avplayer_file_streamer.h"
 #include "core/libraries/avplayer/avplayer_skip.h"
 #include "core/libraries/avplayer/avplayer_source.h"
+#include "dcp_startup_watch.h"
 #include "core/libraries/videodec/video_utils.h"
 #include "core/memory.h"
 
@@ -404,6 +405,7 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
     video_info = frame->info;
 
     m_current_video_frame = std::move(frame);
+    dcpgpu_startup_video_frame(this);
     return true;
 }
 

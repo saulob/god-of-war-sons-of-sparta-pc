@@ -59,6 +59,7 @@ complete unresolved-import inventory.
 
 `-Clean` rebuilds `build/cmake` from scratch; `tools\setup.ps1` checks prerequisites;
 `tools\clean.ps1` removes only the CMake tree.
+`tools\clear-startup-cache.ps1 [-Status]` reports or deletes only the startup red-zone cache (`user\cache\CUSA57767\redzone`).
 
 ## Module graph (what the loader links natively)
 

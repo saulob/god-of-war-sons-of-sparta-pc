@@ -1,5 +1,7 @@
 #include "runtime.h"
 #include "runtime_log.h"
+#include "startup_phase.h"
+#include "startup_profile.h"
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -165,19 +167,24 @@ static int parse_self(const uint8_t *raw,uint64_t raw_size,ElfFile *out) {
 static uintptr_t read_file(const char *path,uint64_t *size) {
     int64_t fd=runtime_file_open(path,0,0);
     if (fd<0) return 0;
-    void *data=NULL;
-    uint64_t total=0;
+    /* Sized up front (one spare byte sees the end): small realloc steps copy a 136 MB module quadratically. */
+    const int64_t length=runtime_file_lseek(fd,0,2);
+    size_t capacity=length>0 && runtime_file_lseek(fd,0,0)==0 && (uint64_t)length<SIZE_MAX ? (size_t)length+1 : 0;
+    uint8_t *data=capacity ? malloc(capacity) : NULL;
+    if (capacity && !data) { runtime_file_close(fd); return 0; }
+    size_t total=0;
     for (;;) {
-        uint8_t chunk[65536];
-        const int64_t n=runtime_file_read(fd,chunk,sizeof(chunk));
+        if (total==capacity) {
+            const size_t grown_capacity=capacity ? capacity*2 : (size_t)1<<20;
+            uint8_t *grown=grown_capacity>capacity ? realloc(data,grown_capacity) : NULL;
+            if (!grown) { runtime_file_close(fd); free(data); return 0; }
+            data=grown;
+            capacity=grown_capacity;
+        }
+        const int64_t n=runtime_file_read(fd,data+total,capacity-total);
         if (n<0) { runtime_file_close(fd); free(data); return 0; }
         if (!n) break;
-        if ((uint64_t)n>SIZE_MAX-total) { runtime_file_close(fd); free(data); return 0; }
-        void *grown=realloc(data,(size_t)total+(size_t)n);
-        if (!grown) { runtime_file_close(fd); free(data); return 0; }
-        data=grown;
-        memcpy((uint8_t *)data+total,chunk,(size_t)n);
-        total+=(uint64_t)n;
+        total+=(size_t)n;
     }
     runtime_file_close(fd);
     *size=total;
@@ -668,6 +675,37 @@ void runtime_module_linked_started(uint64_t image_offset,int32_t result) {
     pthread_mutex_unlock(&module_lock);
 }
 static void record_unwind_headers(LoadedModule *m,const Phdr *ph,int count);
+/* Read without the module lock while a thread is suspended (the startup profiler); ranges are never removed. */
+static uintptr_t code_ranges[MAX_MODULES][2];
+static int code_range_count;
+static void publish_code_range(uintptr_t base,uint64_t size) {
+    const int n=__atomic_load_n(&code_range_count,__ATOMIC_RELAXED);
+    if (n==MAX_MODULES) return;
+    code_ranges[n][0]=base; code_ranges[n][1]=base+(uintptr_t)size;
+    __atomic_store_n(&code_range_count,n+1,__ATOMIC_RELEASE);
+}
+int runtime_module_in_loaded_code(uintptr_t address) {
+    const int n=__atomic_load_n(&code_range_count,__ATOMIC_ACQUIRE);
+    for (int i=0;i<n;++i) if (address>=code_ranges[i][0] && address<code_ranges[i][1]) return 1;
+    return 0;
+}
+static const char *file_name(const char *path) {
+    const char *slash=strrchr(path,'/');
+    return slash ? slash+1 : path;
+}
+static void note_first_dlsym(const char *name) {
+    static const struct { const char *symbol, *milestone; } marks[]={
+        {"FMOD_Studio_System_Initialize","FMOD Studio initialization"},
+        {"FMOD_Studio_System_FlushSampleLoading","FMOD Studio initialized, sample loading flush"},
+        {"FMOD_Studio_System_LoadBankFile","first FMOD bank load"},
+        {"PrxSaveDataInitialize","SaveData initialization"},
+    };
+    static int seen[sizeof(marks)/sizeof(*marks)];
+    if (!sos_startup_profile_active()) return;
+    for (size_t i=0;i<sizeof(marks)/sizeof(*marks);++i)
+        if (!strcmp(name,marks[i].symbol) && !__atomic_exchange_n(&seen[i],1,__ATOMIC_RELAXED))
+            sos_startup_milestone("%s",marks[i].milestone);
+}
 static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t *result) {
     ElfFile elf;
     printf("Runtime: loading module %s\n",path);
@@ -720,6 +758,7 @@ static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t
         parameter=(void *)(uintptr_t)(m->base+procparam->vaddr);
     }
     if (!finalize_mapping(m,&elf)) { free(elf.data); abandon_module(m); return ERRNO(13); }
+    publish_code_range(m->base,m->size);
     repair_pending();
     m->loading=0;
     printf("Runtime: module %s relocated (%" PRIu64 " import stubs, %" PRIu64 " TCB loads)\n",path,stubs,tcb);
@@ -734,6 +773,7 @@ static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t
     m->start_result=started;
     if (result) *result=started;
     printf("Runtime: module %s start returned %d\nRuntime: module %s handle %d\n",path,started,path,m->handle);
+    if (sos_startup_profile_active()) sos_startup_milestone("%s started",file_name(path));
     return m->handle;
 }
 ABI int32_t runtime_module_load_start(const char *path,uint64_t args,void *argp,uint32_t flags,void *opt,int32_t *result) {
@@ -755,7 +795,9 @@ ABI int32_t runtime_module_load_start(const char *path,uint64_t args,void *argp,
     }
     snprintf(event,sizeof(event),"loaded and started PRX %s",path);
     runtime_history_note(event,"loader",(uintptr_t)__builtin_return_address(0));
+    const int64_t cost=sos_cost_begin();
     const int32_t handle=load_new_module(path,args,argp,result);
+    sos_cost_end(SOS_COST_MODULE_LOAD,cost,1);
     pthread_mutex_unlock(&module_lock);
     operation_pop();
     return handle;
@@ -764,6 +806,8 @@ ABI int32_t runtime_module_dlsym(int32_t handle,const char *name,void **out) {
     operation_push("sceKernelDlsym",name);
     /* A failed lookup leaves *out untouched: callers preload a fallback there. */
     if (!name || !*name || !out) { operation_pop(); return ERRNO(22); }
+    note_first_dlsym(name);
+    const int64_t cost=sos_cost_begin();
     pthread_mutex_lock(&module_lock);
     LoadedModule *m=module_by_handle(handle);
     if (!m) { pthread_mutex_unlock(&module_lock); operation_pop(); return ERRNO(3); }
@@ -774,6 +818,7 @@ ABI int32_t runtime_module_dlsym(int32_t handle,const char *name,void **out) {
     *out=(void *)e->address;
     printf("Runtime: dlsym handle %d %s -> 0x%" PRIxPTR "\n",handle,name,e->address);
     pthread_mutex_unlock(&module_lock);
+    sos_cost_end(SOS_COST_DLSYM,cost,1);
     operation_pop();
     return 0;
 }
@@ -923,10 +968,6 @@ static void ensure_unwind_tables(LoadedModule *snapshot,int index) {
     modules[index].headers_known=snapshot->headers_known; modules[index].seg0_vaddr=snapshot->seg0_vaddr;
     modules[index].seg0_size=snapshot->seg0_size;
     pthread_mutex_unlock(&module_lock);
-    /* DEBUG_SAULO: the unwind tables handed to the guest. */
-    printf("DEBUG_SAULO: unwind info for %s: eh_frame_hdr %p, eh_frame %p size %llu\n",snapshot->path,
-           (void *)(uintptr_t)snapshot->eh_frame_hdr,(void *)(uintptr_t)snapshot->eh_frame,
-           (unsigned long long)snapshot->eh_frame_size);
 }
 static const char *module_file_name(const LoadedModule *m) {
     const char *name=strrchr(m->path,'/');

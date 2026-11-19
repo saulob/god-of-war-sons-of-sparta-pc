@@ -133,9 +133,7 @@ static void default_action(int sig) {
 
 static void dispatch(RuntimeThreadSignals *t, int sig, Siginfo *info, Ucontext *uc) {
     const Sigaction action = actions[sig - 1];
-    const unsigned order = __atomic_add_fetch(&dispatched, 1, __ATOMIC_RELAXED);
-    if (order <= 2) printf("DEBUG_SAULO: signal %d handler entered on '%s' (rsp 0x%llx)\n", sig,
-                           runtime_thread_current_name() ? runtime_thread_current_name() : "?", (unsigned long long)uc->mcontext.rsp);
+    __atomic_add_fetch(&dispatched, 1, __ATOMIC_RELAXED);
     if (action.handler == SIGHANDLER_IGNORE) return;
     if (action.handler == SIGHANDLER_DEFAULT) { default_action(sig); return; }
     Sigset old, now;
@@ -148,9 +146,7 @@ static void dispatch(RuntimeThreadSignals *t, int sig, Siginfo *info, Ucontext *
     if (action.flags & SA_SIGINFO) ((SigactionHandler)action.handler)(sig, info, uc);
     else ((SignalHandler)action.handler)(sig);
     write_mask(t, &old);
-    if (__atomic_add_fetch(&returned, 1, __ATOMIC_RELAXED) <= 2)
-        printf("DEBUG_SAULO: signal %d handler returned on '%s'\n", sig,
-               runtime_thread_current_name() ? runtime_thread_current_name() : "?");
+    __atomic_add_fetch(&returned, 1, __ATOMIC_RELAXED);
     if (__atomic_load_n(&t->in_sigsuspend, __ATOMIC_ACQUIRE)) __atomic_store_n(&t->suspend_interrupted, 1, __ATOMIC_RELEASE);
 }
 
@@ -205,9 +201,7 @@ static void NTAPI apc_entry(PVOID a, PVOID b, PVOID c, PCONTEXT context) {
         __atomic_add_fetch(&apcs_in_host, 1, __ATOMIC_RELAXED);
         return;
     }
-    if (__atomic_add_fetch(&apcs_entered, 1, __ATOMIC_RELAXED) <= 2)
-        printf("DEBUG_SAULO: signal APC in guest code on '%s' (rip %p)\n",
-               runtime_thread_current_name() ? runtime_thread_current_name() : "?", (void *)(uintptr_t)context->Rip);
+    __atomic_add_fetch(&apcs_entered, 1, __ATOMIC_RELAXED);
     dispatch_pending(context, 1);
 }
 static LONG queue_apc(void *native) {
@@ -268,12 +262,6 @@ static int wake_thread(void *handle) {
     HANDLE native = runtime_thread_native_handle(handle);
     if (!native) return 0;
     const LONG status = queue_apc(native);
-    /* DEBUG_SAULO: first cross-thread signal requests of the GC suspend handshake. */
-    static int traced;
-    if (__atomic_fetch_add(&traced, 1, __ATOMIC_RELAXED) < 4)
-        printf("DEBUG_SAULO: signal from '%s' to thread %p (%s), native %p, APC status 0x%08lx\n",
-               runtime_thread_current_name() ? runtime_thread_current_name() : "?", handle,
-               runtime_thread_name(handle) ? runtime_thread_name(handle) : "?", (void *)native, (unsigned long)status);
     return status ? E_SRCH : 0;
 #else
     return 0;
@@ -423,8 +411,6 @@ static ABI int32_t install_exception_handler(int32_t sig, ExceptionHandler handl
     exception_callbacks[sig - 1] = handler;
     const Sigaction act = {(uintptr_t)exception_trampoline, SA_SIGINFO | SA_RESTART, {{0}}};
     actions[sig - 1] = act;
-    printf("DEBUG_SAULO: exception handler for signal %d installed by '%s' (%p)\n", sig,
-           runtime_thread_current_name() ? runtime_thread_current_name() : "?", (void *)handler);
     return 0;
 }
 static ABI int32_t remove_exception_handler(int32_t sig) {
@@ -449,7 +435,7 @@ static const RuntimeExport exports[] = {
     {"sceKernelRemoveExceptionHandler", remove_exception_handler},
     {"sceKernelRaiseException", raise_exception},
 };
-/* DEBUG_SAULO: stall diagnostics. */
+/* Stall diagnostics. */
 void runtime_signal_diag_dump(void) {
     printf("BootDiag: signals: undelivered %u; APCs queued %u, failed %u, in guest code %u, in runtime code %u; "
            "handlers entered %u, returned %u\n",

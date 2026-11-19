@@ -37,6 +37,10 @@ int sos_controller_prompts_state(const uint8_t *image, uint64_t size, const char
 int sos_controller_prompts_apply(uint8_t *image, uint64_t size, const char *build_key, int style, char *message,
                                  size_t message_size);
 
+/* The image offsets of the bytes a style changes (at most 4), whichever style they hold; 0 when the bytes are not the
+ * verified code. */
+int sos_controller_prompts_value_offsets(const uint8_t *image, uint64_t size, const char *build_key, uint64_t offsets[4]);
+
 #ifdef __cplusplus
 }
 #endif

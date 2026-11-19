@@ -80,9 +80,16 @@ void runtime_thread_note_wait(const char *point, uintptr_t object);
 void runtime_thread_diag_dump(void);
 void runtime_sema_diag_dump(void);
 void runtime_signal_diag_dump(void);
+/* Where the red-zone analysis is kept between runs (none: always analyzed). */
+void runtime_redzone_set_cache(const char *directory);
+/* Guest bytes whose value may differ between runs of the same build (relocated addresses, the TCB slot, option
+ * values), set before runtime_redzone_install. */
+void runtime_redzone_add_volatile(uint64_t offset, uint64_t length);
 uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint64_t *segments, uint64_t count);
 void runtime_redzone_after_fault(void *context);
 int runtime_redzone_site(uintptr_t rip, uint64_t *site);
+/* The start of the guest function holding image offset `offset`, from the red-zone analysis. */
+int runtime_redzone_function(uint64_t offset, uint64_t *begin);
 uintptr_t runtime_sema_resolve(const char *name);
 uintptr_t runtime_fiber_resolve(const char *name);
 void runtime_fiber_report(void);
@@ -109,6 +116,8 @@ void runtime_module_linked_started(uint64_t image_offset, int32_t result);
 ABI int32_t runtime_module_load_start(const char *path, uint64_t args, void *argp, uint32_t flags, void *opt, int32_t *result);
 ABI int32_t runtime_module_dlsym(int32_t handle, const char *name, void **out);
 int runtime_module_describe_address(uintptr_t address, char *out, size_t size);
+/* Lock-free: address lies in a PRX loaded at run time. */
+int runtime_module_in_loaded_code(uintptr_t address);
 void runtime_symbol_to_nid(const char *symbol, char out[12]);
 void runtime_describe_guest_address(uintptr_t address, char *out, size_t size);
 /* Symbolic name of a PS4 libc debug-stop code (sceKernelDebugRaiseException), "unknown" otherwise. */

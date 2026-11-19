@@ -7,6 +7,7 @@
  * the same 9-byte instruction with another displacement. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "startup_profile.h"
 #include "startup_phase.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -508,6 +509,8 @@ static void host_sleep(uint64_t ns) {
 }
 /* Sleeps in slices so a cancellation request is seen within one slice. */
 void runtime_thread_sleep_ns(uint64_t ns) {
+    const int64_t cost=sos_cost_begin();
+    const uint64_t asked=ns;
     runtime_thread_test_cancel("sleep");
     runtime_thread_note_wait("sleep",(uintptr_t)(ns/1000));
     while (ns>SLEEP_SLICE_NS) {
@@ -518,6 +521,7 @@ void runtime_thread_sleep_ns(uint64_t ns) {
     }
     host_sleep(ns);
     runtime_thread_note_wait(NULL,0);
+    sos_cost_end(SOS_COST_SLEEP,cost,asked);
     runtime_thread_test_cancel("sleep");
     runtime_signal_deliver_pending();
 }
@@ -643,6 +647,7 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     if (!out) return ERR(22);
     ThreadAttr *a=NULL;
     if (attr_slot && !(a=find_attr(attr_slot))) return ERR(22);
+    const int64_t cost=sos_cost_begin();
     GuestThread *t=new_thread();
     if (!t) return ERR(12);
     if (a) { t->attr=*a; t->attr.next=NULL; }
@@ -677,6 +682,7 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     while (!t->ready) pthread_cond_wait(&changed,&lock);
     ++created;
     pthread_mutex_unlock(&lock);
+    sos_cost_end(SOS_COST_THREAD_CREATE,cost,1);
     if (log_thread_creation(t->name))
         printf("Runtime: guest thread '%s' created (stack=%llu, prio=%d, entry=%p, arg=%p)\n",
                t->name,(unsigned long long)stack,t->attr.prio,(void *)t->entry,t->argument);

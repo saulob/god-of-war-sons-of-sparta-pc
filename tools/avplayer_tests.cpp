@@ -53,6 +53,18 @@ extern "C" void runtime_thread_attach_host(const char* name) {
     }
 }
 
+static std::atomic<const void*> g_startup_source{nullptr}, g_startup_frame_source{nullptr};
+static std::atomic<bool> g_startup_requested{false};
+extern "C" void dcpgpu_startup_video_requested() { g_startup_requested = true; }
+extern "C" void dcpgpu_startup_video_source(const void* source) {
+    const void* none = nullptr;
+    g_startup_source.compare_exchange_strong(none, source);
+}
+extern "C" void dcpgpu_startup_video_frame(const void* source) {
+    const void* none = nullptr;
+    g_startup_frame_source.compare_exchange_strong(none, source);
+}
+
 extern "C" int runtime_file_translate(const char* guest, char* out, size_t size) {
     {
         std::lock_guard lock(g_paths_mutex);
@@ -506,6 +518,9 @@ static void test_media(Api& a, int baseline) {
         }
     }
     check(got, "GetVideoDataEx delivers a frame");
+    check(g_startup_requested.load() && g_startup_source.load() != nullptr &&
+              g_startup_frame_source.load() == g_startup_source.load(),
+          "the startup milestones see the first source and its first frame");
     check(frame.p_data != nullptr && frame.details.video.width == 128 && frame.details.video.height == 96 &&
               frame.details.video.pitch == 128 && frame.details.video.luma_bit_depth == 8,
           "the frame is 128x96 NV12 with its pitch and bit depth");

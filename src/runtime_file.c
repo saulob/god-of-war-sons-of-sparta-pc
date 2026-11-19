@@ -5,6 +5,8 @@
  * Paths containing ".." components are rejected rather than normalized. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "startup_phase.h"
+#include "startup_profile.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -248,7 +250,28 @@ static void directory_stat(GuestStat *out) {
     out->nlink=2;
     out->size=512; out->blocks=1; out->blksize=4096;
 }
+static int contains(const void *buffer,uint64_t size,const char *text) {
+    const size_t n=strlen(text);
+    for (const char *at=buffer,*end=(const char *)buffer+size; (size_t)(end-at)>=n; ++at)
+        if (*at==*text && !memcmp(at,text,n)) return 1;
+    return 0;
+}
+/* Guest log lines that mark coarse startup phases before the splash video. */
+static void note_guest_milestone(const void *buffer,uint64_t size) {
+    static const struct { const char *text, *milestone; } marks[]={
+        {"NpToolkit Initialized","guest: NpToolkit initialized"},
+        {"Finished Initializing PS4 Scripts","guest: PS4 scripts initialized"},
+        {"SplashScreen","guest: first SplashScreen line"},
+    };
+    static int seen[sizeof(marks)/sizeof(*marks)];
+    if (!sos_startup_profile_active()) return;
+    for (size_t i=0;i<sizeof(marks)/sizeof(*marks);++i)
+        if (!__atomic_load_n(&seen[i],__ATOMIC_RELAXED) && contains(buffer,size,marks[i].text) &&
+            !__atomic_exchange_n(&seen[i],1,__ATOMIC_RELAXED))
+            sos_startup_milestone("%s",marks[i].milestone);
+}
 static void console_write(int fd,const void *buffer,uint64_t size) {
+    note_guest_milestone(buffer,size);
     FILE *out=fd==2 ? stderr : stdout;
     fwrite(buffer,1,(size_t)size,out);
     fflush(out);
@@ -476,7 +499,9 @@ static int allocate_device_file(const char *guest,int flags,int device) {
 /* All operations return >=0 or -(host errno); wrappers adapt the convention. */
 static int64_t open_file(const char *guest,int flags,int mode);
 static int64_t do_open(const char *guest,int flags,int mode) {
+    const int64_t cost=sos_cost_begin();
     const int64_t r=open_file(guest,flags,mode);
+    sos_cost_end(SOS_COST_FILE_OPEN,cost,0);
     if (r<0) note_failure("open",guest,(int)-r);
     return r;
 }
@@ -661,7 +686,7 @@ static void observe_read(int fd,int64_t offset,int64_t n) {
     pthread_mutex_unlock(&lock);
     if (f) observe(path,(uint64_t)offset,(uint64_t)n);
 }
-static int64_t do_read(int fd,void *buffer,uint64_t size) {
+static int64_t read_file(int fd,void *buffer,uint64_t size) {
     File *file=get(fd);
     if (!file) return fd==0 ? 0 : runtime_socket_read_file(fd,buffer,size);
     if (file->device) {
@@ -690,7 +715,7 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     observe_read(fd,at,n);
     return n;
 }
-static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
+static int64_t pread_file(int fd,void *buffer,uint64_t size,int64_t offset) {
     File *file=get(fd);
     if (!file) return -EBADF;
     if (offset<0) return -EINVAL;
@@ -714,6 +739,18 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     if (n<0) return -errno;
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     observe_read(fd,offset,n);
+    return n;
+}
+static int64_t do_read(int fd,void *buffer,uint64_t size) {
+    const int64_t cost=sos_cost_begin();
+    const int64_t n=read_file(fd,buffer,size);
+    sos_cost_end(SOS_COST_FILE_READ,cost,n>0 ? (uint64_t)n : 0);
+    return n;
+}
+static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
+    const int64_t cost=sos_cost_begin();
+    const int64_t n=pread_file(fd,buffer,size,offset);
+    sos_cost_end(SOS_COST_FILE_READ,cost,n>0 ? (uint64_t)n : 0);
     return n;
 }
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
@@ -792,7 +829,7 @@ static int64_t do_fstat(int fd,GuestStat *out) {
     if (f && f->overlay) { out->size=(int64_t)f->overlay->length; out->blocks=(out->size+511)/512; }
     return 0;
 }
-static int64_t do_stat(const char *guest,GuestStat *out) {
+static int64_t stat_file(const char *guest,GuestStat *out) {
     if (!out) return -EFAULT;
     if (device_kind(guest)) { device_stat(out); return 0; }
     char path[1024]; HostStat s;
@@ -806,6 +843,12 @@ static int64_t do_stat(const char *guest,GuestStat *out) {
     const Overlay *o=overlay_of(guest);
     if (o && !S_ISDIR(s.st_mode)) { out->size=(int64_t)o->length; out->blocks=(out->size+511)/512; }
     return 0;
+}
+static int64_t do_stat(const char *guest,GuestStat *out) {
+    const int64_t cost=sos_cost_begin();
+    const int64_t r=stat_file(guest,out);
+    sos_cost_end(SOS_COST_FILE_STAT,cost,0);
+    return r;
 }
 static int64_t do_getdents(int fd,char *buffer,uint64_t size,int64_t *basep) {
     pthread_mutex_lock(&lock);

@@ -116,6 +116,8 @@ void WatchLoop() {
 } // namespace
 
 extern "C" void runtime_history_note(const char* api, const char* library, std::uintptr_t caller);
+extern "C" void sos_startup_milestone(const char* format, ...);
+extern "C" void sos_startup_profile_end(void);
 
 void Mark(Stage stage) {
     if (counts[stage].fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -123,8 +125,60 @@ void Mark(Stage stage) {
         std::snprintf(event, sizeof(event), "VideoOut stage: %s", kStageNames[stage]);
         runtime_history_note(event, "dcpgpu", 0);
         std::printf("Runtime: first %s\n", kStageNames[stage]);
+        if (stage == VideoOutOpen || stage == GpuSubmission) {
+            sos_startup_milestone("first %s", kStageNames[stage]);
+        }
     }
 }
+
+namespace {
+std::atomic<bool> any_present{false};
+std::atomic<const void*> first_video_source{nullptr};
+enum : int { kNoVideoFrame, kVideoFrameDelivered, kVideoFrameShown };
+std::atomic<int> video_frame{kNoVideoFrame};
+} // namespace
+
+void Presented() {
+    if (!any_present.load(std::memory_order_relaxed) && !any_present.exchange(true)) {
+        sos_startup_milestone("first present");
+    }
+    int delivered = kVideoFrameDelivered;
+    if (video_frame.load(std::memory_order_relaxed) == kVideoFrameDelivered &&
+        video_frame.compare_exchange_strong(delivered, kVideoFrameShown)) {
+        sos_startup_milestone("first present after the first video frame");
+    }
+}
+
+} // namespace DcpStartupWatch
+
+extern "C" void dcpgpu_startup_video_requested() {
+    using namespace DcpStartupWatch;
+    static std::atomic<bool> requested{false};
+    if (!requested.exchange(true)) {
+        sos_startup_milestone("AvPlayer source requested");
+    }
+}
+
+extern "C" void dcpgpu_startup_video_source(const void* source) {
+    using namespace DcpStartupWatch;
+    const void* none = nullptr;
+    if (first_video_source.compare_exchange_strong(none, source)) {
+        sos_startup_milestone("AvPlayer source ready");
+        sos_startup_profile_end();
+    }
+}
+
+extern "C" void dcpgpu_startup_video_frame(const void* source) {
+    using namespace DcpStartupWatch;
+    int none = kNoVideoFrame;
+    if (video_frame.load(std::memory_order_relaxed) == kNoVideoFrame &&
+        first_video_source.load(std::memory_order_relaxed) == source &&
+        video_frame.compare_exchange_strong(none, kVideoFrameDelivered)) {
+        sos_startup_milestone("first video frame");
+    }
+}
+
+namespace DcpStartupWatch {
 
 extern "C" void dcpgpu_first_frame_summary(char* out, size_t size) {
     if (!out || !size) return;

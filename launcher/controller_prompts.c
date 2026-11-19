@@ -143,3 +143,14 @@ int sos_controller_prompts_apply(uint8_t *image, uint64_t size, const char *buil
     snprintf(message, message_size, "%s (%s)", label, style == SOS_PROMPTS_XBOX ? "game prompts set to Xbox" : "the game's own");
     return style;
 }
+
+int sos_controller_prompts_value_offsets(const uint8_t *image, uint64_t size, const char *build_key, uint64_t offsets[4]) {
+    const BuildSites *build = find_build(build_key);
+    if (!build) return 0;
+    for (int i = 0; i < SITE_COUNT; ++i) {
+        const uint8_t *held = immediate((uint8_t *)image, size, build->at[i], &kSignatures[i]);
+        if (!held) return 0;
+        offsets[i] = (uint64_t)(held - image);
+    }
+    return SITE_COUNT;
+}

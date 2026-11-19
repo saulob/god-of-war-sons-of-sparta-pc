@@ -26,10 +26,7 @@ static void copy_text(char *to, size_t size, const char *from) {
     to[length] = 0;
 }
 
-static double uptime_seconds(void);
-
 void sos_startup_phase(const char *phase) {
-    uptime_seconds();
     __atomic_store_n(&current_phase, phase, __ATOMIC_RELEASE);
 }
 
@@ -84,17 +81,91 @@ static unsigned long current_thread(void) {
 #endif
 }
 
-static double uptime_seconds(void) {
-    static double start = -1;
 #ifdef _WIN32
-    const double now = (double)GetTickCount64() / 1000.0;
+#define PLAY_VARIABLE "SOS_STARTUP_PLAY"
+static int64_t play_ticks; /* QueryPerformanceCounter at PLAY; QPC is the same clock in every process */
+static int inherit_play;
+
+static int64_t now_ticks(void) {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+static double ticks_ms(int64_t ticks) {
+    static int64_t frequency;
+    if (!frequency) {
+        LARGE_INTEGER hz;
+        QueryPerformanceFrequency(&hz);
+        frequency = hz.QuadPart;
+    }
+    return (double)ticks * 1000.0 / (double)frequency;
+}
+static double process_ms(void) {
+    FILETIME created, unused[3], now;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &unused[0], &unused[1], &unused[2])) return 0;
+    GetSystemTimePreciseAsFileTime(&now);
+    const uint64_t from = (uint64_t)created.dwHighDateTime << 32 | created.dwLowDateTime;
+    const uint64_t to = (uint64_t)now.dwHighDateTime << 32 | now.dwLowDateTime;
+    return to > from ? (double)(to - from) / 10000.0 : 0;
+}
+
+void sos_startup_play(void) {
+    const int64_t ticks = now_ticks();
+    __atomic_store_n(&play_ticks, ticks, __ATOMIC_RELEASE);
+    char value[24];
+    snprintf(value, sizeof(value), "%lld", (long long)ticks);
+    SetEnvironmentVariableA(PLAY_VARIABLE, value);
+}
+
+void sos_startup_inherit_play(void) { inherit_play = 1; }
+
+/* Milliseconds since PLAY, -1 when there was none in this process or the launcher's. */
+static double since_play_ms(void) {
+    int64_t ticks = __atomic_load_n(&play_ticks, __ATOMIC_ACQUIRE);
+    if (!ticks) {
+        if (!inherit_play) return -1;
+        char value[24];
+        const DWORD length = GetEnvironmentVariableA(PLAY_VARIABLE, value, sizeof(value));
+        ticks = length && length < sizeof(value) ? _strtoi64(value, NULL, 10) : 0;
+        if (ticks <= 0 || ticks > now_ticks()) return -1;
+        __atomic_store_n(&play_ticks, ticks, __ATOMIC_RELEASE);
+    }
+    return ticks_ms(now_ticks() - ticks);
+}
 #else
+static double now_ms(void) {
     struct timespec spec;
     clock_gettime(CLOCK_MONOTONIC, &spec);
-    const double now = (double)spec.tv_sec + (double)spec.tv_nsec / 1e9;
+    return (double)spec.tv_sec * 1000.0 + (double)spec.tv_nsec / 1e6;
+}
+static double play_at = -1, process_at = -1;
+static double process_ms(void) {
+    if (process_at < 0) process_at = now_ms();
+    return now_ms() - process_at;
+}
+void sos_startup_play(void) { play_at = now_ms(); }
+void sos_startup_inherit_play(void) {}
+static double since_play_ms(void) { return play_at < 0 ? -1 : now_ms() - play_at; }
 #endif
-    if (start < 0) start = now;
-    return now - start;
+
+static double elapsed_seconds(void) {
+    const double play = since_play_ms();
+    return (play >= 0 ? play : process_ms()) / 1000.0;
+}
+
+#define MAX_MILESTONES 32
+static unsigned milestone_count;
+
+void sos_startup_milestone(const char *format, ...) {
+    const double process = process_ms(), play = since_play_ms();
+    if (__atomic_add_fetch(&milestone_count, 1, __ATOMIC_RELAXED) > MAX_MILESTONES) return;
+    char text[120];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    if (play >= 0) printf("Startup: %s +%.0f ms (process +%.0f ms)\n", text, play, process);
+    else printf("Startup: %s +%.0f ms since the process started (no PLAY)\n", text, process);
 }
 
 void sos_checkpoint_note(const char *text) {
@@ -117,7 +188,7 @@ void sos_checkpoint(const char *format, ...) {
     va_end(args);
     sos_checkpoint_note(text);
     if (__atomic_add_fetch(&checkpoint_count, 1, __ATOMIC_RELAXED) <= MAX_CHECKPOINT_LINES)
-        printf("Checkpoint: +%.3f s thread %lu: %s\n", uptime_seconds(), current_thread(), text);
+        printf("Checkpoint: +%.3f s thread %lu: %s\n", elapsed_seconds(), current_thread(), text);
 }
 
 static size_t append(char *out, size_t size, size_t at, const char *text) {

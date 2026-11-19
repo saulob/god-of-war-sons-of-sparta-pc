@@ -9,6 +9,7 @@
  * encode 40-bit addresses, so host-default 0x7f... addresses would not fit. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "startup_profile.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -404,15 +405,24 @@ static size_t carve_host(uintptr_t a, uintptr_t b) {
     return at;
 }
 static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
+    const int64_t cost=sos_cost_begin();
     if (!reserved && commit_mapping(phys,size)) return -1; /* before carving: a failure keeps the live mappings */
     size_t i=carve_host(address,address+size);
-    if (reserved) return 0;
-    regions[i].phys=phys; regions[i].mapped=1;
-    view_map(&regions[i],win_prot(prot));
+    if (!reserved) {
+        regions[i].phys=phys; regions[i].mapped=1;
+        view_map(&regions[i],win_prot(prot));
+    }
+    sos_cost_end(SOS_COST_MEMORY_MAP,cost,size);
     return 0;
 }
-static int host_unmap(uintptr_t address, uint64_t size) { carve_host(address,address+size); return 0; }
+static int host_unmap(uintptr_t address, uint64_t size) {
+    const int64_t cost=sos_cost_begin();
+    carve_host(address,address+size);
+    sos_cost_end(SOS_COST_MEMORY_PROTECT,cost,size);
+    return 0;
+}
 static int host_protect(uintptr_t address, uint64_t size, int prot) {
+    const int64_t cost=sos_cost_begin();
     DWORD protect=win_prot(prot), old;
     uintptr_t end=address+size;
     int result=0;
@@ -424,6 +434,7 @@ static int host_protect(uintptr_t address, uint64_t size, int prot) {
             result=__atomic_load_n(&deferred_commit,__ATOMIC_ACQUIRE) ? protect_committed(a,b,protect) : -1;
     }
     ReleaseSRWLockExclusive(&commit_lock);
+    sos_cost_end(SOS_COST_MEMORY_PROTECT,cost,size);
     return result;
 }
 static size_t vma_index(uintptr_t a);

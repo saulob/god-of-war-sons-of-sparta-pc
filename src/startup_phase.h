@@ -12,7 +12,15 @@ extern "C" {
 void sos_startup_phase(const char *phase);
 const char *sos_startup_phase_current(void);
 
-/* A bounded log line "Checkpoint: +S s thread N: text" for a boundary of the startup, also kept for the crash report. */
+/* PLAY: the baseline of the checkpoints and startup milestones. */
+void sos_startup_play(void);
+/* In the game process the launcher started: PLAY is the launcher's. */
+void sos_startup_inherit_play(void);
+/* A bounded log line "Startup: text +X ms (process +Y ms)", X since PLAY, or since the process started when no launcher
+ * ran. For the few boundaries of the way to the first frame: each caller logs once. */
+void sos_startup_milestone(const char *format, ...) __attribute__((format(__printf__, 1, 2)));
+
+/* A bounded log line "Checkpoint: +S s thread N: text" (S since PLAY, as above), also kept for the crash report. */
 void sos_checkpoint(const char *format, ...) __attribute__((format(__printf__, 1, 2)));
 /* Kept for the crash report only. */
 void sos_checkpoint_note(const char *text);

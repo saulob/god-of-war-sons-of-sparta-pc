@@ -21,12 +21,17 @@
  * immediates (the SSE4a instruction the game's code uses) is replaced by equivalent host code in a stub, in every
  * function that has one, instead of being emulated at run time.
  *
- * SOS_RED_ZONE=0: off. SOS_RED_ZONE=list: each rewritten function is printed.
+ * The read-only analysis runs on several threads (redzone_analysis.c) and is kept between runs (redzone_cache.c); the
+ * code is rewritten by this thread alone, in image order, so the result does not depend on the threads.
+ *
+ * SOS_RED_ZONE=0: off. SOS_RED_ZONE=list: each rewritten function is printed. SOS_RED_ZONE_WORKERS=n: analysis threads.
  * SOS_RED_ZONE_SCRIBBLE=1 (test): after each GPU page-tracking fault the guest survives, the 128
  * bytes below the faulting rsp are filled with 0xcc, as a Windows build that leaves no slack there
  * does. A fault at an access of a red-zone function that could not be moved is reported once. */
 #include "runtime.h"
 #include "isa_emulate.h"
+#include "redzone_analysis.h"
+#include "redzone_cache.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +50,7 @@ typedef struct { uint64_t at, to; uint8_t length, fault, move, target, moved, br
 
 static unsigned char *rz_image;
 static uint64_t rz_size, rz_code_end;
-static uint8_t *rz_targets, *rz_starts; /* one bit per image byte up to rz_code_end */
+static uint8_t *rz_targets; /* one bit per image byte up to rz_code_end */
 static ZydisDecoder rz_decoder;
 /* Stub space: 64 KiB chunks within jump range of the image. */
 #define RZ_CHUNK ((size_t)64 << 10)
@@ -74,54 +79,12 @@ static volatile LONG *rz_red_seen, *rz_stub_seen;
 static volatile LONG rz_scribbles, rz_in_red, rz_in_stub, rz_prints;
 static volatile LONG64 rz_last_report;
 
-static void bit_set(uint8_t *map, uint64_t at) { if (at < rz_code_end) map[at >> 3] |= (uint8_t)(1u << (at & 7)); }
 static int bit_get(const uint8_t *map, uint64_t at) { return at < rz_code_end && ((map[at >> 3] >> (at & 7)) & 1); }
-static uint32_t rd32(const unsigned char *p) { uint32_t v; memcpy(&v, p, 4); return v; }
-static int32_t rd32s(const unsigned char *p) { int32_t v; memcpy(&v, p, 4); return v; }
 /* From the fault handler: no stdio, whose lock the faulting thread may hold. Standard output is
  * the log (runtime_log.c redirects it). */
 static void write_log(const char *line) {
     DWORD written;
     if (*line) WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), line, (DWORD)strlen(line), &written, NULL);
-}
-
-static int executable_at(const uint64_t *segs, uint64_t nseg, uint64_t at, uint64_t *segment_end) {
-    for (uint64_t s = 0; s < nseg; ++s) {
-        const uint64_t base = segs[3 * s], bytes = segs[3 * s + 1], flags = segs[3 * s + 2];
-        if ((flags & 1) && at >= base && at - base < bytes) {
-            if (segment_end) *segment_end = base + bytes;
-            return 1;
-        }
-    }
-    return 0;
-}
-/* An FDE's pc_begin (pc-relative sdata4), or -1 for a CIE or a bad entry. */
-static int64_t fde_begin(uint64_t fde) {
-    if (fde + 16 > rz_size) return -1;
-    const uint32_t length = rd32(rz_image + fde);
-    if (length < 12 || length == 0xffffffffu || !rd32(rz_image + fde + 4)) return -1;
-    return (int64_t)fde + 8 + rd32s(rz_image + fde + 8);
-}
-/* The entry count of a .eh_frame_hdr at image offset `at` (version 1; eh_frame_ptr pcrel sdata4,
- * fde_count udata4, table datarel sdata4), 0 if this is not one: the table must be sorted, name
- * code in an executable segment, and its first FDEs must agree on where their functions start. */
-static uint32_t eh_table(uint64_t at, const uint64_t *segs, uint64_t nseg) {
-    const unsigned char *h = rz_image + at;
-    if (at + 12 > rz_size || h[0] != 1 || h[1] != 0x1b || h[2] != 0x03 || h[3] != 0x3b) return 0;
-    const uint32_t count = rd32(h + 8);
-    if (count < 16 || count > (1u << 22) || at + 12 + (uint64_t)count * 8 > rz_size) return 0;
-    const int64_t frames = (int64_t)at + 4 + rd32s(h + 4);
-    if (frames < 0 || (uint64_t)frames >= rz_size) return 0;
-    int64_t previous = -1;
-    for (uint32_t i = 0; i < count; ++i) {
-        const int64_t pc = (int64_t)at + rd32s(h + 12 + 8 * (uint64_t)i);
-        const int64_t fde = (int64_t)at + rd32s(h + 16 + 8 * (uint64_t)i);
-        if (pc <= previous || !executable_at(segs, nseg, (uint64_t)pc, NULL) || fde < 0 || (uint64_t)fde + 16 > rz_size)
-            return 0;
-        if (i < 64 && fde_begin((uint64_t)fde) != pc) return 0;
-        previous = pc;
-    }
-    return count;
 }
 
 static int decode(uint64_t at, uint64_t end, ZydisDecodedInstruction *in, ZydisDecodedOperand *ops) {
@@ -155,34 +118,6 @@ static int branch_target(const ZydisDecodedInstruction *in, const ZydisDecodedOp
 static int rewritable(uint64_t at, ZydisMnemonic m) {
     unsigned char scratch[ISA_INSERTQ_REWRITE_MAX];
     return rz_rewrite_insertq && m == ZYDIS_MNEMONIC_INSERTQ && isa_insertq_rewrite(rz_image + at, scratch);
-}
-/* Pass 1: branch targets (all functions), whether the function keeps data below rsp, whether a
- * patch changed it, whether it has an indirect jump, and whether it has an instruction to rewrite. */
-static void scan_function(RzFunction *f) {
-    for (uint64_t at = f->begin; at < f->end;) {
-        ZydisDecodedInstruction in;
-        ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-        if (!decode(at, f->end, &in, ops)) { f->bad = 1; return; }
-        uint64_t target;
-        if (branch_target(&in, ops, at, &target)) {
-            if (target == UINT64_MAX) f->hooked = 1;
-            else {
-                bit_set(rz_targets, target);
-                /* Code only enters another function at its start; anything else is a patch. */
-                if ((target < f->begin || target >= f->end) && !bit_get(rz_starts, target)) f->hooked = 1;
-            }
-        } else if (in.meta.category == ZYDIS_CATEGORY_UNCOND_BR &&
-                   !(ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[0].mem.base == ZYDIS_REGISTER_RIP &&
-                     ops[0].mem.index == ZYDIS_REGISTER_NONE)) {
-            f->indirect = 1;
-        }
-        if (rewritable(at, in.mnemonic)) f->rewrite = 1;
-        for (unsigned k = 0; k < in.operand_count_visible; ++k)
-            if (ops[k].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[k].mem.type != ZYDIS_MEMOP_TYPE_AGEN &&
-                ops[k].mem.base == ZYDIS_REGISTER_RSP && ops[k].mem.disp.value < 0)
-                f->red = 1;
-        at += in.length;
-    }
 }
 static int prefetch(ZydisMnemonic m) {
     return m == ZYDIS_MNEMONIC_PREFETCHNTA || m == ZYDIS_MNEMONIC_PREFETCHT0 || m == ZYDIS_MNEMONIC_PREFETCHT1 ||
@@ -351,16 +286,15 @@ static void note_skipped(uint64_t at) {
     }
     rz_skipped[rz_skipped_count++] = (uint32_t)at;
 }
-/* Pass 2 for one red-zone function: groups of instructions around each faulting access, each at
- * least 5 bytes, no branch target inside (its first instruction may be one), moved to stubs. */
-static void protect_function(const RzFunction *f, int list, uint64_t *moved, uint64_t *skipped, uint64_t *groups) {
+/* The instructions of a function to protect; NULL when one does not decode. Reads only, from any thread. */
+static RzOp *decode_function(const RzFunction *f, size_t *count) {
     size_t cap = (size_t)(f->end - f->begin), n = 0;
     RzOp *ops = calloc(cap ? cap : 1, sizeof(*ops));
-    if (!ops) return;
+    if (!ops) return NULL;
     for (uint64_t at = f->begin; at < f->end && n < cap;) {
         ZydisDecodedInstruction in;
         ZydisDecodedOperand dec[ZYDIS_MAX_OPERAND_COUNT];
-        if (!decode(at, f->end, &in, dec)) { free(ops); return; }
+        if (!decode(at, f->end, &in, dec)) { free(ops); return NULL; }
         ops[n].at = at;
         ops[n].length = in.length;
         ops[n].target = (uint8_t)bit_get(rz_targets, at);
@@ -380,6 +314,21 @@ static void protect_function(const RzFunction *f, int list, uint64_t *moved, uin
         ++n;
         at += in.length;
     }
+    RzOp *fitted = realloc(ops, (n ? n : 1) * sizeof(*ops));
+    *count = n;
+    return fitted ? fitted : ops;
+}
+static int inner_target(const RzOp *op) {
+    for (uint64_t at = op->at + 1; at < op->at + op->length; ++at)
+        if (bit_get(rz_targets, at)) return 1;
+    return 0;
+}
+/* Pass 2 for one red-zone function: groups of instructions around each faulting access, each at
+ * least 5 bytes, no branch target inside (its first instruction may be one), moved to stubs. A patched function or one
+ * with a jump table keeps its code, but each INSERTQ is replaced on its own: no other instruction moves, so unknown
+ * branch targets cannot land in what was moved. */
+static void protect_function(const RzFunction *f, RzOp *ops, size_t n, int list, uint64_t *moved, uint64_t *skipped,
+                             uint64_t *groups) {
     uint64_t here_moved = 0, here_skipped = 0, here_groups = 0;
     size_t next_free = 0; /* instructions before it are already in a stub */
     if (!f->hooked && !f->indirect)
@@ -406,6 +355,10 @@ static void protect_function(const RzFunction *f, int list, uint64_t *moved, uin
                 }
             }
         }
+    else
+        for (size_t i = 0; i < n; ++i)
+            if (ops[i].rewrite && ops[i].move && ops[i].length >= 5 && !inner_target(&ops[i]) && emit_group(f, ops, i, i + 1))
+                ++here_groups;
     for (size_t i = 0; i < n; ++i) {
         if (!f->red || !ops[i].fault) continue;
         if (ops[i].moved) { ++here_moved; continue; }
@@ -420,7 +373,11 @@ static void protect_function(const RzFunction *f, int list, uint64_t *moved, uin
     *moved += here_moved;
     *skipped += here_skipped;
     *groups += here_groups;
-    free(ops);
+}
+typedef struct { RzFunction f; RzOp *ops; size_t count; } RzPlan;
+static void decode_task(void *context, size_t task) {
+    RzPlan *plan = (RzPlan *)context + task;
+    plan->ops = decode_function(&plan->f, &plan->count);
 }
 /* Stub space within relative-jump range of the image: free regions within 1.5 GiB of it. */
 static unsigned char *allocate_near(size_t bytes) {
@@ -438,10 +395,6 @@ static unsigned char *allocate_near(size_t bytes) {
     }
     return NULL;
 }
-static int compare_functions(const void *a, const void *b) {
-    const RzFunction *x = a, *y = b;
-    return x->begin < y->begin ? -1 : x->begin > y->begin;
-}
 static int compare_stubs(const void *a, const void *b) {
     const RzStub *x = a, *y = b;
     return x->stub < y->stub ? -1 : x->stub > y->stub;
@@ -455,6 +408,76 @@ int runtime_redzone_contains(uintptr_t address) { return in_stubs(address); }
 static int compare_u32(const void *a, const void *b) {
     const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
     return x < y ? -1 : x > y;
+}
+
+static char rz_cache_directory[4200];
+static RzaRange *rz_volatile;
+static size_t rz_volatile_count, rz_volatile_cap;
+
+void runtime_redzone_set_cache(const char *directory) {
+    snprintf(rz_cache_directory, sizeof(rz_cache_directory), "%s", directory ? directory : "");
+}
+void runtime_redzone_add_volatile(uint64_t offset, uint64_t length) {
+    if (!length || offset > UINT32_MAX || length > UINT32_MAX - offset) return;
+    if (rz_volatile_count == rz_volatile_cap) {
+        const size_t cap = rz_volatile_cap ? rz_volatile_cap * 2 : 1024;
+        RzaRange *grown = realloc(rz_volatile, cap * sizeof(*grown));
+        if (!grown) { rz_cache_directory[0] = 0; return; }
+        rz_volatile = grown;
+        rz_volatile_cap = cap;
+    }
+    rz_volatile[rz_volatile_count++] = (RzaRange){(uint32_t)offset, (uint32_t)length};
+}
+static int compare_ranges(const void *a, const void *b) {
+    const RzaRange *x = a, *y = b;
+    if (x->offset != y->offset) return x->offset < y->offset ? -1 : 1;
+    return x->length < y->length ? -1 : x->length > y->length;
+}
+/* Sorted, overlaps merged; adjacent ranges stay apart, each having to fit one instruction field. */
+static void normalize_volatile(void) {
+    if (!rz_volatile_count) return;
+    qsort(rz_volatile, rz_volatile_count, sizeof(*rz_volatile), compare_ranges);
+    size_t n = 0;
+    for (size_t i = 0; i < rz_volatile_count; ++i) {
+        RzaRange *last = n ? &rz_volatile[n - 1] : NULL;
+        const uint64_t end = (uint64_t)rz_volatile[i].offset + rz_volatile[i].length;
+        if (last && rz_volatile[i].offset < (uint64_t)last->offset + last->length) {
+            if (end > (uint64_t)last->offset + last->length) last->length = (uint32_t)(end - last->offset);
+        } else {
+            rz_volatile[n++] = rz_volatile[i];
+        }
+    }
+    rz_volatile_count = n;
+}
+static unsigned worker_count(uint64_t bytes) {
+    const char *forced = getenv("SOS_RED_ZONE_WORKERS");
+    const int n = forced ? atoi(forced) : 0;
+    return n > 0 && n <= 64 ? (unsigned)n : rza_workers(bytes);
+}
+static double elapsed_ms(LARGE_INTEGER from) {
+    LARGE_INTEGER now, hz;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&hz);
+    return (double)(now.QuadPart - from.QuadPart) * 1000.0 / (double)hz.QuadPart;
+}
+
+static uint32_t *rz_starts;
+static size_t rz_start_count;
+static void keep_function_starts(const RzaImage *analysis) {
+    free(rz_starts);
+    rz_start_count = 0;
+    rz_starts = malloc((analysis->count ? analysis->count : 1) * sizeof(*rz_starts));
+    for (size_t i = 0; rz_starts && i < analysis->count; ++i) rz_starts[rz_start_count++] = analysis->functions[i].begin;
+}
+int runtime_redzone_function(uint64_t offset, uint64_t *begin) {
+    size_t lo = 0, hi = rz_start_count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (rz_starts[mid] <= offset) lo = mid + 1; else hi = mid;
+    }
+    if (!lo) return 0;
+    *begin = rz_starts[lo - 1];
+    return 1;
 }
 
 uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint64_t *segs, uint64_t nseg) {
@@ -472,86 +495,93 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
     rz_protecting = !(env && env[0] == '0');
     if (!rz_protecting && !rz_scribble) { puts("Red zone: protection off (SOS_RED_ZONE=0)"); return 0; }
     const int list = env && !strcmp(env, "list");
-    LARGE_INTEGER t0, t1, hz;
+    LARGE_INTEGER t0;
     QueryPerformanceCounter(&t0);
     if (ZYAN_FAILED(ZydisDecoderInit(&rz_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64))) {
         puts("Red zone: protection unavailable (decoder)");
         return 0;
     }
     /* The functions: every .eh_frame_hdr table in the image (the eboot's and the linked modules'). */
-    RzFunction *functions = NULL;
-    size_t count = 0, cap = 0;
-    unsigned tables = 0;
-    for (uint64_t s = 0; s < nseg; ++s) {
-        const uint64_t base = segs[3 * s], end = segs[3 * s] + segs[3 * s + 1];
-        for (uint64_t at = (base + 3) & ~UINT64_C(3); at + 12 <= end && at + 12 <= size; at += 4) {
-            if (image[at] != 1 || image[at + 1] != 0x1b) continue;
-            const uint32_t entries = eh_table(at, segs, nseg);
-            if (!entries) continue;
-            ++tables;
-            for (uint32_t i = 0; i < entries; ++i) {
-                const uint64_t pc = (uint64_t)((int64_t)at + rd32s(image + at + 12 + 8 * (uint64_t)i));
-                const uint64_t fde = (uint64_t)((int64_t)at + rd32s(image + at + 16 + 8 * (uint64_t)i));
-                uint64_t segment_end = 0;
-                if (fde_begin(fde) != (int64_t)pc || !executable_at(segs, nseg, pc, &segment_end)) continue;
-                const int32_t range = rd32s(image + fde + 12);
-                if (range <= 0 || pc + (uint64_t)range > segment_end) continue;
-                if (count == cap) {
-                    cap = cap ? cap * 2 : 65536;
-                    RzFunction *grown = realloc(functions, cap * sizeof(*grown));
-                    if (!grown) { free(functions); puts("Red zone: protection unavailable (memory)"); return 0; }
-                    functions = grown;
-                }
-                functions[count++] = (RzFunction){pc, pc + (uint64_t)range, 0, 0, 0, 0, 0};
-            }
-            at += 12 + (uint64_t)entries * 8 - 4;
-        }
-    }
-    if (!count) { puts("Red zone: protection unavailable (no .eh_frame_hdr function table found)"); return 0; }
-    qsort(functions, count, sizeof(*functions), compare_functions);
-    rz_code_end = 0;
-    for (size_t i = 0; i < count; ++i) if (functions[i].end > rz_code_end) rz_code_end = functions[i].end;
-    rz_targets = calloc((size_t)(rz_code_end / 8 + 1), 1);
-    rz_starts = calloc((size_t)(rz_code_end / 8 + 1), 1);
-    if (!rz_targets || !rz_starts) {
-        free(functions); free(rz_targets); free(rz_starts); rz_targets = rz_starts = NULL;
-        puts("Red zone: protection unavailable (memory)");
+    RzaImage analysis;
+    if (!rza_enumerate(image, size, segs, nseg, &analysis)) {
+        puts("Red zone: protection unavailable (no .eh_frame_hdr function table found, or no memory)");
         return 0;
     }
-    for (size_t i = 0; i < count; ++i) bit_set(rz_starts, functions[i].begin);
-    for (size_t i = 0; i < count; ++i) scan_function(&functions[i]);
+    uint64_t code_bytes = 0;
+    for (size_t i = 0; i < analysis.count; ++i) code_bytes += analysis.functions[i].end - analysis.functions[i].begin;
+    const unsigned workers = worker_count(code_bytes);
+    normalize_volatile();
+    const int cached = rz_cache_directory[0] != 0;
+    const RzcKey key = cached ? rzc_fingerprint(image, &analysis, rz_volatile, rz_volatile_count, workers) : (RzcKey){0, 0};
+    const char *cache = "analysis cache off";
+    if (cached && (key.lo || key.hi) && rzc_load(rz_cache_directory, key, &analysis)) {
+        cache = "analysis cache hit";
+    } else {
+        const int stable = rza_scan(image, size, &analysis, workers, rz_volatile, rz_volatile_count);
+        if (stable < 0) {
+            rza_free(&analysis);
+            puts("Red zone: protection unavailable (decoder or memory)");
+            return 0;
+        }
+        if (cached)
+            cache = !stable ? "analysis cache unavailable (a run-dependent value changes the analysis)"
+                  : (key.lo || key.hi) && rzc_save(rz_cache_directory, key, &analysis) ? "analysis cache miss, saved"
+                  : "analysis cache miss, not saved";
+    }
+    const double analysis_ms = elapsed_ms(t0);
+    rz_targets = analysis.targets;
+    rz_code_end = analysis.code_end;
+    const size_t count = analysis.count;
     uint64_t red = 0, hooked = 0, bad = 0, indirect = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!functions[i].red) continue;
+        const uint32_t flags = analysis.functions[i].flags;
+        if (!(flags & RZA_RED)) continue;
         ++red;
-        if (functions[i].bad) ++bad;
-        else if (functions[i].hooked) ++hooked;
-        else if (functions[i].indirect) ++indirect;
+        if (flags & RZA_BAD) ++bad;
+        else if (flags & RZA_HOOKED) ++hooked;
+        else if (flags & RZA_INDIRECT) ++indirect;
     }
     if (rz_scribble && red) {
         rz_red = calloc((size_t)red, sizeof(*rz_red));
         rz_red_seen = calloc((size_t)red, sizeof(*rz_red_seen));
         for (size_t i = 0; rz_red && rz_red_seen && i < count; ++i)
-            if (functions[i].red) rz_red[rz_red_count++] = (RzRange){(uint32_t)functions[i].begin, (uint32_t)functions[i].end};
+            if (analysis.functions[i].flags & RZA_RED)
+                rz_red[rz_red_count++] = (RzRange){analysis.functions[i].begin, analysis.functions[i].end};
     }
     if (!rz_protecting) {
         printf("Red zone: protection off (SOS_RED_ZONE=0); %" PRIu64 " of %zu functions keep data below rsp\n", red, count);
-        free(rz_targets); free(rz_starts); rz_targets = rz_starts = NULL;
-        free(functions);
+        rz_targets = NULL;
+        rza_free(&analysis);
         return 0;
     }
-    uint64_t moved = 0, skipped = 0, groups = 0, protected_functions = 0;
-    for (size_t i = 0; i < count; ++i) {
-        const RzFunction *f = &functions[i];
-        if (!f->red && !f->rewrite) continue;
-        if (f->bad) {
-            if (list) printf("Red zone: function %#" PRIx64 " (+%#" PRIx64 ") undecodable, left as it is\n", f->begin, f->end - f->begin);
+    /* Decoded in parallel, rewritten in image order by this thread alone. */
+    size_t planned = 0;
+    for (size_t i = 0; i < count; ++i) planned += (analysis.functions[i].flags & (RZA_RED | RZA_INSERTQ)) != 0;
+    RzPlan *plans = calloc(planned ? planned : 1, sizeof(*plans));
+    if (!plans) puts("Red zone: protection unavailable (memory)");
+    planned = 0;
+    for (size_t i = 0; plans && i < count; ++i) {
+        const uint32_t flags = analysis.functions[i].flags;
+        const RzFunction f = {analysis.functions[i].begin, analysis.functions[i].end, (flags & RZA_RED) != 0,
+                              (flags & RZA_HOOKED) != 0, (flags & RZA_BAD) != 0, (flags & RZA_INDIRECT) != 0,
+                              rz_rewrite_insertq && (flags & RZA_INSERTQ)};
+        if (!f.red && !f.rewrite) continue;
+        if (f.bad) {
+            if (list) printf("Red zone: function %#" PRIx64 " (+%#" PRIx64 ") undecodable, left as it is\n", f.begin, f.end - f.begin);
             continue;
         }
-        const uint64_t before = groups;
-        protect_function(f, list, &moved, &skipped, &groups);
-        if (groups != before) ++protected_functions;
+        plans[planned++].f = f;
     }
+    rza_parallel(workers, planned, decode_task, plans);
+    uint64_t moved = 0, skipped = 0, groups = 0, protected_functions = 0;
+    for (size_t i = 0; i < planned; ++i) {
+        if (!plans[i].ops) continue;
+        const uint64_t before = groups;
+        protect_function(&plans[i].f, plans[i].ops, plans[i].count, list, &moved, &skipped, &groups);
+        if (groups != before) ++protected_functions;
+        free(plans[i].ops);
+    }
+    free(plans);
     for (size_t i = 0; i < rz_chunks; ++i) {
         DWORD old;
         VirtualProtect(rz_chunk[i], RZ_CHUNK, PAGE_EXECUTE_READ, &old);
@@ -566,16 +596,16 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
         qsort(rz_stubs, rz_stub_count, sizeof(*rz_stubs), compare_stubs);
         rz_stub_seen = calloc(rz_stub_count, sizeof(*rz_stub_seen));
     }
-    free(rz_targets); free(rz_starts); rz_targets = rz_starts = NULL;
-    free(functions);
-    QueryPerformanceCounter(&t1);
-    QueryPerformanceFrequency(&hz);
+    rz_targets = NULL;
+    keep_function_starts(&analysis);
+    const unsigned tables = analysis.tables;
+    rza_free(&analysis);
     printf("Red zone: %u tables, %zu functions scanned, %" PRIu64 " keep data below rsp, %" PRIu64 " protected "
            "(left alone: %" PRIu64 " patched, %" PRIu64 " with an indirect jump, %" PRIu64 " undecodable); %" PRIu64
-           " accesses moved in %" PRIu64 " stubs (%zu KiB in %zu blocks), %" PRIu64 " left in place, %" PRIu64 " SSE4a instructions rewritten; %.0f ms\n",
-           tables, count, red, protected_functions, hooked, indirect, bad, moved, groups, rz_stub_bytes / 1024, rz_chunks, skipped,
-           rz_rewritten,
-           (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart);
+           " accesses moved in %" PRIu64 " stubs (%zu KiB in %zu blocks), %" PRIu64 " left in place, %" PRIu64
+           " SSE4a instructions rewritten; %s, %u workers, %.0f ms analysis; %.0f ms\n",
+           tables, count, red, protected_functions, hooked, indirect, bad, moved, groups, rz_stub_bytes / 1024, rz_chunks,
+           skipped, rz_rewritten, cache, workers, analysis_ms, elapsed_ms(t0));
     return moved;
 }
 
@@ -662,4 +692,7 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
 void runtime_redzone_after_fault(void *context) { (void)context; }
 int runtime_redzone_site(uintptr_t rip, uint64_t *site) { (void)rip; (void)site; return 0; }
 int runtime_redzone_contains(uintptr_t address) { (void)address; return 0; }
+int runtime_redzone_function(uint64_t offset, uint64_t *begin) { (void)offset; (void)begin; return 0; }
+void runtime_redzone_set_cache(const char *directory) { (void)directory; }
+void runtime_redzone_add_volatile(uint64_t offset, uint64_t length) { (void)offset; (void)length; }
 #endif
