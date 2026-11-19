@@ -156,9 +156,120 @@ static size_t emulate_bmi1(const uint8_t *code, uint64_t rip, uint64_t gpr[16], 
     return c.length;
 }
 
-size_t isa_emulate(const uint8_t *code, uint64_t rip, uint64_t gpr[16], uint64_t *rflags) {
-    const size_t length = isa_emulate_movbe(code, rip, gpr);
-    return length ? length : emulate_bmi1(code, rip, gpr, rflags);
+typedef struct {
+    uint8_t prefix, opcode, modrm;
+    unsigned rex;
+} Sse4aHead;
+
+/* F2, F3 or 66, an optional REX, 0F, opcode 78, 79 or 2B, modrm. */
+static int parse_sse4a(Cursor *c, Sse4aHead *h) {
+    uint8_t byte;
+    if (!take(c, &h->prefix) || (h->prefix != 0x66 && h->prefix != 0xf2 && h->prefix != 0xf3) || !take(c, &byte)) return 0;
+    h->rex = 0;
+    if ((byte & 0xf0) == 0x40) {
+        h->rex = byte;
+        if (!take(c, &byte)) return 0;
+    }
+    return byte == 0x0f && take(c, &h->opcode) && take(c, &h->modrm) &&
+           (h->opcode == 0x78 || h->opcode == 0x79 || h->opcode == 0x2b);
+}
+
+static uint64_t load64(const uint8_t *p) {
+    uint64_t v;
+    memcpy(&v, p, 8);
+    return v;
+}
+static uint64_t field_mask(unsigned length) { return length == 64 ? ~0ull : (1ull << length) - 1; }
+/* A length field of 0 means 64. */
+static unsigned field_length(unsigned value) { return value & 63 ? value & 63 : 64; }
+
+static size_t emulate_sse4a(const uint8_t *code, uint64_t rip, uint64_t gpr[16], uint8_t xmm[16][16]) {
+    Cursor c = {code, 0};
+    Sse4aHead h;
+    if (!xmm || !parse_sse4a(&c, &h)) return 0;
+    const unsigned reg = (h.modrm >> 3 & 7) | (h.rex & 4 ? 8 : 0), rm = (h.modrm & 7) | (h.rex & 1 ? 8 : 0);
+    if (h.opcode == 0x2b) {
+        Operand memory;
+        if (h.prefix == 0x66 || h.modrm >> 6 == 3 || !decode_rm(&c, h.modrm, h.rex & 2, h.rex & 1, rip, gpr, &memory))
+            return 0;
+        memcpy((void *)(uintptr_t)memory.address, xmm[reg], h.prefix == 0xf2 ? 8 : 4);
+        return c.length;
+    }
+    if (h.prefix == 0xf3 || h.modrm >> 6 != 3) return 0;
+    const int insert = h.prefix == 0xf2;
+    unsigned destination = reg, length, index;
+    if (h.opcode == 0x78) {
+        uint8_t first, second;
+        if ((!insert && (h.modrm >> 3 & 7)) || !take(&c, &first) || !take(&c, &second)) return 0;
+        length = field_length(first);
+        index = second & 63;
+        if (!insert) destination = rm;
+    } else {
+        const uint64_t control = load64(xmm[rm] + (insert ? 8 : 0));
+        length = field_length((unsigned)control);
+        index = (unsigned)(control >> 8) & 63;
+    }
+    const uint64_t mask = field_mask(length) << index, old = load64(xmm[destination]);
+    const uint64_t value = insert ? (old & ~mask) | ((load64(xmm[rm]) << index) & mask) : (old >> index) & field_mask(length);
+    memcpy(xmm[destination], &value, 8);
+    return c.length;
+}
+
+size_t isa_emulate(const uint8_t *code, uint64_t rip, uint64_t gpr[16], uint64_t *rflags, uint8_t xmm[16][16]) {
+    size_t length = isa_emulate_movbe(code, rip, gpr);
+    if (!length) length = emulate_bmi1(code, rip, gpr, rflags);
+    return length ? length : emulate_sse4a(code, rip, gpr, xmm);
+}
+
+/* The masks, 16-byte aligned, come first, jumped over; then
+ *   lea rsp,[rsp-32]; vmovdqu [rsp],ymm_t; movdqa t,src; psllq t,index; pand t,take; pand dst,keep; por dst,t;
+ *   vmovdqu ymm_t,[rsp]; lea rsp,[rsp+32]
+ * with t one of xmm15, xmm14 and xmm13 that is neither operand. Legacy SSE encodings keep the destination's upper
+ * ymm half, as INSERTQ does. */
+size_t isa_insertq_rewrite(const uint8_t *code, uint8_t *out) {
+    Cursor c = {code, 0};
+    Sse4aHead h;
+    uint8_t first, second;
+    if (!parse_sse4a(&c, &h) || h.prefix != 0xf2 || h.opcode != 0x78 || h.modrm >> 6 != 3 || !take(&c, &first) ||
+        !take(&c, &second))
+        return 0;
+    const unsigned destination = (h.modrm >> 3 & 7) | (h.rex & 4 ? 8 : 0), source = (h.modrm & 7) | (h.rex & 1 ? 8 : 0);
+    const unsigned length = field_length(first), index = second & 63;
+    if (length + index > 64) return 0;
+    unsigned t = 15;
+    while (t == destination || t == source) --t;
+    const uint64_t mask = field_mask(length) << index;
+    const uint64_t masks[4] = {mask, 0, ~mask, ~0ull};
+
+    const size_t pool = (((uintptr_t)out + 2 + 15) & ~(uintptr_t)15) - (uintptr_t)out;
+    size_t n = 0;
+    out[n++] = 0xeb;
+    out[n++] = (uint8_t)(pool - 2 + 32);
+    while (n < pool) out[n++] = 0xcc;
+    memcpy(out + n, masks, sizeof masks);
+    n += sizeof masks;
+
+#define EMIT(...) do { const uint8_t bytes_[] = {__VA_ARGS__}; memcpy(out + n, bytes_, sizeof bytes_); n += sizeof bytes_; } while (0)
+#define REX(reg, rm) do { const unsigned rex_ = ((reg) >> 3 << 2) | ((rm) >> 3); if (rex_) EMIT((uint8_t)(0x40 | rex_)); } while (0)
+    /* A legacy SSE instruction on two registers. */
+#define SSE_REGISTERS(opcode, reg, rm) do { EMIT(0x66); REX(reg, rm); EMIT(0x0f, opcode, (uint8_t)(0xc0 | ((reg) & 7) << 3 | ((rm) & 7))); } while (0)
+    /* pand reg,[rip+...] on the mask at `at` bytes into the pool. */
+#define PAND_MASK(reg, at) do { EMIT(0x66); REX(reg, 0); EMIT(0x0f, 0xdb, (uint8_t)(((reg) & 7) << 3 | 5)); \
+        const int32_t disp_ = (int32_t)((int64_t)(pool + (at)) - (int64_t)(n + 4)); memcpy(out + n, &disp_, 4); n += 4; } while (0)
+    EMIT(0x48, 0x8d, 0x64, 0x24, 0xe0);
+    EMIT(0xc4, 0x61, 0x7e, 0x7f, (uint8_t)((t & 7) << 3 | 4), 0x24);
+    SSE_REGISTERS(0x6f, t, source);
+    if (index) { EMIT(0x66); REX(0, t); EMIT(0x0f, 0x73, (uint8_t)(0xf0 | (t & 7)), (uint8_t)index); }
+    PAND_MASK(t, 0);
+    PAND_MASK(destination, 16);
+    SSE_REGISTERS(0xeb, destination, t);
+    EMIT(0xc4, 0x61, 0x7e, 0x6f, (uint8_t)((t & 7) << 3 | 4), 0x24);
+    EMIT(0x48, 0x8d, 0x64, 0x24, 0x20);
+#undef EMIT
+#undef REX
+#undef SSE_REGISTERS
+#undef PAND_MASK
+    return n;
 }
 
 IsaHostFeatures isa_host_features(void) {
@@ -177,7 +288,8 @@ IsaHostFeatures isa_host_features(void) {
 }
 
 unsigned isa_emulation_needed(IsaHostFeatures host) {
-    return (host.leaf1_ecx & bit_MOVBE ? 0u : ISA_EMULATE_MOVBE) | (host.leaf7_ebx & bit_BMI ? 0u : ISA_EMULATE_BMI1);
+    return (host.leaf1_ecx & bit_MOVBE ? 0u : ISA_EMULATE_MOVBE) | (host.leaf7_ebx & bit_BMI ? 0u : ISA_EMULATE_BMI1) |
+           (host.ext1_ecx & bit_SSE4a ? 0u : ISA_EMULATE_SSE4A);
 }
 
 int isa_missing_sets(IsaHostFeatures host, int emulated, char *out, size_t size) {
@@ -186,7 +298,7 @@ int isa_missing_sets(IsaHostFeatures host, int emulated, char *out, size_t size)
     static const struct { const char *name; int emulated, word; uint32_t bit; } sets[] = {
         {"SSE4.1", 0, 0, bit_SSE4_1}, {"SSE4.2", 0, 0, bit_SSE4_2}, {"POPCNT", 0, 0, bit_POPCNT},
         {"AVX", 0, 0, bit_AVX},       {"LZCNT", 0, 2, bit_LZCNT},   {"MOVBE", 1, 0, bit_MOVBE},
-        {"BMI1", 1, 1, bit_BMI},
+        {"BMI1", 1, 1, bit_BMI},      {"SSE4a", 1, 2, bit_SSE4a},
     };
     const uint32_t words[] = {host.leaf1_ecx, host.leaf7_ebx, host.ext1_ecx};
     int missing = 0;

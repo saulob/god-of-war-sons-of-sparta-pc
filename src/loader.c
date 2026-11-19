@@ -270,11 +270,14 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION && image &&
         ((uintptr_t)info->ContextRecord->Rip - (uintptr_t)image < image_size ||
          runtime_redzone_contains((uintptr_t)info->ContextRecord->Rip))) {
-        /* Jaguar's MOVBE and BMI1 trap on hosts without them. */
+        /* Jaguar's MOVBE, BMI1 and SSE4a trap on hosts without them. */
         CONTEXT *c = info->ContextRecord;
         _Static_assert(offsetof(CONTEXT, R15) - offsetof(CONTEXT, Rax) == 15 * sizeof(DWORD64), "CONTEXT register order");
+        _Static_assert(sizeof(c->FltSave.XmmRegisters) == 16 * 16, "CONTEXT xmm layout");
         uint64_t flags = c->EFlags;
-        const size_t length = isa_emulate((const uint8_t *)(uintptr_t)c->Rip, c->Rip, &c->Rax, &flags);
+        uint8_t (*const xmm)[16] = (c->ContextFlags & CONTEXT_FLOATING_POINT) == CONTEXT_FLOATING_POINT
+                                       ? (uint8_t (*)[16])c->FltSave.XmmRegisters : NULL;
+        const size_t length = isa_emulate((const uint8_t *)(uintptr_t)c->Rip, c->Rip, &c->Rax, &flags, xmm);
         if (length) {
             c->EFlags = (DWORD)flags;
             c->Rip += length;

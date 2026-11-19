@@ -16,8 +16,10 @@
  * as are functions with an indirect jump (a jump table: its targets are unknown, and its entries may
  * sit in the code).
  *
- * A host without MOVBE or BMI1 raises #UD at those instructions, which loader.c emulates; the exception frame
- * lands the same way, so in a red-zone function they are moved into stubs like the faulting accesses.
+ * A host without MOVBE, BMI1 or SSE4a raises #UD at those instructions, which loader.c emulates; the exception frame
+ * lands the same way, so in a red-zone function they are moved into stubs like the faulting accesses. An INSERTQ with
+ * immediates (the SSE4a instruction the game's code uses) is replaced by equivalent host code in a stub, in every
+ * function that has one, instead of being emulated at run time.
  *
  * SOS_RED_ZONE=0: off. SOS_RED_ZONE=list: each rewritten function is printed.
  * SOS_RED_ZONE_SCRIBBLE=1 (test): after each GPU page-tracking fault the guest survives, the 128
@@ -34,11 +36,12 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <Zydis/Zydis.h>
+#include <cpuid.h>
 
-typedef struct { uint64_t begin, end; uint8_t red, hooked, bad, indirect; } RzFunction;
+typedef struct { uint64_t begin, end; uint8_t red, hooked, bad, indirect, rewrite; } RzFunction;
 /* One decoded instruction of a function being rewritten. branch: a direct jcc (1) or jmp (2)
  * that a stub can repeat with a 32-bit displacement (cc: its condition), to image offset `to`. */
-typedef struct { uint64_t at, to; uint8_t length, fault, move, target, moved, branch, cc; } RzOp;
+typedef struct { uint64_t at, to; uint8_t length, fault, move, target, moved, branch, cc, rewrite; } RzOp;
 
 static unsigned char *rz_image;
 static uint64_t rz_size, rz_code_end;
@@ -57,6 +60,8 @@ static volatile LONG *rz_warned;
 static size_t rz_skipped_count, rz_skipped_cap;
 static int rz_scribble, rz_ready, rz_protecting;
 static unsigned rz_isa_needed;
+static int rz_rewrite_insertq;
+static uint64_t rz_rewritten;
 /* Each stub's start and the site it replaces (sorted by stub); test mode diagnostics: the red-zone
  * functions (sorted ranges), first-fault flags, fault counts. */
 typedef struct { uint32_t begin, end; } RzRange;
@@ -147,8 +152,12 @@ static int branch_target(const ZydisDecodedInstruction *in, const ZydisDecodedOp
     }
     return 0;
 }
+static int rewritable(uint64_t at, ZydisMnemonic m) {
+    unsigned char scratch[ISA_INSERTQ_REWRITE_MAX];
+    return rz_rewrite_insertq && m == ZYDIS_MNEMONIC_INSERTQ && isa_insertq_rewrite(rz_image + at, scratch);
+}
 /* Pass 1: branch targets (all functions), whether the function keeps data below rsp, whether a
- * patch changed it, and whether it has an indirect jump. */
+ * patch changed it, whether it has an indirect jump, and whether it has an instruction to rewrite. */
 static void scan_function(RzFunction *f) {
     for (uint64_t at = f->begin; at < f->end;) {
         ZydisDecodedInstruction in;
@@ -167,6 +176,7 @@ static void scan_function(RzFunction *f) {
                      ops[0].mem.index == ZYDIS_REGISTER_NONE)) {
             f->indirect = 1;
         }
+        if (rewritable(at, in.mnemonic)) f->rewrite = 1;
         for (unsigned k = 0; k < in.operand_count_visible; ++k)
             if (ops[k].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[k].mem.type != ZYDIS_MEMOP_TYPE_AGEN &&
                 ops[k].mem.base == ZYDIS_REGISTER_RSP && ops[k].mem.disp.value < 0)
@@ -180,6 +190,10 @@ static int prefetch(ZydisMnemonic m) {
 }
 static int emulated_isa(ZydisMnemonic m) {
     if (rz_isa_needed & ISA_EMULATE_MOVBE && m == ZYDIS_MNEMONIC_MOVBE) return 1;
+    if (rz_isa_needed & ISA_EMULATE_SSE4A &&
+        (m == ZYDIS_MNEMONIC_EXTRQ || m == ZYDIS_MNEMONIC_INSERTQ || m == ZYDIS_MNEMONIC_MOVNTSD ||
+         m == ZYDIS_MNEMONIC_MOVNTSS))
+        return 1;
     return rz_isa_needed & ISA_EMULATE_BMI1 &&
            (m == ZYDIS_MNEMONIC_ANDN || m == ZYDIS_MNEMONIC_BEXTR || m == ZYDIS_MNEMONIC_BLSI ||
             m == ZYDIS_MNEMONIC_BLSMSK || m == ZYDIS_MNEMONIC_BLSR);
@@ -212,6 +226,7 @@ static void classify(const ZydisDecodedInstruction *in, const ZydisDecodedOperan
     if (rsp && rip) move = 0;
     op->fault = (uint8_t)fault;
     op->move = (uint8_t)move;
+    op->rewrite = (uint8_t)rewritable(op->at, in->mnemonic);
 }
 /* Copies the instruction at image offset `at` to `out` (its address), fixing an rsp-based
  * displacement (+128: rsp is 128 lower in the stub) or a rip-relative one. Returns the new length,
@@ -269,7 +284,7 @@ static int emit_group(const RzFunction *f, RzOp *ops, size_t k, size_t j) {
     static const unsigned char up[] = {0x48, 0x8d, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00}; /* lea rsp,[rsp+128] */
     const uint64_t site = ops[k].at, resume = ops[j - 1].at + ops[j - 1].length;
     size_t worst = 5;
-    for (size_t m = k; m < j; ++m) worst += ops[m].length + 4u + sizeof(down) + sizeof(up) + 6u;
+    for (size_t m = k; m < j; ++m) worst += ops[m].length + 4u + sizeof(down) + sizeof(up) + 6u + ISA_INSERTQ_REWRITE_MAX;
     if (worst > RZ_CHUNK) return 0;
     if (!rz_chunks || rz_chunk_used + worst > RZ_CHUNK) {
         unsigned char *chunk = rz_no_space || rz_chunks == RZ_MAX_CHUNKS ? NULL : allocate_near(RZ_CHUNK);
@@ -294,7 +309,8 @@ static int emit_group(const RzFunction *f, RzOp *ops, size_t k, size_t j) {
             continue;
         }
         if (!low) { memcpy(p, down, sizeof(down)); p += sizeof(down); low = 1; }
-        const unsigned n = relocate(ops[m].at, f->end, p);
+        const unsigned n = ops[m].rewrite ? (unsigned)isa_insertq_rewrite(rz_image + ops[m].at, p)
+                                          : relocate(ops[m].at, f->end, p);
         if (!n) return 0;
         p += n;
     }
@@ -319,7 +335,10 @@ static int emit_group(const RzFunction *f, RzOp *ops, size_t k, size_t j) {
     const size_t used = (size_t)(p - base + 15) & ~(size_t)15;
     rz_stub_bytes += used - rz_chunk_used;
     rz_chunk_used = used;
-    for (size_t m = k; m < j; ++m) ops[m].moved = 1;
+    for (size_t m = k; m < j; ++m) {
+        ops[m].moved = 1;
+        rz_rewritten += ops[m].rewrite;
+    }
     return 1;
 }
 static void note_skipped(uint64_t at) {
@@ -365,7 +384,7 @@ static void protect_function(const RzFunction *f, int list, uint64_t *moved, uin
     size_t next_free = 0; /* instructions before it are already in a stub */
     if (!f->hooked && !f->indirect)
         for (size_t i = 0; i < n; ++i) {
-            if (i < next_free || !ops[i].fault || !ops[i].move) continue;
+            if (i < next_free || !(ops[i].rewrite || (f->red && ops[i].fault)) || !ops[i].move) continue;
             /* The access first, then up to four instructions before it if the ones after it run
              * out. Direct jcc/jmp may be part of a group; nothing follows a jmp in one. */
             for (size_t back = 0; back <= 4 && back <= i && i - back >= next_free; ++back) {
@@ -388,7 +407,7 @@ static void protect_function(const RzFunction *f, int list, uint64_t *moved, uin
             }
         }
     for (size_t i = 0; i < n; ++i) {
-        if (!ops[i].fault) continue;
+        if (!f->red || !ops[i].fault) continue;
         if (ops[i].moved) { ++here_moved; continue; }
         ++here_skipped;
         note_skipped(ops[i].at);
@@ -443,7 +462,9 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
     const char *scribble = getenv("SOS_RED_ZONE_SCRIBBLE");
     rz_image = image;
     rz_size = size;
-    rz_isa_needed = isa_emulation_needed(isa_host_features());
+    const IsaHostFeatures host = isa_host_features();
+    rz_isa_needed = isa_emulation_needed(host);
+    rz_rewrite_insertq = (rz_isa_needed & ISA_EMULATE_SSE4A) && (host.leaf1_ecx & bit_AVX);
     rz_scribble = scribble && scribble[0] == '1';
     if (rz_scribble) puts("Red zone: test mode, the 128 bytes below rsp are overwritten after each handled fault");
     rz_ready = 1;
@@ -481,7 +502,7 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
                     if (!grown) { free(functions); puts("Red zone: protection unavailable (memory)"); return 0; }
                     functions = grown;
                 }
-                functions[count++] = (RzFunction){pc, pc + (uint64_t)range, 0, 0, 0, 0};
+                functions[count++] = (RzFunction){pc, pc + (uint64_t)range, 0, 0, 0, 0, 0};
             }
             at += 12 + (uint64_t)entries * 8 - 4;
         }
@@ -522,7 +543,7 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
     uint64_t moved = 0, skipped = 0, groups = 0, protected_functions = 0;
     for (size_t i = 0; i < count; ++i) {
         const RzFunction *f = &functions[i];
-        if (!f->red) continue;
+        if (!f->red && !f->rewrite) continue;
         if (f->bad) {
             if (list) printf("Red zone: function %#" PRIx64 " (+%#" PRIx64 ") undecodable, left as it is\n", f->begin, f->end - f->begin);
             continue;
@@ -551,8 +572,9 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
     QueryPerformanceFrequency(&hz);
     printf("Red zone: %u tables, %zu functions scanned, %" PRIu64 " keep data below rsp, %" PRIu64 " protected "
            "(left alone: %" PRIu64 " patched, %" PRIu64 " with an indirect jump, %" PRIu64 " undecodable); %" PRIu64
-           " accesses moved in %" PRIu64 " stubs (%zu KiB in %zu blocks), %" PRIu64 " left in place; %.0f ms\n",
+           " accesses moved in %" PRIu64 " stubs (%zu KiB in %zu blocks), %" PRIu64 " left in place, %" PRIu64 " SSE4a instructions rewritten; %.0f ms\n",
            tables, count, red, protected_functions, hooked, indirect, bad, moved, groups, rz_stub_bytes / 1024, rz_chunks, skipped,
+           rz_rewritten,
            (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)hz.QuadPart);
     return moved;
 }
