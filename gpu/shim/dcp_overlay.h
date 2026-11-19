@@ -37,7 +37,8 @@ void ShowNotice(const std::string& text);
 /// Whether anything is drawn this frame.
 bool Visible();
 
-/// Counts a presented game frame (the frame rate in the window title).
+/// Counts a new game frame shown in the window: the frame rate in the title and the counter. A frame shown again, a
+/// redraw and a frame skipped by the 30 FPS setting are not counted.
 void LogPresent();
 u64 PresentedFrames();
 

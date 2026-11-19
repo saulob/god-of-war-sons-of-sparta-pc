@@ -155,9 +155,10 @@ void TestScaling() {
     Check(ReadValues("anisotropy = 3\n").anisotropy == 0 && ReadValues("anisotropy = 32\n").anisotropy == 0,
           "invalid anisotropy is the game's own");
     const std::string rasterizer = Source("gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp");
+    const std::string forcing = Source("gpu/shadps4/video_core/texture_cache/forced_anisotropy.h");
     Check(Contains(rasterizer, "DcpSettings::Get().anisotropy,") &&
-              Contains(rasterizer, "forced == 16 ? AmdGpu::AnisoRatio::Sixteen") &&
-              Contains(rasterizer, "DcpGraphics::ForcedAnisotropyRatio("),
+              Contains(forcing, "forced == 16 ? AmdGpu::AnisoRatio::Sixteen") &&
+              Contains(forcing, "DcpGraphics::ForcedAnisotropyRatio("),
           "anisotropy override reaches the sampler");
 }
 
@@ -187,13 +188,15 @@ void TestFrameRate() {
     for (const int rate : {30, 60, 90, 120, 144, 165, 240, 0}) {
         Check(ReadValues("frame_rate = " + std::to_string(rate) + "\n").frame_rate == rate, "frame rate read: " + std::to_string(rate));
     }
-    Check(Pacing::RepeatCadenceHz(60) == 0 && Pacing::RepeatCadenceHz(30) == 0, "60 and 30 add no repeats");
-    Check(Pacing::RepeatCadenceHz(90) == 90 && Pacing::RepeatCadenceHz(240) == 240, "faster rates repeat up to the rate");
-    Check(Pacing::RepeatCadenceHz(0) == Pacing::kUnlimitedCadenceHz, "Unlimited repeats up to 480 a second");
-    Check(Pacing::RepeatCadenceHz(240, true, 143.856) == 144, "VSync bounds the rate by the display");
-    Check(Pacing::RepeatCadenceHz(144, true, 59.94) == 0, "a 60 Hz display leaves nothing to repeat");
-    Check(Pacing::RepeatCadenceHz(0, true, 165.0) == 165, "Unlimited with VSync follows the display");
-    Check(Pacing::RepeatCadenceHz(144, false, 60.0) == 144, "VSync off ignores the display");
+    Check(ReadValues("frame_rate = 45\n").frame_rate == 60 && ReadValues("").frame_rate == 60, "an invalid or missing rate is 60");
+    Check(Pacing::GuestVblankHz(60) == 60 && Pacing::GuestVblankHz(30) == 60, "60 and 30 keep the 60 Hz guest vblank");
+    Check(Pacing::GuestVblankHz(90) == 90 && Pacing::GuestVblankHz(240) == 240, "faster rates raise the guest vblank to the rate");
+    Check(Pacing::GuestVblankHz(0) == Pacing::kUnlimitedVblankHz, "Unlimited raises it to 480");
+    Check(Pacing::GuestVblankHz(240, true, 143.856) == 144, "VSync bounds the rate by the display");
+    Check(Pacing::GuestVblankHz(144, true, 59.94) == 60, "a 60 Hz display leaves the original rate");
+    Check(Pacing::GuestVblankHz(0, true, 165.0) == 165, "Unlimited with VSync follows the display");
+    Check(Pacing::GuestVblankHz(144, false, 60.0) == 144, "VSync off ignores the display");
+    Check(Pacing::ShownFramesPerSecond(30) == 30 && Pacing::ShownFramesPerSecond(120) == 120, "the new frames shown follow the rate");
     int shown = 0;
     for (std::uint64_t flip = 0; flip < 60; ++flip) {
         shown += Pacing::PresentsFlip(30, flip) ? 1 : 0;
@@ -206,26 +209,20 @@ void TestFrameRate() {
     Check(shown == 60, "60 shows every flip");
     Check(Pacing::PresentsFlip(30, 1, 1), "a game already flipping every second vblank is not halved again");
 
-    Pacing::FrameLimiter limiter(120, std::chrono::steady_clock::time_point{});
-    Check(limiter.Enabled() && limiter.Period() == std::chrono::nanoseconds(8333333), "120 repeats on an 8.33 ms period");
-    Check(!Pacing::FrameLimiter(0, {}).Enabled(), "no limiter below the cadence");
-
     const std::string driver = Source("gpu/shadps4/core/libraries/videoout/driver.cpp");
-    Check(Contains(driver, "PresentsFlip(DcpSettings::Get().frame_rate.load(), flips_consumed++,\n                                                      req.port->flip_rate);") ||
-              Contains(driver, "flips_consumed++,"),
-          "flips are filtered by the setting");
+    Check(Contains(driver, "flips_consumed++,"), "flips are filtered by the setting");
     Check(InOrder(driver, "if (!present) {", "presenter->RetireFrame(frame);"), "a skipped flip is retired, not dropped");
-    Check(Contains(driver, "vblank_period(1000000000 /\n                                                 EmulatorSettings.GetVblankFrequency())") ||
-              Contains(driver, "EmulatorSettings.GetVblankFrequency()"),
-          "the guest vblank comes from the fixed vblank frequency");
-    Check(Contains(Source("gpu/shim/core/emulator_settings.h"), "u32 GetVblankFrequency() { return 60; }"),
-          "the guest vblank is 60 Hz at every rate");
-    size_t uses = 0;
-    for (size_t at = driver.find("target_fps"); at != std::string::npos; at = driver.find("target_fps", at + 1)) {
-        ++uses;
-    }
-    Check(uses <= 7, "the frame rate setting feeds only the presentation limiter");
-    Check(InOrder(driver, "vblank_status.count++;", "limiter.Enabled() && main_port.is_open"), "repeats follow the vblank");
+    Check(Contains(driver, "SetVblankFrequency(DcpFramePacing::GuestVblankHz("), "the guest vblank comes from the setting");
+    Check(Contains(driver, "vblank_period(1000000000 /"), "the present thread ticks at the guest vblank");
+    Check(Contains(Source("gpu/shim/core/emulator_settings.h"), "void SetVblankFrequency(u32 hz) { vblank_frequency = hz; }"),
+          "the driver can set the guest vblank");
+    const std::string overlay = Source("gpu/shim/dcp_overlay_generic.cpp");
+    Check(InOrder(overlay, "void LogPresent() {", "frame_ms_avg = frame_ms_avg == 0.0f ? ms"),
+          "the frame counter measures the time between new game frames");
+    const size_t begin = overlay.find("bool BeginPresent() {");
+    Check(begin != std::string::npos && overlay.find("frame_ms_avg", begin) > overlay.find("return Visible();", begin),
+          "a redraw does not move the frame counter");
+    Check(Contains(Source("gpu/shim/window.cpp"), "DcpOverlay::PresentedFrames()"), "the title counts the same new game frames");
 }
 
 void TestTitle() {

@@ -35,7 +35,7 @@ struct GameBuild {
     std::span<const PackageLayer> layers;
     std::span<const char* const> alternate_eboots = {};
     const char* code_build = "";
-    bool skip_intro = false; // the startup video is the first AvPlayer source of this build
+    bool skip_intro = false; // the game code the skip uses is verified for this build (src/sos_skip_intro.c)
     std::span<const SosResolutionSite> resolution_sites = {}; // empty: the build runs only at its native size
 };
 

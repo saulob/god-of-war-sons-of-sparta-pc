@@ -37,7 +37,7 @@ std::atomic<u32> background_done{0}, background_total{0};
 std::string notice_text;
 std::atomic<std::chrono::steady_clock::rep> notice_until{0};
 float base_scale = 1.0f;
-std::chrono::steady_clock::time_point last_present{};
+std::chrono::steady_clock::time_point last_present{}, last_game_frame{};
 float frame_ms_avg = 0.0f;
 float last_interval_ms = 0.0f;
 std::atomic<u64> presented_frames{0};
@@ -135,9 +135,6 @@ bool BeginPresent() {
     const float ms = std::chrono::duration<float, std::milli>(now - last_present).count();
     last_present = now;
     last_interval_ms = ms;
-    if (ms > 0.0f && ms < 1000.0f) {
-        frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
-    }
     return Visible();
 }
 
@@ -254,7 +251,15 @@ bool Visible() {
     return initialized && (loading || background_total || DcpSettings::Get().show_fps || NoticeShown());
 }
 
-void LogPresent() { presented_frames.fetch_add(1, std::memory_order_relaxed); }
+void LogPresent() {
+    presented_frames.fetch_add(1, std::memory_order_relaxed);
+    const auto now = std::chrono::steady_clock::now();
+    const float ms = std::chrono::duration<float, std::milli>(now - last_game_frame).count();
+    last_game_frame = now;
+    if (ms > 0.0f && ms < 1000.0f) {
+        frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
+    }
+}
 u64 PresentedFrames() { return presented_frames.load(std::memory_order_relaxed); }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {

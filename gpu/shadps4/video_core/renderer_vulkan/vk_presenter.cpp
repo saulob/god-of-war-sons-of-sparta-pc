@@ -398,6 +398,25 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     fsr_settings.rcas_attenuation = DcpGraphics::RcasAttenuation(graphics.rcas_strength);
     DcpSettings::Get().image_width = int(image_size.width);
     DcpSettings::Get().image_height = int(image_size.height);
+    {
+        struct PostProcessReport {
+            u32 image_width, image_height, window_width, window_height;
+            bool smaa, fsr, rcas;
+            bool operator==(const PostProcessReport&) const = default;
+        };
+        static PostProcessReport reported{};
+        const auto plan = DcpGraphics::PlanPostProcess(graphics.smaa, fsr_settings.enable, fsr_settings.use_rcas,
+                                                       int(image_size.width), int(image_size.height),
+                                                       int(frame->width), int(frame->height));
+        const PostProcessReport now{image_size.width, image_size.height, frame->width, frame->height,
+                                    plan.smaa, plan.fsr_pass, plan.rcas};
+        if (!(now == reported)) {
+            reported = now;
+            std::printf("GPU: game image %ux%u, window %ux%u, SMAA pass %s, FSR 1 pass %s, RCAS %s\n",
+                        now.image_width, now.image_height, now.window_width, now.window_height,
+                        plan.smaa ? "on" : "off", plan.fsr_pass ? "on" : "off", plan.rcas ? "on" : "off");
+        }
+    }
     DcpSettings::Get().window_width = int(frame->width);
     DcpSettings::Get().window_height = int(frame->height);
     DcpSettings::Get().rcas_applied =
@@ -771,7 +790,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         PresentUltrawideSideMask(cmdbuf, swapchain.ImageView(), blit.dstOffsets[1].x - blit.dstOffsets[0].x,
                                  blit.dstOffsets[1].y - blit.dstOffsets[0].y, blit.dstOffsets[0].x,
                                  blit.dstOffsets[0].y);
-        DcpOverlay::LogPresent();
+        if (!is_reusing_frame && is_game_frame) {
+            DcpOverlay::LogPresent();
+        }
         if (overlay) {
             DcpOverlay::Render(cmdbuf, swapchain.ImageView(), extent);
         }

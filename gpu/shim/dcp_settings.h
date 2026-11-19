@@ -66,7 +66,7 @@ struct Values {
     std::atomic<unsigned> features{AllFeatures};
     // Set by the window: the refresh rate of the display it opened on; 0 when unknown.
     std::atomic<double> display_refresh_hz{0.0};
-    // Presentation pacing (driver.cpp). 0: Unlimited.
+    // The guest vblank and the flips shown (driver.cpp). 0: Unlimited.
     std::atomic<int> frame_rate{60};
     // Port hotkeys as SDL scancodes (dcp_keys.h): the Cheats menu and the window mode switch.
     std::atomic<int> menu_key{SDL_SCANCODE_F10}, window_mode_key{SDL_SCANCODE_F11};

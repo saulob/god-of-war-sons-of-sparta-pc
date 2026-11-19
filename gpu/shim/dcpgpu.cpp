@@ -26,7 +26,6 @@
 #include "common/path_util.h"
 #include "common/rdtsc.h"
 #include "video_core/renderdoc.h"
-#include "core/libraries/avplayer/avplayer_skip.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/libs.h"
@@ -225,12 +224,6 @@ extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
     DcpSettings::Load(config->settings_file);
     DcpSettings::Get().features = config->features;
     EmulatorSettings.SetInternalScreenSize(u32(config->display_width), u32(config->display_height));
-    const bool skip_intro = DcpSettings::Get().skip_intro && (config->features & DCP_GPU_FEATURE_SKIP_INTRO);
-    Libraries::AvPlayer::SkipIntro::Global().Configure(skip_intro);
-    if (skip_intro) {
-        std::printf("Skip Intro: the startup video is cut after %llu ms\n",
-                    static_cast<unsigned long long>(Libraries::AvPlayer::SkipIntro::kPlayableMillis));
-    }
     SelectRenderer();
     const std::string user_dir = config->user_dir;
     Common::FS::SetUserDir(std::filesystem::path(std::u8string(user_dir.begin(), user_dir.end())));

@@ -1,7 +1,9 @@
 /* Controller prompts: which button symbols the game shows. The game keeps its current controller type in
- * InputOverseer.m_currentControllerUsed (GamepadType) and picks its icons, text sprites and UI events from it. The type
- * is stored in four places: the constructor's default and three DualShock detections. PlayStation keeps the original
- * values (4 and 3); Xbox stores XboxSeries (2) in all four. */
+ * InputOverseer.m_currentControllerUsed (GamepadType: 1 XboxOne, 2 XboxSeries, 3 PS4, 4 PS5) and picks its icon map,
+ * text-sprite atlas, layout offsets and UI modules from it. PlayStation leaves the game's code as it is. Xbox changes every
+ * place of the build that writes the type (the constructor and three DualShock detections store XboxSeries) and every place
+ * that reads it (the atlas and icon map choice, the text builder, the UI module listener, the keybind layout), so no later
+ * detection can bring the PlayStation symbols back. The sites of each build are in controller_prompts_sites.h. */
 #ifndef SOS_CONTROLLER_PROMPTS_H
 #define SOS_CONTROLLER_PROMPTS_H
 
@@ -29,17 +31,33 @@ int sos_controller_prompts_supported(const char *build_key);
 /* The style the settings file holds; PlayStation when the file, the line or the value is missing or invalid. */
 int sos_controller_prompts_from_file(const char *settings_file);
 
-/* The style the verified sites hold now; -1 when the build has none or the bytes are not the verified code. */
+/* The style the verified sites hold now; -1 when the build has none, the bytes are not the verified code or the sites are
+ * only partly patched. */
 int sos_controller_prompts_state(const uint8_t *image, uint64_t size, const char *build_key);
 
-/* Makes the four sites hold `style`. Returns the style they hold afterwards, -1 when nothing was written because the
+/* Makes the sites hold `style`. Returns the style they hold afterwards, -1 when nothing was written because the
  * build has no verified sites or the bytes are not the verified code; `message` says what happened, for the log. */
 int sos_controller_prompts_apply(uint8_t *image, uint64_t size, const char *build_key, int style, char *message,
                                  size_t message_size);
 
-/* The image offsets of the bytes a style changes (at most 4), whichever style they hold; 0 when the bytes are not the
- * verified code. */
-int sos_controller_prompts_value_offsets(const uint8_t *image, uint64_t size, const char *build_key, uint64_t offsets[4]);
+/* One place of the game code that a style changes: the bytes around it identify the verified code. */
+typedef struct {
+    uint32_t offset;
+    uint8_t length;
+    uint8_t immediate; /* the bytes are part of an instruction's immediate value */
+    uint8_t before[8];
+    uint8_t original[4];
+    uint8_t xbox[4];
+    uint8_t after[8];
+} SosPromptSite;
+
+/* The sites of a build, in table order; NULL when the build has none. */
+const SosPromptSite *sos_controller_prompts_sites(const char *build_key, size_t *count);
+
+/* The image ranges a style changes that are plain immediates (the red-zone analysis can ignore their value), whichever style
+ * they hold; the number written to `offsets` and `lengths` (at most `capacity`), 0 when the bytes are not the verified code. */
+size_t sos_controller_prompts_value_ranges(const uint8_t *image, uint64_t size, const char *build_key, uint64_t *offsets,
+                                           uint8_t *lengths, size_t capacity);
 
 #ifdef __cplusplus
 }

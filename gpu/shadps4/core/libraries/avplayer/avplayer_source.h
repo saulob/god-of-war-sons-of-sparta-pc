@@ -215,7 +215,6 @@ private:
     std::atomic_bool m_is_looping = false;
     std::atomic_bool m_is_paused = false;
     std::atomic_bool m_is_eof = false;
-    bool m_skip_intro = false;
 
     std::unique_ptr<IDataStreamer> m_up_data_streamer;
 

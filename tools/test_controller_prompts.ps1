@@ -1,5 +1,5 @@
-# Headless test of the Controller prompts patch: the setting, the verified sites of CUSA57767 1.00 and 1.01, the patch on
-# a synthetic image and, when the boot images are installed, the real code. No game, launcher or window is started.
+# Headless test of the Controller prompts patch: the setting, the verified sites of CUSA57767 1.00 and 1.01, the patch on a synthetic
+# image and, when the boot images are installed, the real code and the game's own data. No game, launcher or window is started.
 [CmdletBinding()]
 param()
 
@@ -32,7 +32,9 @@ $python = Get-Command python3, python -ErrorAction SilentlyContinue | Select-Obj
 if ($python) {
     & $python.Source -I (Join-Path $root 'scripts\prompt_assets_check.py')
     if ($LASTEXITCODE -ne 0) { $result = 1 }
+    & $python.Source -I (Join-Path $root 'scripts\prompt_sites.py')
+    if ($LASTEXITCODE -ne 0) { $result = 1 }
 }
-else { Write-Host '  [skip] no Python: the prompt assets were not read' }
+else { Write-Host '  [skip] no Python: the prompt assets and the game code were not read' }
 Remove-Item -LiteralPath $temp -Recurse -Force
 exit $result

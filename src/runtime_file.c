@@ -256,12 +256,18 @@ static int contains(const void *buffer,uint64_t size,const char *text) {
         if (*at==*text && !memcmp(at,text,n)) return 1;
     return 0;
 }
-/* Guest log lines that mark coarse startup phases before the splash video. */
+/* Guest log lines that mark coarse startup phases, each noted once. */
 static void note_guest_milestone(const void *buffer,uint64_t size) {
     static const struct { const char *text, *milestone; } marks[]={
         {"NpToolkit Initialized","guest: NpToolkit initialized"},
         {"Finished Initializing PS4 Scripts","guest: PS4 scripts initialized"},
         {"SplashScreen","guest: first SplashScreen line"},
+        {"SplashScreen: Starting MarkGameAsPreviouslyBooted","guest: booted mark begins"},
+        {"[LOAD] SaveSystem TryLoadGlobalData","guest: global save load begins"},
+        {"SaveSystem completed global save data file","guest: global save loaded"},
+        {"SaveSystem loading save file at index 3","guest: save slots loaded"},
+        {"SplashScreen: Finished MarkGameAsPreviouslyBooted","guest: booted mark finished"},
+        {"SplashScreen: Starting LoadSceneAsync","guest: scene load begins"},
     };
     static int seen[sizeof(marks)/sizeof(*marks)];
     if (!sos_startup_profile_active()) return;

@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <xxhash.h>
 #include "dcp_amd_water_fix.h"
 #include "dcp_toggles.h"
@@ -23,6 +25,7 @@
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "dcp_graphics.h"
+#include "video_core/texture_cache/forced_anisotropy.h"
 #include "dcp_settings.h"
 #include "dcp_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -2397,23 +2400,15 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 }
 
 void Rasterizer::ForceAnisotropy(AmdGpu::Sampler& sharp, bool is_depth) const {
-    const bool linear_min = sharp.xy_min_filter == AmdGpu::Filter::Bilinear ||
-                            sharp.xy_min_filter == AmdGpu::Filter::AnisoLinear;
-    const int forced = DcpGraphics::ForcedAnisotropyRatio(
-        DcpSettings::Get().anisotropy, is_depth || pipeline_is_compute,
-        sharp.mip_filter != AmdGpu::MipFilter::None, linear_min, AmdGpu::IsAnisoFilter(sharp.xy_min_filter),
-        AmdGpu::IsAnisoFilter(sharp.xy_min_filter) ? sharp.MaxAniso() : 1.0f);
+    const int forced = VideoCore::ForceSamplerAnisotropy(sharp, DcpSettings::Get().anisotropy, is_depth || pipeline_is_compute);
     if (forced == 0) {
         return;
     }
-    const auto ratio = forced == 16 ? AmdGpu::AnisoRatio::Sixteen
-        : forced == 8 ? AmdGpu::AnisoRatio::Eight
-        : forced == 4 ? AmdGpu::AnisoRatio::Four : AmdGpu::AnisoRatio::Two;
-    sharp.xy_min_filter.Assign(AmdGpu::Filter::AnisoLinear);
-    if (sharp.xy_mag_filter == AmdGpu::Filter::Bilinear) {
-        sharp.xy_mag_filter.Assign(AmdGpu::Filter::AnisoLinear);
+    static std::atomic<int> reported_ratio{0};
+    if (reported_ratio.exchange(forced) != forced) {
+        std::printf("GPU: texture filtering %dx forced on game samplers (device limit %.0fx)\n", forced,
+                    instance.IsAnisotropicFilteringSupported() ? instance.MaxSamplerAnisotropy() : 1.0f);
     }
-    sharp.max_aniso.Assign(ratio);
 }
 
 void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,

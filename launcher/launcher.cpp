@@ -133,20 +133,20 @@ constexpr char kRenderResolutionHelp[] =
     "The resolution the game renders at. It is separate from the window size: the picture is scaled to the window. "
     "Above 1080p the game runs in its PlayStation 4 Pro mode and needs a powerful graphics card.";
 constexpr char kControllerPromptsHelp[] =
-    "PlayStation keeps the game's original symbols. Xbox shows Xbox buttons; the game has fewer Xbox symbols, so a "
-    "few prompts may still show PlayStation ones. Applies at the next game start.";
-constexpr char kFrameCounterHelp[] = "Shows the frame rate and frame time in a corner of the game.";
-constexpr char kSkipIntroHelp[] = "Skips the startup video and goes directly to the title screen.";
+    "PlayStation keeps the game's original symbols. Xbox shows the game's own Xbox buttons; the game ships no Xbox art "
+    "for stick directions and a few menu prompts, which may appear blank. Applies at the next game start.";
+constexpr char kFrameCounterHelp[] = "Shows the new game frames a second and the time between them in a corner of the game.";
+constexpr char kSkipIntroHelp[] = "Skips the startup logos and video; the game continues to the title screen as usual.";
 constexpr char kAntiAliasingHelp[] =
     "SMAA smooths jagged edges on the finished picture, at a small cost in performance.";
 constexpr char kAnisotropyHelp[] =
     "Sharper textures on floors and walls seen at an angle. Game uses the game's own filtering.";
 constexpr char kFrameRateHelp[] =
-    "60 FPS is the original game rate. The game always makes 60 new frames a second at its original speed, so no "
-    "setting changes gameplay. 30 shows every second frame. Faster rates show the last frame again until the next one "
-    "(no interpolation), up to the display's refresh with VSync on; Unlimited repeats up to 480 a second.";
+    "60 FPS is the game's original rate. 30 FPS shows every second frame at the game's normal speed. Above 60 the game "
+    "itself renders that many new frames a second, as far as your PC allows (its physics step stays at 60 Hz); with "
+    "VSync on the display's refresh is the limit. Unlimited goes up to 480.";
 constexpr char kShowFpsTitleHelp[] =
-    "Shows the frame rate in the window title: God of War: Sons of Sparta | FPS: 60.00";
+    "Shows the new game frames a second in the window title: God of War: Sons of Sparta | FPS: 60.00";
 constexpr char kShowResolutionTitleHelp[] =
     "Shows the game's render resolution in the window title: God of War: Sons of Sparta | 1920x1080";
 constexpr char kAllowOverlayProgramsHelp[] =

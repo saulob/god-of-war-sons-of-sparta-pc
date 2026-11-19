@@ -19,6 +19,7 @@
 #include "dcpgpu.h"
 #include "sos_launcher.h"
 #include "skip_intro.h"
+#include "sos_skip_intro.h"
 #include "controller_prompts.h"
 #include "trophies/trophy_runtime.h"
 #include "sos_image_format.h"
@@ -763,7 +764,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    image = allocate(round_page(size));
+    const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
+    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES);
+    image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
     image_size = size;
@@ -808,9 +811,10 @@ int main(int argc, char **argv) {
         char key[64];
         if (known_build) {
             snprintf(key, sizeof(key), "%s-%s", game_build.title_id, game_build.version);
-            uint64_t offsets[4];
-            const int values = sos_controller_prompts_value_offsets(image, size, key, offsets);
-            for (int i = 0; i < values; ++i) runtime_redzone_add_volatile(offsets[i], 1);
+            uint64_t offsets[16];
+            uint8_t lengths[16];
+            const size_t values = sos_controller_prompts_value_ranges(image, size, key, offsets, lengths, 16);
+            for (size_t i = 0; i < values; ++i) runtime_redzone_add_volatile(offsets[i], lengths[i]);
         }
         if (style == SOS_PROMPTS_XBOX && known_build) {
             char message[200];
@@ -984,8 +988,19 @@ int main(int argc, char **argv) {
         sos_startup_milestone("red zone ready");
     }
 #endif
+    if (skip_intro_wanted) {
+        SosGameBuild skip_build;
+        if (sos_game_build(paths.image_dir, &skip_build)) {
+            char skip_key[64];
+            snprintf(skip_key, sizeof(skip_key), "%s-%s", skip_build.title_id, skip_build.version);
+            char skip_message[160];
+            sos_skip_intro_apply(image, size, skip_key, image + round_page(size), stub_area, skip_message, sizeof(skip_message));
+            printf("Skip Intro: %s\n", skip_message);
+        }
+    }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);
+    protect(image + round_page(size), stub_area, 5);
     int executable_entry = 0;
     for (uint64_t i = 0; i < ns; ++i) {
         protect(image + segments[i].address, round_page(segments[i].size), (unsigned)segments[i].flags);

@@ -24,7 +24,8 @@ public:
         }
     }
     u32 GetReadbacksMode() { return GpuReadbacksMode::Relaxed; }
-    u32 GetVblankFrequency() { return 60; }
+    u32 GetVblankFrequency() { return vblank_frequency; }
+    void SetVblankFrequency(u32 hz) { vblank_frequency = hz; }
     u32 GetFrameLimit() { return 0; }
     bool IsCopyGpuBuffers() { return false; }
     bool IsDirectMemoryAccessEnabled() { return false; }
@@ -49,5 +50,6 @@ public:
 
 private:
     u32 internal_width = 1920, internal_height = 1080;
+    u32 vblank_frequency = 60;
 };
 #define EmulatorSettings (*EmulatorSettingsImpl::GetInstance())

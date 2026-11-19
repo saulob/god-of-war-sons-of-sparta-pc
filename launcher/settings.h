@@ -35,8 +35,8 @@ inline constexpr char kDefaultAspectRatio[] = "16:9";
 inline constexpr char kGraphicsCardKey[] = "graphics_card";
 inline constexpr char kAntiAliasingKey[] = "smaa";
 inline constexpr char kAnisotropyKey[] = "anisotropy";
-// How often frames reach the window (30, 60, 90, 120, 144, 165, 240; 0 is Unlimited). Presentation only: the game keeps
-// its original timing (gpu/shim/dcp_frame_pacing.h).
+// New frames a second (30, 60, 90, 120, 144, 165, 240; 0 is Unlimited): 30 shows every second flip, above 60 the guest
+// vblank is raised (gpu/shim/dcp_frame_pacing.h).
 inline constexpr char kFrameRateKey[] = "frame_rate";
 inline constexpr char kShowFpsTitleKey[] = "show_fps_title";
 inline constexpr char kShowResolutionTitleKey[] = "show_resolution_title";

@@ -79,7 +79,10 @@ void TestTextureFiltering() {
     Check(Contains(rasterizer, "prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage)") &&
               Contains(rasterizer, "auto ssharp ="),
           "the override changes a copy of the game's sampler");
-    Check(Contains(rasterizer, "sharp.max_aniso.Assign(ratio);") && Contains(rasterizer, "sharp.xy_min_filter.Assign(AmdGpu::Filter::AnisoLinear);"),
+    const std::string forcing = Source("gpu/shadps4/video_core/texture_cache/forced_anisotropy.h");
+    Check(Contains(rasterizer, "VideoCore::ForceSamplerAnisotropy(sharp, DcpSettings::Get().anisotropy, is_depth || pipeline_is_compute)"),
+          "the rasterizer forces the setting on every sampler it binds");
+    Check(Contains(forcing, "sharp.max_aniso.Assign(ratio);") && Contains(forcing, "sharp.xy_min_filter.Assign(AmdGpu::Filter::AnisoLinear);"),
           "the forced ratio and the anisotropic filter are written into the sampler");
     Check(Contains(Source("gpu/shadps4/video_core/texture_cache/texture_cache.cpp"), "XXH3_64bits(&sampler, sizeof(sampler))"),
           "the sampler cache key hashes the whole sampler, effective ratio included");
@@ -295,54 +298,47 @@ void TestFramePacing() {
         for (std::uint64_t flip = 0; flip < 30; ++flip) {
             halved += Pacing::PresentsFlip(setting, flip, 1) ? 1 : 0;
         }
-        Check(halved == 30, "a game flipping at 30 is never shown at 15: " + std::to_string(setting));
+        Check(halved == 30, "a game already flipping at 30 is never shown at 15: " + std::to_string(setting));
     }
-    const struct { int setting; unsigned cadence; } free_run[] = {{30, 0}, {60, 0}, {90, 90}, {120, 120}, {144, 144}, {165, 165}, {240, 240}, {0, 480}};
+    const struct { int setting; unsigned vblank; unsigned shown; } free_run[] = {
+        {30, 60, 30}, {60, 60, 60}, {90, 90, 90}, {120, 120, 120}, {144, 144, 144}, {165, 165, 165}, {240, 240, 240}, {0, 480, 480}};
     for (const auto& row : free_run) {
-        Check(Pacing::RepeatCadenceHz(row.setting) == row.cadence, "VSync off cadence at " + std::to_string(row.setting));
+        Check(Pacing::GuestVblankHz(row.setting) == row.vblank, "VSync off guest vblank at " + std::to_string(row.setting));
+        Check(Pacing::ShownFramesPerSecond(row.setting) == row.shown, "VSync off new frames shown at " + std::to_string(row.setting));
     }
-    const struct { int setting; double display; unsigned cadence; } synced[] = {
-        {90, 144.0, 90}, {165, 144.0, 144}, {240, 144.0, 144}, {0, 144.0, 144}, {0, 59.94, 0}, {144, 59.94, 0},
-        {120, 60.0, 0}, {240, 240.0, 240}, {0, 165.0, 165}, {60, 144.0, 0}, {30, 144.0, 0}};
+    const struct { int setting; double display; unsigned vblank; } synced[] = {
+        {90, 144.0, 90}, {165, 144.0, 144}, {240, 144.0, 144}, {0, 144.0, 144}, {0, 59.94, 60}, {144, 59.94, 60},
+        {120, 60.0, 60}, {240, 240.0, 240}, {0, 165.0, 165}, {60, 144.0, 60}, {30, 144.0, 60}, {120, 50.0, 60}};
     for (const auto& row : synced) {
-        Check(Pacing::RepeatCadenceHz(row.setting, true, row.display) == row.cadence,
+        Check(Pacing::GuestVblankHz(row.setting, true, row.display) == row.vblank,
               "VSync on, " + std::to_string(int(row.display)) + " Hz display, setting " + std::to_string(row.setting));
     }
-    Check(Pacing::RepeatCadenceHz(240, true, 0.0) == 240, "an unknown display refresh leaves the rate unbounded");
-    Check(Pacing::kGameHz == 60, "the game's simulation stays 60 Hz");
-
-    using Clock = Pacing::FrameLimiter::Clock;
-    const Clock::time_point start{};
-    for (const unsigned cadence : {90u, 120u, 144u, 165u, 240u, 480u}) {
-        Pacing::FrameLimiter limiter(cadence, start);
-        int released = 0;
-        for (int tick = 0; tick < 10000; ++tick) {
-            const Clock::time_point now = start + std::chrono::microseconds(tick * 100);
-            if (limiter.Due(now)) {
-                limiter.Release(now);
-                ++released;
-            }
-        }
-        Check(std::abs(released - int(cadence)) <= 2, "one second at " + std::to_string(cadence) + " releases that many presentations");
+    Check(Pacing::GuestVblankHz(240, true, 0.0) == 240, "an unknown display refresh leaves the rate unbounded");
+    Check(Pacing::GuestVblankHz(61) == 60 && Pacing::GuestVblankHz(-1) == 60, "an unknown setting is the original 60");
+    for (const int setting : Pacing::kFrameRateModes) {
+        Check(Pacing::GuestVblankHz(setting) >= Pacing::kGameHz, "the guest vblank is never below 60: " + std::to_string(setting));
     }
-    Pacing::FrameLimiter stalled(120, start);
-    stalled.Release(start);
-    const Clock::time_point after = start + std::chrono::milliseconds(300);
-    int burst = 0;
-    for (int tick = 0; tick < 200; ++tick) {
-        const Clock::time_point now = after + std::chrono::microseconds(tick * 100);
-        if (stalled.Due(now)) {
-            stalled.Release(now);
-            ++burst;
-        }
-    }
-    Check(burst <= 3, "a late presentation is never repaid with a burst");
+    Check(Pacing::kGameHz == 60, "the original game rate is 60");
 
     const std::string driver = Source("gpu/shadps4/core/libraries/videoout/driver.cpp");
     Check(Contains(driver, "PresentsFlip(DcpSettings::Get().frame_rate.load()") && Contains(driver, "req.port->flip_rate"),
           "the driver filters flips by the setting and the port's flip rate");
-    Check(Contains(driver, "EffectiveRenderHz") || Contains(driver, "RepeatCadenceHz"), "the driver derives the repeat cadence from the pacing helpers");
-    Check(Contains(Source("gpu/shim/core/emulator_settings.h"), "u32 GetVblankFrequency() { return 60; }"), "the guest vblank is fixed at 60 Hz");
+    Check(Contains(driver, "EmulatorSettings.SetVblankFrequency(DcpFramePacing::GuestVblankHz(") &&
+              Contains(driver, "settings.frame_rate.load(), settings.vsync.load(), settings.display_refresh_hz.load()"),
+          "the guest vblank comes from the Frame rate setting, VSync and the display refresh");
+    Check(InOrder(driver, "SetVblankFrequency(", "if (EmulatorSettings.GetVblankFrequency() >= 120)"),
+          "the vblank is chosen before the reported refresh rate");
+    Check(Contains(driver, "vblank_period(1000000000 /") && Contains(driver, "EmulatorSettings.GetVblankFrequency());"),
+          "the present thread ticks at the guest vblank");
+    Check(!Contains(driver, "RepeatLastFrame") && !Contains(driver, "FrameLimiter"), "no frame is shown again to reach a rate");
+    Check(Contains(Source("gpu/shim/core/emulator_settings.h"), "u32 GetVblankFrequency() { return vblank_frequency; }") &&
+              Contains(Source("gpu/shim/core/emulator_settings.h"), "u32 vblank_frequency = 60;"),
+          "the vblank is 60 Hz until the driver sets it");
+    Check(Contains(driver, "vblank %u Hz, frame rate %s, new frames up to %u a second"), "the run log states the vblank and the new frames");
+    const std::string presenter = Source(kPresenter);
+    Check(InOrder(presenter, "if (!is_reusing_frame && is_game_frame) {", "DcpOverlay::LogPresent();") &&
+              InOrder(presenter, "DcpOverlay::LogPresent();", "DcpOverlay::Render(cmdbuf"),
+          "only a new game frame counts for the title and the counter");
 }
 
 } // namespace

@@ -76,12 +76,36 @@ delivered; `StateStop` follows only once every queued frame was consumed.
 
 ## Skip Intro
 
-With `skip_intro` on, for a build that has `GameBuild::skip_intro` (CUSA57767 1.00), the first source the game opens
-is the startup video: every run log opens exactly one MP4 before `SplashScreen: Finished video`. Its demuxer stops after
-`SkipIntro::kPlayableMillis` (200 ms), so the end of the file, `StateStop` and every other transition are the natural
-ones; its audio is delivered silent and it never loops back. The game's start-up seek still finds frames with different
-timestamps. Later sources (tutorial videos) play completely. CUSA57767 1.01 stays off: its Il2cppUserAssemblies.prx and
-global-metadata.dat differ from 1.00 and no 1.01 run log shows its startup sequence.
+The player is not involved: every source plays completely (`tools/avplayer_tests.cpp`). Skip Intro patches the game's
+own code in memory (`src/sos_skip_intro.c`, only for a build whose code matches the fingerprints, all or nothing).
+
+`UiScripts.SplashScreen.Start` is a coroutine (`<Start>d__24.MoveNext`): presentation, startup video, then an ending that
+marks the game as booted, saves the global data, loads the FMOD banks and the next scenes. The patch sends the first state to the ending's save system lookup, ahead of the ending's log lines and flags. The save check
+is replaced by a wait: until `SaveSystem.isInitialized` and `currentGlobalData.previouslyInitializedToDefaults` hold, the
+coroutine yields a frame (state 6, whose resume is redirected to the same lookup), so only the lookup repeats. When the
+save system is ready and the splash screen's `isSplashScreenVisualSequenceFinished` is still false, the ending runs once and
+its own pass of the check continues to the booted mark, the save and the scene loads. A first boot and a returning boot take
+the same path. No input is injected and the booted flag is never written by the port.
+
+`SaveSystem.InitSaveSystem` awaits `Task.Delay(10000)` before `LoadAll`, which loads the global data and every slot and then
+sets `isInitialized`; the presentation used to cover that wait. With Skip Intro on, the argument becomes 1 ms: `Initialize`
+stores the returned task in `awaitInit` after the call and the coroutine clears it when done, so the await has to stay
+asynchronous (`Delay(0)` would complete it synchronously). Only the argument changes, so the await machinery is the game's
+own, and the wait for the save system above stays as the safety net. `scripts/skip_intro_check.py` proves the layouts and
+the flow per build.
+
+`LoadAll` loads the global data and each slot through `PS4Controller.PS4_Load`, whose `PS4SaveTasks.LoadSaveTask` and
+`CheckFileExist` poll the flag the native save events clear with `await Task.Delay(100)`: 25 waits in the load task and 12
+(plus two 500 ms retries) in the existence check, about 15 per boot. They are intervals, not timeouts (nothing counts them),
+and the host's save calls finish at once, so each wait only delays. With Skip Intro on each 100 becomes 1, which keeps the
+await asynchronous (the flag is cleared on the main thread); the 500 ms retries and every write path stay as they are.
+
+## Skip Intro: the title intro
+
+`MainMenuState_Intro` has no input to answer: its `TickState` switches to the next state (PRESS START) when `QueueSwitchToNextState`
+has set the flag at `this+0x6c`, which the intro animation does at its end. With Skip Intro on, that flag test calls a stub
+(the design of Odin Sphere's `launcher/skip_intro.c`) that asks `sos_skip_intro_claim`: the first time it is granted the stub sets the flag,
+and the game's own switch runs; every later tick, and every later visit to the title, runs the original test.
 
 ## FFmpeg
 

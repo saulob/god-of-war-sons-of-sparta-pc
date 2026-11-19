@@ -39,7 +39,7 @@ constexpr GameBuild kGameBuilds[] = {
     {.title_id = "CUSA57767", .content_id = kContentId, .version = "1.01", .folder = "CUSA57767-1.01",
      .eboot_sha256 = "aafe8a2ab8e55e0044fe371248749026c494a07d6864fbb6a7fa89fe39999d58",
      .regional_archive = nullptr, .extra_files = kUpdate101Files, .label = "CUSA57767 1.01 USA", .region = "USA",
-     .layers = kUpdate101Layers, .resolution_sites = kResolutionSites},
+     .layers = kUpdate101Layers, .skip_intro = true, .resolution_sites = kResolutionSites},
 };
 
 } // namespace

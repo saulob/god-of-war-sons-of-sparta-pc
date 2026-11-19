@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The Frame rate setting as presentation timing: which guest flips reach the screen and how often the last frame is
-// shown again between two flips. The game's own pacing (a 59.94 Hz tick that also builds the frame) is never changed.
-// Kept apart from VideoOutDriver so it is testable without a Vulkan presenter.
+// The Frame rate setting. The Unity player renders one new frame per guest vblank (vSyncCount 1 gives flip rate 0, and the
+// game never sets Application.targetFrameRate), and its physics step is a fixed 1/60 s. Above 60 the guest vblank itself
+// runs at the chosen rate, so the game really renders that many frames; 30 keeps the 60 Hz vblank and shows every second
+// flip, so the game's speed is untouched. A frame is never shown twice to reach a rate.
 #pragma once
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -15,8 +15,8 @@ namespace DcpFramePacing {
 // The values the launcher stores; 0 is Unlimited.
 inline constexpr std::array kFrameRateModes{30, 60, 90, 120, 144, 165, 240, 0};
 
-// The ceiling of the repeat cadence when the setting is Unlimited and nothing else bounds it.
-inline constexpr int kUnlimitedCadenceHz = 480;
+// The guest vblank of Unlimited when no display refresh bounds it.
+inline constexpr int kUnlimitedVblankHz = 480;
 inline constexpr int kGameHz = 60;
 
 constexpr bool IsFrameRateMode(int setting) {
@@ -50,7 +50,7 @@ constexpr int RenderFps(int setting) {
     return IsFrameRateMode(setting) ? setting : kGameHz;
 }
 
-// Above the game's own 60 Hz: the setting that shows frames again.
+// Above the game's own 60: the guest vblank is raised.
 constexpr bool IsHighRate(int setting) {
     return IsUnlimited(setting) || RenderFps(setting) > kGameHz;
 }
@@ -73,47 +73,25 @@ constexpr int EffectiveRenderHz(int setting, bool vsync = false, double display_
     return IsUnlimited(setting) ? display : std::min(RenderFps(setting), display);
 }
 
-// Presentations per second the host schedules, new frames and repeats together; 0 = only the game's own flips (the
-// setting is not above 60, or the display leaves nothing to repeat).
-constexpr unsigned RepeatCadenceHz(int setting, bool vsync = false, double display_hz = 0.0) {
+// The vblank rate the guest is given, which is also the number of new frames it can render a second: never below 60.
+constexpr unsigned GuestVblankHz(int setting, bool vsync = false, double display_hz = 0.0) {
     if (!IsHighRate(setting)) {
-        return 0u;
+        return kGameHz;
     }
     const int hz = EffectiveRenderHz(setting, vsync, display_hz);
-    const int cadence = hz == 0 ? kUnlimitedCadenceHz : std::min(hz, kUnlimitedCadenceHz);
-    return cadence > kGameHz ? static_cast<unsigned>(cadence) : 0u;
+    return static_cast<unsigned>(std::clamp(hz == 0 ? kUnlimitedVblankHz : hz, kGameHz, kUnlimitedVblankHz));
 }
 
-// 30 keeps the 60 Hz vblank and presents every second flip; all flips are still consumed. A game already flipping
+// The new frames a second the game can show: the 60 Hz flips halved at 30, else the guest vblank.
+constexpr unsigned ShownFramesPerSecond(int setting, bool vsync = false, double display_hz = 0.0) {
+    return RenderFps(setting) == 30 ? 30u : GuestVblankHz(setting, vsync, display_hz);
+}
+
+// 30 keeps the 60 Hz vblank and shows every second flip; all flips are still consumed. A game already flipping
 // every second vblank (flip_rate 1 or more) is shown whole, so 30 never halves it again.
 constexpr bool PresentsFlip(int setting, std::uint64_t flip_index, int flip_rate = 0) {
     return RenderFps(setting) != 30 || flip_rate > 0 || flip_index % 2 == 0;
 }
-
-// Releases one presentation per period on absolute slots of a monotonic clock, so a late wake does not shift
-// later slots. Only a presentation more than one period late re-anchors to now + period, so lateness is
-// never repaid with a burst.
-class FrameLimiter {
-public:
-    using Clock = std::chrono::steady_clock;
-
-    FrameLimiter(unsigned fps, Clock::time_point start)
-        : period_(fps ? std::chrono::nanoseconds(1'000'000'000LL / fps) : std::chrono::nanoseconds(0)),
-          next_(start) {}
-
-    bool Enabled() const { return period_.count() != 0; }
-    bool Due(Clock::time_point now) const { return !Enabled() || now >= next_; }
-    Clock::time_point NextSlot() const { return next_; }
-    std::chrono::nanoseconds Period() const { return period_; }
-
-    void Release(Clock::time_point now) {
-        next_ = now - next_ > period_ ? now + period_ : next_ + period_;
-    }
-
-private:
-    std::chrono::nanoseconds period_;
-    Clock::time_point next_;
-};
 
 inline std::string ModeName(int setting) {
     return setting == 0 ? "Unlimited" : std::to_string(setting);

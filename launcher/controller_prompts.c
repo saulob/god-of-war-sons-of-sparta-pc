@@ -4,40 +4,22 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { GAMEPAD_XBOX_SERIES = 2, MAX_SIGNATURE = 48, SITE_COUNT = 4 };
-
-typedef struct {
-    uint8_t bytes[MAX_SIGNATURE];
-    uint8_t length;
-    uint8_t before; /* signature bytes before the instruction */
-    uint8_t original;
-} Signature;
+#include "controller_prompts_sites.h"
 
 typedef struct {
     const char *build;
-    uint32_t at[SITE_COUNT]; /* image offset of each store instruction */
+    const SosPromptSite *sites;
+    size_t count;
 } BuildSites;
 
-/* Constructor default, Initialize, DetermineController and OnInputActionChange. The immediate is the instruction's 4th byte. */
-static const Signature kSignatures[SITE_COUNT] = {
-    {{0x48, 0x8b, 0x47, 0x10, 0xc3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc7, 0x47, 0x34, 0x04, 0, 0, 0, 0xc6, 0x47, 0x10,
-      0x01, 0xc3},
-     28, 16, 4},
-    {{0x30, 0x01, 0x00, 0x00, 0x72, 0x22, 0x48, 0x8b, 0x92, 0xc8, 0x00, 0x00, 0x00, 0x48, 0x39, 0x4c, 0xf2, 0xf8, 0x75,
-      0x14, 0x48, 0x8d, 0x7b, 0x38, 0xc7, 0x43, 0x34, 0x03, 0, 0, 0, 0x48, 0x89, 0x43, 0x38},
-     35, 24, 3},
-    {{0x00, 0x72, 0x0e, 0x48, 0x8b, 0x92, 0xc8, 0x00, 0x00, 0x00, 0x48, 0x39, 0x4c, 0xf2, 0xf8, 0x74, 0x07, 0x48, 0x83,
-      0xc4, 0x08, 0x5b, 0x5d, 0xc3, 0xc7, 0x43, 0x34, 0x03, 0, 0, 0, 0x48, 0x8d, 0x7b, 0x38, 0x48, 0x89, 0x43, 0x38},
-     39, 24, 3},
-    {{0xff, 0xff, 0x48, 0x8b, 0x92, 0xc8, 0x00, 0x00, 0x00, 0x48, 0x39, 0x4c, 0xf2, 0xf8, 0x0f, 0x85, 0x52, 0xfd, 0xff,
-      0xff, 0x49, 0x8d, 0x7e, 0x38, 0x41, 0xc7, 0x01, 0x03, 0, 0, 0, 0x48, 0x89, 0x07},
-     34, 24, 3},
-};
+#define SITES(array) array, sizeof(array) / sizeof(*(array))
 
 static const BuildSites kBuilds[] = {
-    {"CUSA57767-1.00", {0x47c0710u, 0x47bce56u, 0x47bcf4cu, 0x47c0543u}},
-    {"CUSA57767-1.01", {0x47c59a0u, 0x47c20e6u, 0x47c21dcu, 0x47c57d3u}},
+    {"CUSA57767-1.00", SITES(kSites_1_00)},
+    {"CUSA57767-1.01", SITES(kSites_1_01)},
 };
+
+enum { SITE_NOT_VERIFIED = -1, SITE_ORIGINAL = 0, SITE_XBOX = 1 };
 
 static const BuildSites *find_build(const char *build_key) {
     for (size_t i = 0; build_key && i < sizeof(kBuilds) / sizeof(*kBuilds); ++i)
@@ -45,25 +27,26 @@ static const BuildSites *find_build(const char *build_key) {
     return NULL;
 }
 
-static uint8_t value_of(int style, uint8_t original) {
-    return style == SOS_PROMPTS_XBOX ? GAMEPAD_XBOX_SERIES : original;
+/* What a site holds: its original bytes, its Xbox bytes, or neither (also when the bytes around it differ). */
+static int site_state(const uint8_t *image, uint64_t size, const SosPromptSite *site) {
+    const uint64_t at = site->offset;
+    if (at < sizeof(site->before) || at + site->length + sizeof(site->after) > size) return SITE_NOT_VERIFIED;
+    if (memcmp(image + at - sizeof(site->before), site->before, sizeof(site->before)) ||
+        memcmp(image + at + site->length, site->after, sizeof(site->after)))
+        return SITE_NOT_VERIFIED;
+    if (!memcmp(image + at, site->original, site->length)) return SITE_ORIGINAL;
+    if (!memcmp(image + at, site->xbox, site->length)) return SITE_XBOX;
+    return SITE_NOT_VERIFIED;
 }
 
-/* Where the immediate of a site is, or NULL when the bytes around it are not the verified code. The immediate itself may
- * hold the original or the Xbox value. */
-static uint8_t *immediate(uint8_t *image, uint64_t size, uint32_t at, const Signature *signature) {
-    const uint64_t start = (uint64_t)at - signature->before;
-    if (at < signature->before || start + signature->length > size) return NULL;
-    const uint8_t imm = signature->before + 3;
-    for (uint8_t i = 0; i < signature->length; ++i) {
-        if (i == imm) {
-            const uint8_t held = image[start + i];
-            if (held != signature->original && held != GAMEPAD_XBOX_SERIES) return NULL;
-        } else if (image[start + i] != signature->bytes[i]) {
-            return NULL;
+static int all_sites_verified(const uint8_t *image, uint64_t size, const BuildSites *build, int *failed) {
+    for (size_t i = 0; i < build->count; ++i) {
+        if (site_state(image, size, &build->sites[i]) == SITE_NOT_VERIFIED) {
+            *failed = (int)i + 1;
+            return 0;
         }
     }
-    return image + start + imm;
+    return 1;
 }
 
 int sos_prompt_style_parse(const char *name, int *style) {
@@ -112,13 +95,13 @@ int sos_controller_prompts_state(const uint8_t *image, uint64_t size, const char
     const BuildSites *build = find_build(build_key);
     if (!build) return -1;
     int xbox = 0;
-    for (int i = 0; i < SITE_COUNT; ++i) {
-        const uint8_t *held = immediate((uint8_t *)image, size, build->at[i], &kSignatures[i]);
-        if (!held) return -1;
-        xbox += *held == GAMEPAD_XBOX_SERIES;
+    for (size_t i = 0; i < build->count; ++i) {
+        const int state = site_state(image, size, &build->sites[i]);
+        if (state == SITE_NOT_VERIFIED) return -1;
+        xbox += state == SITE_XBOX;
     }
     if (xbox == 0) return SOS_PROMPTS_PLAYSTATION;
-    return xbox == SITE_COUNT ? SOS_PROMPTS_XBOX : -1;
+    return (size_t)xbox == build->count ? SOS_PROMPTS_XBOX : -1;
 }
 
 int sos_controller_prompts_apply(uint8_t *image, uint64_t size, const char *build_key, int style, char *message,
@@ -130,27 +113,38 @@ int sos_controller_prompts_apply(uint8_t *image, uint64_t size, const char *buil
                  build_key ? build_key : "this build");
         return -1;
     }
-    uint8_t *held[SITE_COUNT];
-    for (int i = 0; i < SITE_COUNT; ++i) {
-        held[i] = immediate(image, size, build->at[i], &kSignatures[i]);
-        if (!held[i]) {
-            snprintf(message, message_size, "%s requested but unavailable: site %d of %s is not the verified code", label,
-                     i + 1, build->build);
-            return -1;
-        }
+    int failed = 0;
+    if (!all_sites_verified(image, size, build, &failed)) {
+        snprintf(message, message_size, "%s requested but unavailable: site %d of %s is not the verified code", label, failed,
+                 build->build);
+        return -1;
     }
-    for (int i = 0; i < SITE_COUNT; ++i) *held[i] = value_of(style, kSignatures[i].original);
-    snprintf(message, message_size, "%s (%s)", label, style == SOS_PROMPTS_XBOX ? "game prompts set to Xbox" : "the game's own");
+    for (size_t i = 0; i < build->count; ++i) {
+        const SosPromptSite *site = &build->sites[i];
+        memcpy(image + site->offset, style == SOS_PROMPTS_XBOX ? site->xbox : site->original, site->length);
+    }
+    snprintf(message, message_size, "%s (%s)", label,
+             style == SOS_PROMPTS_XBOX ? "game prompts set to Xbox" : "the game's own");
     return style;
 }
 
-int sos_controller_prompts_value_offsets(const uint8_t *image, uint64_t size, const char *build_key, uint64_t offsets[4]) {
+const SosPromptSite *sos_controller_prompts_sites(const char *build_key, size_t *count) {
     const BuildSites *build = find_build(build_key);
-    if (!build) return 0;
-    for (int i = 0; i < SITE_COUNT; ++i) {
-        const uint8_t *held = immediate((uint8_t *)image, size, build->at[i], &kSignatures[i]);
-        if (!held) return 0;
-        offsets[i] = (uint64_t)(held - image);
+    if (count) *count = build ? build->count : 0;
+    return build ? build->sites : NULL;
+}
+
+size_t sos_controller_prompts_value_ranges(const uint8_t *image, uint64_t size, const char *build_key, uint64_t *offsets,
+                                           uint8_t *lengths, size_t capacity) {
+    const BuildSites *build = find_build(build_key);
+    int failed = 0;
+    size_t count = 0;
+    if (!build || !all_sites_verified(image, size, build, &failed)) return 0;
+    for (size_t i = 0; i < build->count; ++i) {
+        if (!build->sites[i].immediate) continue;
+        if (count == capacity) return 0;
+        offsets[count] = build->sites[i].offset;
+        lengths[count++] = build->sites[i].length;
     }
-    return SITE_COUNT;
+    return count;
 }

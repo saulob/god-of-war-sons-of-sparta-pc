@@ -3,8 +3,10 @@
     python scripts/prompt_assets_check.py [MEDIA_FOLDER]
 
 The game's InputIconData holds one icon map per controller type (ps5, ps4, xboxSeries, pc) and four TMP sprite atlases.
-Checks that the Xbox atlas and the Xbox icon map are populated and that every sprite resolves to a texture. Nothing is
-executed; exit status 0 when every check passes.
+Checks that the Xbox atlas and the Xbox icon map are populated, that every sprite resolves to a texture, that every sprite
+of an icon map is a glyph of the matching atlas (the game finds a text glyph by the sprite's name), that the Xbox sheet's
+pixels are in resources.assets.resS, and lists the special icons the Xbox map lacks. Nothing is executed; exit status 0 when
+every check passes.
 """
 import mmap
 import struct
@@ -123,6 +125,80 @@ def pointers(data, objects, path_id, first=0x30):
     return found, body
 
 
+GAMEPAD_ICON_SLOTS = ("buttonSouth buttonNorth buttonEast buttonWest startButton selectButton leftTrigger rightTrigger "
+                      "leftShoulder rightShoulder dpad dpadUp dpadDown dpadLeft dpadRight leftStick rightStick "
+                      "leftStickPress rightStickPress touchPad").split()
+ICON_MAPS = (("ps5", "New_PS_ButtonPromptsAtlas"), ("ps4", "PS4_ButtonPromptsAtlas"), ("xbox", "Xbox_ButtonPromptsAtlas"))
+
+
+def sprite_name(data, objects, target):
+    if target == 0 or target not in objects:
+        return None
+    offset, size, class_id = objects[target]
+    return object_name(data, offset, size, class_id)
+
+
+def icon_maps(data, objects, icon_data):
+    """[(slots, specials)] of the ps5, ps4 and xboxSeries GamepadIcons: 20 sprite names, then the special icons by key."""
+    offset, size, _ = objects[icon_data]
+    body = bytes(data[offset:offset + size])
+    at = 0x30
+    maps = []
+    for _ in ICON_MAPS:
+        slots = []
+        for _ in GAMEPAD_ICON_SLOTS:
+            slots.append(sprite_name(data, objects, struct.unpack_from("<iq", body, at)[1]))
+            at += 12
+        count = struct.unpack_from("<i", body, at)[0]
+        at += 4
+        keys = []
+        for _ in range(count):
+            length = struct.unpack_from("<I", body, at)[0]
+            keys.append(body[at + 4:at + 4 + length].decode())
+            at = (at + 4 + length + 3) & ~3
+        count = struct.unpack_from("<i", body, at)[0]
+        at += 4
+        values = []
+        for _ in range(count):
+            values.append(sprite_name(data, objects, struct.unpack_from("<iq", body, at)[1]))
+            at += 12
+        maps.append((slots, dict(zip(keys, values))))
+    return maps
+
+
+def atlas_glyph_names(data, objects, atlas):
+    """The sprite names a TMP sprite asset knows, in table order (length-prefixed strings of its serialized form)."""
+    offset, size, _ = objects[atlas]
+    body = bytes(data[offset:offset + size])
+    names, at = [], 0x30
+    while at < size - 4:
+        length = struct.unpack_from("<I", body, at)[0]
+        text = body[at + 4:at + 4 + length]
+        if 1 <= length <= 80 and at + 4 + length <= size and all(32 <= c < 127 for c in text):
+            names.append(text.decode())
+            at = (at + 4 + length + 3) & ~3
+        else:
+            at += 4
+    return names
+
+
+def texture_pixels(data, objects, texture, resources):
+    """(width, height, format, bytes read from resources.assets.resS, how many are not zero) of a streamed Texture2D."""
+    offset, size, _ = objects[texture]
+    body = bytes(data[offset:offset + size])
+    at = (4 + struct.unpack_from("<I", body, 0)[0] + 3) & ~3
+    width, height = struct.unpack_from("<2i", body, at + 8)
+    texture_format = struct.unpack_from("<i", body, at + 24)[0]
+    path_at = body.rfind(b"resources.assets.resS") - 4
+    stream_offset, stream_size = struct.unpack_from("<QI", body, path_at - 12)
+    if not resources.is_file() or resources.stat().st_size < stream_offset + stream_size:
+        return width, height, texture_format, 0, 0
+    with open(resources, "rb") as file:
+        file.seek(stream_offset)
+        pixels = file.read(stream_size)
+    return width, height, texture_format, len(pixels), sum(1 for byte in pixels if byte)
+
+
 def main():
     media = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_MEDIA
     path = media / "resources.assets"
@@ -173,8 +249,24 @@ def main():
     window = [struct.unpack_from("<iq", body, at) for at in range(first, last + 12, 12)]
     nulls = sum(1 for file_id, target in window if file_id == 0 and target == 0)
     check(nulls == 0, "no null slot inside the Xbox icon map")
-    print(f"  info  Xbox icon map {len(xbox_sprites)} sprites, PlayStation maps {len(ps_sprites)} sprites; whether the "
-          "game asks for an Xbox sprite the map lacks is not decided here")
+    maps = icon_maps(data, objects, icon_data)
+    glyphs = {}
+    for (key, atlas), (slots, specials) in zip(ICON_MAPS, maps):
+        glyphs[key] = set(atlas_glyph_names(data, objects, names[atlas]))
+        check(all(slots), f"the {key} icon map has all {len(slots)} button icons")
+        missing = [slot for slot, sprite in zip(GAMEPAD_ICON_SLOTS, slots) if sprite not in glyphs[key]]
+        check(not missing, f"every {key} button icon is a glyph of {atlas} (the text path finds glyphs by name)"
+              + (f": missing {missing}" if missing else ""))
+    sheet_name = XBOX_SPRITES
+    sheet = sheets[0] if sheets else None
+    if sheet is not None:
+        width, height, texture_format, size, opaque = texture_pixels(data, objects, sheet, path.with_name("resources.assets.resS"))
+        check(size > 0 and opaque > 0, f"the Xbox sheet {sheet_name} ({width}x{height}, format {texture_format}) has "
+              f"{size} bytes of pixels in resources.assets.resS")
+    lacking = sorted(set(maps[0][1]) - set(maps[2][1]))
+    print(f"  info  the Xbox icon map has {len(maps[2][1])} special icon(s) ({', '.join(maps[2][1])}); the PlayStation 5 map also has "
+          f"{', '.join(lacking)}. Those icons are not drawn in Xbox mode.")
+    print(f"  info  Xbox icon map {len(xbox_sprites)} sprites, PlayStation maps {len(ps_sprites)} sprites")
     return 1 if failures else 0
 
 
