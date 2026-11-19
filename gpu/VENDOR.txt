@@ -1,0 +1,41 @@
+Vendored from https://github.com/shadps4-emu/shadPS4 commit b4e7ae776071ceb1dd35004577a8719481e1d258 (GPL-2.0-or-later).
+Directories: src/video_core, src/shader_recompiler, src/common, src/core/libraries/{gnmdriver,videoout}, externals/gcn, externals/sirit, externals/half.
+Also: src/core/libraries/kernel/{orbis_error,posix_error,time,process,equeue}.h, equeue.cpp, src/core/libraries/error_codes.h, src/core/platform.h, src/core/libraries/system/{userservice,systemservice}.h.
+Lineage: taken from uncharted-ndc-native/gpu, itself medievil_pc's copy of the gow3_pc video core. The inherited temporal
+upscaler (FSR 3.1, FSR 4, DLSS, TAA) with its camera and object motion is not part of this tree; libSceVideodec2 is not
+built (the game does not import it).
+Local changes are marked with "dcp:" comments.
+Backported from upstream after b4e7ae7 (2026-10-02), recompiler correctness fixes only:
+  233562929 V_INTERP_MOV_F32 P10/P20 selectors (#5087), d96278e1e compute shader floating-point
+  mode (#5126), e518a6515 S_SUBB_U32 SCC wrap (#5031), 282e5c792 S_ADDC_U32 SCC carry-out (#5030),
+  fb6367d29 32-bit literals in the high dword of 64-bit floats (#5114), 94e217781 V_BFM_B32 (#5185),
+  d1cb90dbb ADDC (#5200), dd43d1cac V_CVT_PK_U8_F32 (#5194), ef08b1e1f V_ALIGNBIT/ALIGNBYTE (#5186).
+Backported (2026-11-18, from the Alienation port; upstream commits as listed there):
+  Recompiler: 612713d5 geometry invocation count compare (#5078), 2f40f87b MBCNT lowered with its ballot on wave32
+  hosts (#5116; LowerHardwareIntrinsics now runs after LowerWave64BallotPass), c34ca21f EXEC scope after an empty
+  branch (#5220), 4c7b287f ReadLane elimination before the ring passes (#5169), d9cf41ba InverseBallot immediates
+  (#5202), de278985 GS EmitCut (#5487), bounded LDS loads and stores, SubgroupLocalInvocationId not Flat in vertex
+  shaders, sample_index with an existing BaryCoord, EmitUndefU64, GDS lane rank removal that rewrites only the
+  matched operand (ir/passes/gds_lane_offset.cpp), geometry OutputPoints for point output and OutputVertices bounded
+  by the GSVS ring layout and the device limits (backend/spirv/geometry_output.cpp).
+  Command processor: 12c5978f nested indirect buffer task frames freed (#5258) for DCB, ACB and CE, 7ea677e5 packet size
+  read before the packet runs, e6c79a5f CE/DE counter wait, c64a1e0a CE type-2 padding and Rewind, 1b9d1591 chained
+  IBs (#5542), c09fa46a vertex/index/indirect buffer read tracking (#5262), 00276961 + e9f2c54c + 23c41333 index buffer
+  capacity, mapped-range clamp and null index buffer (#5278/#5327/#5358), GDS buffer write tracking, ProcessCommands
+  drains the draw pipe per command, sceGnmMapComputeQueue resets the ring offset, equeue poll under the queue lock.
+  Vulkan: 43e4c470 submit wait stage masks sized to the wait semaphores (#5231) and a failed submit is fatal,
+  1ac65aa7 + 2338a06f sparse backing with device address support and offsets in blocks, afde6318 copy-with-buffer layer
+  assert, 92c7a884 depth/stencil aspect copies, ee0364a9 mip clamps (sharp NumLevels, view base level, copy layers),
+  14ada48a FMask decompress runs the fast clear elimination, image barriers cover the destination stages, staging pool
+  large cache lock, recorder chunk exchange, image and buffer allocation over budget and in system memory, replay-side
+  dynamic rendering pairing, VK_EXT_device_fault report on device loss, wait failures other than timeout are fatal.
+libSceAvPlayer (FFmpeg): src/core/libraries/avplayer, src/core/libraries/videodec/video_utils.{h,cpp} and
+src/common/support/avdec.h from upstream commit a808e762 as adapted in the Alienation port (docs/avplayer-port.md):
+worker threads attach a guest TCB before they run (avplayer_thread.h), media files open through the runtime's /app0
+mapping, the handle streamer and the game-specific skip-intro hooks are not part of it. Local changes beyond that:
+the controller thread stops before the player state is destroyed, Close from the event callback is deferred to the
+controller thread, handles are validated, JumpToTime completes without a seek and resumes a paused player, the log callback is stored.
+Backported (2026-11-18, GPU core): c679ce6 d3ff0e0 699009c ca36c7e 6add101 eedf851 69b6041 626f3ac a267e8f (texture cache overlap, expand, stencil, edge writes), 3b53747, 9d3524f b6f0c58 9ac8b23 443f022 30d82c9 2319a36 (PM4/GNM), dade3af ed8a479 28ad5d9 0cd6e4f b3d46e9 8b80480 e0845a1, a7d0fe3.
+Backported (2026-11-18), shader recompiler: c495290 NaN handling, 1c2b8f9 RCP/RSQ/LOG clamp, e0558e2 DS_MIN/MAX_F32, 34a1d4d V_MOVREL lowering, 945dbc3 + 08225c2 LDS barriers, 7d28d27 early fragment tests, af008b3 alpha-to-mask/AA mask, 7721a1e + 643c799 indirect id unbias, 312cfba/abe42da/f3687cc 64-bit scalar shifts and S_BFM_B64, b2ad718 FindILsb64, 0951d80 F32x2 SSA, 603cff4/524be7c phi, 78bedfa CFG fallthrough, 8bafaa5 sharp patch, 3a9f572 GATHER4_C_L, c1b2655, f0ea8eb, a808e76, 6752d8b, 6999be1, 1f1f4c6, 282f644 V_MIN_F64, 53af37a V_TRUNC_F64, 3f21ee0 PackedAncillary; branch-based float min/max atomic fallback; hardening from the Odin Sphere port (FMask stores, unsupported formats, force-unnormalized sampler, 11/11/10 clamp, ClampOutput, null-normalised sharps). sirit: OpNClamp.
+Not taken: 4788f0b, f048bb7 (shared memory segments, minmax refactor), 4ddaada, 8c91be2, 3a8ee87, b61f6c5, 1D-as-2D/Cube image rework, 8e23388, e6faa2e, f9d0748 (CE queue rework).
+Also af008b3 video_core half (alpha-to-mask, AA mask, sample mask), 7d28d27, c495290, 643c799 wiring; serialization versions bumped.

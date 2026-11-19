@@ -1,0 +1,1252 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "dcp_overlay.h"
+
+#include <algorithm>
+#include <atomic>
+#include <bitset>
+#include <cfloat>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <vector>
+
+#include <SDL3/SDL.h>
+#include "boss_battle.h"
+#include "dcp_accent.h"
+#include "dcp_cheat_menu.h"
+#include "dcp_menu_input.h"
+#include "dcp_options_menu.h"
+#include "localization/ui_text.h"
+#include "dcp_options_ui.h"
+#include "dcp_settings.h"
+#include "dcp_overlay_box.h"
+#include "dcp_ping.h"
+#include "runtime_cheats.h"
+#include "runtime_online_overlay.h"
+#include "imgui.h"
+#include "imgui_internal.h" // RegisterUserTexture (save pictures)
+#include "imgui_impl_opengl3.h"
+#ifdef _WIN32
+#include "dcp_renderer.h"
+#include "imgui_impl_gles3.h"
+#endif
+#include "imgui_impl_vulkan.h"
+#include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
+
+// DejaVu Sans (Cyrillic), embedded (third_party/fonts, Bitstream Vera license).
+#ifdef _WIN32
+asm(".section .rdata,\"dr\"\n"
+    ".balign 16\n"
+    ".global dcp_font_ttf\n"
+    "dcp_font_ttf:\n"
+    ".incbin \"" DCP_FONT_PATH "\"\n"
+    ".global dcp_font_ttf_end\n"
+    "dcp_font_ttf_end:\n"
+    ".text\n");
+#else
+asm(".section .rodata\n"
+    ".balign 16\n"
+    ".hidden dcp_font_ttf\n"
+    ".global dcp_font_ttf\n"
+    "dcp_font_ttf:\n"
+    ".incbin \"" DCP_FONT_PATH "\"\n"
+    ".hidden dcp_font_ttf_end\n"
+    ".global dcp_font_ttf_end\n"
+    "dcp_font_ttf_end:\n"
+    ".previous\n");
+#endif
+extern "C" const unsigned char dcp_font_ttf[];
+extern "C" const unsigned char dcp_font_ttf_end[];
+
+namespace DcpOverlay {
+
+namespace {
+
+std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
+bool initialized = false;
+// Bare F4 quits a Boss Battle fight; any modifier (Alt+F4 closes the game) leaves it alone.
+constexpr SDL_Scancode kBossBattleQuitKey = SDL_SCANCODE_F4;
+constexpr SDL_Keymod kBossBattleQuitModifiers = SDL_KMOD_ALT | SDL_KMOD_CTRL | SDL_KMOD_SHIFT | SDL_KMOD_GUI;
+// The cheat menu (F10) and the Options menu (F1): open, or closing and still holding the game's input until what the
+// menu received is released. Only one of them is ever open.
+std::atomic<bool> cheat_open{false};
+std::atomic<bool> options_open{false};
+dcp::menu::CloseGate menu_close;
+std::bitset<ImGuiKey_NamedKey_COUNT> menu_pressed;
+bool cheat_focused = false;
+dcp::cheats::MenuList cheat_list;
+std::atomic<float> display_scale{1.0f};
+std::atomic<bool> loading{false};
+std::atomic<u32> loading_done{0}, loading_total{0};
+std::atomic<u32> background_done{0}, background_total{0};
+// ShowNotice: text guarded by imgui_mutex, shown until notice_until (steady_clock ticks).
+std::string notice_text;
+std::atomic<std::chrono::steady_clock::rep> notice_until{0};
+// The game's text dialog (SetTextEntry), guarded by imgui_mutex.
+bool text_entry_active = false;
+std::string text_entry_prompt, text_entry_text;
+// The game's save list (sceSaveDataDialog): a choice made with the arrows/D-pad.
+std::atomic<bool> choice_active{false};
+std::string choice_title;
+std::vector<std::string> choice_items;
+int choice_index = 0;
+std::atomic<int> choice_result{-1}; // -1 open, -2 cancelled, else the chosen index
+// Save pictures: decoded by BeginChoice, made textures on the present thread (null = none).
+// Closed lists' textures wait in choice_retired until the backend has destroyed them.
+std::vector<DcpPng::Image> choice_pictures;
+std::vector<ImTextureData*> choice_textures, choice_retired;
+std::atomic<bool> choice_retiring{false};
+float base_scale = 1.0f;
+
+// Present rate for the FPS counter.
+std::chrono::steady_clock::time_point last_present{};
+float frame_ms_avg = 0.0f;
+DcpPing::Readout ping_readout; // present thread
+
+// The caller holds imgui_mutex.
+void SetNotice(const std::string& text, std::chrono::seconds shown = std::chrono::seconds(2)) {
+    notice_text = text;
+    notice_until = (std::chrono::steady_clock::now() + shown).time_since_epoch().count();
+}
+
+ImGuiKey KeyFromSdl(SDL_Keycode key) {
+    switch (key) {
+    case SDLK_TAB: return ImGuiKey_Tab;
+    case SDLK_LEFT: return ImGuiKey_LeftArrow;
+    case SDLK_RIGHT: return ImGuiKey_RightArrow;
+    case SDLK_UP: return ImGuiKey_UpArrow;
+    case SDLK_DOWN: return ImGuiKey_DownArrow;
+    case SDLK_PAGEUP: return ImGuiKey_PageUp;
+    case SDLK_PAGEDOWN: return ImGuiKey_PageDown;
+    case SDLK_HOME: return ImGuiKey_Home;
+    case SDLK_END: return ImGuiKey_End;
+    case SDLK_DELETE: return ImGuiKey_Delete;
+    case SDLK_BACKSPACE: return ImGuiKey_Backspace;
+    case SDLK_SPACE: return ImGuiKey_Space;
+    case SDLK_Q: return ImGuiKey_Q;
+    case SDLK_E: return ImGuiKey_E;
+    case SDLK_RETURN: return ImGuiKey_Enter;
+    case SDLK_KP_ENTER: return ImGuiKey_KeypadEnter;
+    case SDLK_ESCAPE: return ImGuiKey_Escape;
+    case SDLK_LCTRL: return ImGuiKey_LeftCtrl;
+    case SDLK_RCTRL: return ImGuiKey_RightCtrl;
+    case SDLK_LSHIFT: return ImGuiKey_LeftShift;
+    case SDLK_RSHIFT: return ImGuiKey_RightShift;
+    case SDLK_LALT: return ImGuiKey_LeftAlt;
+    case SDLK_RALT: return ImGuiKey_RightAlt;
+    default: return ImGuiKey_None;
+    }
+}
+
+ImGuiKey KeyFromGamepad(u8 button) {
+    switch (button) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return ImGuiKey_GamepadFaceDown;
+    case SDL_GAMEPAD_BUTTON_EAST: return ImGuiKey_GamepadFaceRight;
+    case SDL_GAMEPAD_BUTTON_WEST: return ImGuiKey_GamepadFaceLeft;
+    case SDL_GAMEPAD_BUTTON_NORTH: return ImGuiKey_GamepadFaceUp;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return ImGuiKey_GamepadDpadUp;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ImGuiKey_GamepadDpadDown;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ImGuiKey_GamepadDpadLeft;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ImGuiKey_GamepadDpadRight;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return ImGuiKey_GamepadL1;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return ImGuiKey_GamepadR1;
+    case SDL_GAMEPAD_BUTTON_START: return ImGuiKey_GamepadStart;
+    case SDL_GAMEPAD_BUTTON_BACK: return ImGuiKey_GamepadBack;
+    default: return ImGuiKey_None;
+    }
+}
+
+float PixelDensity(SDL_WindowID id) {
+    SDL_Window* window = SDL_GetWindowFromID(id);
+    const float density = window ? SDL_GetWindowPixelDensity(window) : 1.0f;
+    return density > 0.0f ? density : 1.0f;
+}
+
+// The frame counter's text.
+std::string OverlayText() {
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.0f FPS  %.1f ms", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
+                  frame_ms_avg);
+    return text;
+}
+
+struct OverlayPanel {
+    DcpOverlayBox::Box box;
+    float size;
+};
+
+// `after`: a panel already in this corner; the new one goes next to it.
+OverlayPanel PlaceOverlayPanel(const char* text, int corner, const OverlayPanel* after = nullptr) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float size = ImGui::GetFontSize() * DcpSettings::Get().overlay_scale / 100.0f;
+    const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    const DcpOverlayBox::Rect work{viewport->WorkPos.x, viewport->WorkPos.y, viewport->WorkPos.x + viewport->WorkSize.x,
+                                   viewport->WorkPos.y + viewport->WorkSize.y};
+    if (after) {
+        return {DcpOverlayBox::StackAfter(after->box, corner, text_size.x, text_size.y, size, work), size};
+    }
+    return {DcpOverlayBox::Place(corner, text_size.x, text_size.y, size, work), size};
+}
+
+OverlayPanel FpsCounterBox(const char* text) {
+    return PlaceOverlayPanel(text, DcpSettings::Get().overlay_corner);
+}
+
+void DrawOverlayPanel(const OverlayPanel& panel, const char* text) {
+    constexpr ImU32 panel_color = IM_COL32(7, 10, 22, 190);
+    constexpr ImU32 border_color = IM_COL32(dcp::kAccentRed, dcp::kAccentGreen, dcp::kAccentBlue, 255);
+    constexpr ImU32 text_color = IM_COL32(255, 255, 255, 255);
+    const DcpOverlayBox::Rect& r = panel.box.rect;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), panel_color, panel.box.rounding);
+    draw->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), border_color, panel.box.rounding, 0,
+                  DcpOverlayBox::kBorderThickness);
+    draw->AddText(ImGui::GetFont(), panel.size, ImVec2(r.x0 + panel.box.pad_x, r.y0 + panel.box.pad_y), text_color,
+                  text);
+}
+
+bool FpsCounterShown() {
+    return DcpSettings::Get().show_fps && frame_ms_avg > 0.0f;
+}
+
+bool PingShown() {
+    return DcpSettings::Get().show_ping && runtime_online_play_enabled() != 0;
+}
+
+bool MenuOpen() {
+    return cheat_open || options_open;
+}
+
+ImVec4 Accent() {
+    return ImVec4(dcp::kAccentRed / 255.0f, dcp::kAccentGreen / 255.0f, dcp::kAccentBlue / 255.0f, 1.0f);
+}
+
+// The keys and buttons that went down while the menu was open, until they come up again.
+void TrackMenuKeys() {
+    for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_NamedKey_END; ++key) {
+        if (key >= ImGuiKey_MouseLeft && key <= ImGuiKey_MouseWheelY) {
+            continue;
+        }
+        const size_t index = size_t(key - ImGuiKey_NamedKey_BEGIN);
+        if (ImGui::IsKeyPressed(ImGuiKey(key), false)) {
+            menu_pressed.set(index);
+        } else if (!ImGui::IsKeyDown(ImGuiKey(key))) {
+            menu_pressed.reset(index);
+        }
+    }
+}
+
+struct CheatRowText {
+    const char* state;
+    bool lit;
+};
+
+bool CheatRowsUsable() {
+    return dcp::cheats::RowsUsable(runtime_cheats_available() != 0, runtime_cheats_online_locked() != 0);
+}
+
+CheatRowText CheatRowState(const dcp::cheats::MenuRow& row) {
+    const bool action = row.kind == dcp::cheats::RowKind::Action;
+    const bool movement = row.kind == dcp::cheats::RowKind::MovementSpeed;
+    const bool experience = row.kind == dcp::cheats::RowKind::Experience;
+    const bool taken = row.kind == dcp::cheats::RowKind::DamageTaken;
+    const bool damage_multiplier = row.kind == dcp::cheats::RowKind::DamageMultiplier;
+    const bool choice = movement || experience || taken || damage_multiplier;
+    const int off = taken              ? dcp::cheats::kDamageTakenOff
+                    : damage_multiplier ? dcp::cheats::kDamageMultiplierOff
+                    : movement          ? dcp::cheats::kMovementSpeedOff
+                                        : dcp::cheats::kExperienceMultiplierOff;
+    const int multiplier = movement          ? runtime_cheat_movement_speed()
+                          : experience        ? runtime_cheat_experience_multiplier()
+                          : taken             ? runtime_cheat_damage_taken()
+                          : damage_multiplier ? runtime_cheat_damage_multiplier()
+                                              : off;
+    const char* choice_label = movement          ? dcp::cheats::MovementSpeedLabel(multiplier)
+                               : experience        ? dcp::cheats::ExperienceMultiplierLabel(multiplier)
+                               : taken             ? dcp::cheats::DamageTakenLabel(multiplier)
+                               : damage_multiplier ? dcp::cheats::DamageMultiplierLabel(multiplier)
+                                            : nullptr;
+    const bool usable = CheatRowsUsable();
+    const bool on = row.kind == dcp::cheats::RowKind::Toggle && runtime_cheat_enabled(int(row.cheat)) != 0;
+    const char* state = !usable ? dcp::cheats::UnusableRowState(runtime_cheats_online_locked() != 0)
+                        : action ? row.verb
+                        : choice ? choice_label
+                        : (on ? "On" : "Off");
+    return {state ? dcp::Tr(state) : nullptr, usable && (action || on || (choice && multiplier != off))};
+}
+
+void ActivateCheatRow(const dcp::cheats::MenuRow& row) {
+    if (!CheatRowsUsable()) {
+        return;
+    }
+    const bool movement = row.kind == dcp::cheats::RowKind::MovementSpeed;
+    const bool taken = row.kind == dcp::cheats::RowKind::DamageTaken;
+    const bool damage_multiplier = row.kind == dcp::cheats::RowKind::DamageMultiplier;
+    if (row.kind == dcp::cheats::RowKind::Action) {
+        runtime_cheat_action(int(row.action));
+        std::printf("Cheats: %s requested\n", row.label);
+    } else if (movement || taken || damage_multiplier || row.kind == dcp::cheats::RowKind::Experience) {
+        const int next = movement          ? runtime_cheat_movement_cycle()
+                         : taken             ? runtime_cheat_damage_taken_cycle()
+                         : damage_multiplier ? runtime_cheat_damage_multiplier_cycle()
+                                             : runtime_cheat_experience_cycle();
+        const char* label = movement          ? dcp::cheats::MovementSpeedLabel(next)
+                            : taken             ? dcp::cheats::DamageTakenLabel(next)
+                            : damage_multiplier ? dcp::cheats::DamageMultiplierLabel(next)
+                                     : dcp::cheats::ExperienceMultiplierLabel(next);
+        std::printf("Cheats: %s %s (this session)\n", row.label, label);
+    } else {
+        runtime_cheat_toggle(int(row.cheat));
+        std::printf("Cheats: %s %s (this session)\n", row.label, runtime_cheat_enabled(int(row.cheat)) ? "On" : "Off");
+    }
+}
+
+// True when the row was clicked.
+bool DrawCheatRow(const dcp::cheats::MenuRow& row, size_t index, bool selected, float scale, const ImVec4& accent,
+                  const ImVec4& focus, const ImVec4& dim) {
+    const float height = ImGui::GetFrameHeight() + 4.0f * scale;
+    ImGui::PushID(int(index));
+    const bool pressed = ImGui::Selectable("##row", false, ImGuiSelectableFlags_None, ImVec2(0.0f, height));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (selected) {
+        draw->AddRectFilled(min, max, ImGui::GetColorU32(focus), 3.0f * scale);
+    }
+    const float pad = ImGui::GetFontSize() * 0.4f;
+    const float y = min.y + (height - ImGui::GetFontSize()) * 0.5f;
+    const CheatRowText text = CheatRowState(row);
+    draw->AddText(ImVec2(min.x + pad, y), ImGui::GetColorU32(ImGuiCol_Text), dcp::Tr(row.label));
+    if (text.state != nullptr) {
+        draw->AddText(ImVec2(max.x - pad - ImGui::CalcTextSize(text.state).x, y),
+                      ImGui::GetColorU32(text.lit ? accent : dim), text.state);
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
+void CheatMenuInput() {
+    const auto pressed = [](ImGuiKey key, bool repeat = false) { return ImGui::IsKeyPressed(key, repeat); };
+    const int count = int(dcp::cheats::kMenuRows.size());
+    cheat_list.Clamp(count);
+    if (pressed(ImGuiKey_GamepadDpadUp, true) || pressed(ImGuiKey_GamepadLStickUp, true) || pressed(ImGuiKey_UpArrow, true)) {
+        cheat_list.Step(-1, count);
+    }
+    if (pressed(ImGuiKey_GamepadDpadDown, true) || pressed(ImGuiKey_GamepadLStickDown, true) ||
+        pressed(ImGuiKey_DownArrow, true)) {
+        cheat_list.Step(1, count);
+    }
+    if (pressed(ImGuiKey_GamepadFaceDown) || pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter) ||
+        pressed(ImGuiKey_Space)) {
+        ActivateCheatRow(dcp::cheats::kMenuRows[size_t(cheat_list.selected)]);
+    }
+}
+
+const char* CheatRowHelp(const dcp::cheats::MenuRow& row) {
+    switch (row.kind) {
+    case dcp::cheats::RowKind::Toggle:
+        for (const dcp::cheats::CheatInfo& info : dcp::cheats::kCheats) {
+            if (info.cheat == row.cheat) {
+                return dcp::Tr(info.description);
+            }
+        }
+        return "";
+    case dcp::cheats::RowKind::Action: return dcp::Tr("Runs once each time it is pressed. Nothing is saved.");
+    case dcp::cheats::RowKind::MovementSpeed: return dcp::Tr(dcp::cheats::kMovementSpeedHelp);
+    case dcp::cheats::RowKind::Experience: return dcp::Tr(dcp::cheats::kExperienceMultiplierHelp);
+    case dcp::cheats::RowKind::DamageTaken: return dcp::Tr(dcp::cheats::kDamageTakenHelp);
+    case dcp::cheats::RowKind::DamageMultiplier: return dcp::Tr(dcp::cheats::kDamageMultiplierHelp);
+    }
+    return "";
+}
+
+DcpOptionsUi::CheatRowView OptionsCheatView(size_t index) {
+    const dcp::cheats::MenuRow& row = dcp::cheats::kMenuRows[index];
+    const CheatRowText text = CheatRowState(row);
+    return {dcp::Tr(row.label), CheatRowHelp(row), text.state, text.lit};
+}
+
+void OptionsCheatActivate(size_t index, int direction) {
+    const dcp::cheats::MenuRow& row = dcp::cheats::kMenuRows[index];
+    const bool on = row.kind == dcp::cheats::RowKind::Toggle && runtime_cheat_enabled(int(row.cheat)) != 0;
+    if (direction == 0 || dcp::cheats::StepActivates(row.kind, direction, on)) {
+        ActivateCheatRow(row);
+    }
+}
+
+const char* OptionsCheatNote() {
+    return runtime_cheats_available() ? nullptr : dcp::Tr("Cheats are not available for this game build.");
+}
+
+bool OptionsOnlinePlay() {
+    return runtime_online_play_enabled() != 0;
+}
+
+void CloseCheatMenu() {
+    runtime_cheat_clear_actions();
+    cheat_open = false;
+    menu_close = {};
+    menu_pressed.reset();
+    cheat_focused = false;
+    ImGuiIO& io = ImGui::GetIO();
+    io.ClearInputKeys();
+    io.MouseDrawCursor = false;
+}
+
+void CheatMenu() {
+    ImGuiIO& io = ImGui::GetIO();
+    TrackMenuKeys();
+    if (!menu_close.requested() && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+        menu_close.Request();
+    }
+    if (menu_close.requested()) {
+        if (menu_close.Step(menu_pressed.any(), ImGui::GetTime())) {
+            CloseCheatMenu();
+        }
+        return;
+    }
+    CheatMenuInput();
+    const ImVec4 accent = Accent();
+    const ImVec4 dim(0.64f, 0.66f, 0.76f, 1.0f);
+    const ImVec4 focus(accent.x, accent.y, accent.z, 0.42f);
+    const float scale = dcp::cheats::MenuScale(display_scale, io.DisplaySize.x, ImGui::GetFontSize());
+    const float em = ImGui::GetFontSize() * scale;
+    const float margin = em * 0.8f;
+    float top = margin;
+    if (FpsCounterShown() && DcpSettings::Get().overlay_corner == 1) {
+        top = FpsCounterBox(OverlayText().c_str()).box.rect.y1 + margin * 0.5f;
+    }
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float spacing = style.ItemSpacing.y * scale;
+    const float separator = std::max(style.SeparatorSize, 1.0f);
+    const float row_height = em + 2.0f * style.FramePadding.y * scale + 4.0f * scale;
+    const float body_height =
+        dcp::cheats::MenuBodyHeight(dcp::cheats::kMenuRows.size(), row_height, spacing);
+    const float header_height = em + spacing + separator + spacing;
+    const float footer_height = spacing + separator + spacing + em + spacing + em;
+    const float window_padding = em * 0.5f;
+    const float available_height = std::max(io.DisplaySize.y - top - margin, em);
+    const bool opening = !cheat_focused;
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, top), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(em * dcp::cheats::kMenuWidthEm, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, available_height));
+    if (opening) {
+        cheat_focused = true;
+        ImGui::SetNextWindowFocus();
+    }
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.05f, 0.11f, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_Border, accent);
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, accent);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, focus);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, focus);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, window_padding));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x * scale, style.FramePadding.y * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(style.ItemSpacing.x * scale, spacing));
+    // No ImGui navigation: it would scroll the list on its own (the left stick scrolls the nav window every frame).
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("##dcp_cheat_menu", nullptr, flags)) {
+        ImGui::SetWindowFontScale(scale);
+        ImGui::TextColored(accent, "%s", dcp::Tr(dcp::cheats::kMenuTitle));
+        ImGui::Separator();
+        const float body_available = available_height - window_padding * 2.0f - header_height - footer_height;
+        const float child_height = std::max(std::min(body_height, body_available), 1.0f);
+        const bool needs_scrollbar = dcp::cheats::MenuNeedsScrollbar(body_height, child_height);
+        const ImGuiWindowFlags child_flags =
+            (needs_scrollbar ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_NoScrollbar) |
+            ImGuiWindowFlags_NoNav;
+        ImGui::BeginChild("##cheat_rows", ImVec2(0.0f, child_height), ImGuiChildFlags_None, child_flags);
+        // The child does not inherit the outer window's font scale.
+        ImGui::SetWindowFontScale(scale);
+        const int count = int(dcp::cheats::kMenuRows.size());
+        ImVec2 selected_min{}, selected_max{};
+        int clicked = -1;
+        for (int i = 0; i < count; ++i) {
+            const bool selected = i == cheat_list.selected;
+            if (DrawCheatRow(dcp::cheats::kMenuRows[size_t(i)], size_t(i), selected, scale, accent, focus, dim)) {
+                clicked = i;
+            }
+            if (selected) {
+                selected_min = ImGui::GetItemRectMin();
+                selected_max = ImGui::GetItemRectMax();
+            }
+        }
+        const ImDrawList* rows = ImGui::GetWindowDrawList();
+        const float scroll = ImGui::GetScrollY();
+        const float wanted = cheat_list.Resolve(scroll, ImGui::GetScrollMaxY(), selected_min.y, selected_max.y,
+                                                rows->GetClipRectMin().y, rows->GetClipRectMax().y);
+        if (wanted != scroll) {
+            ImGui::SetScrollY(wanted);
+        }
+        if (clicked >= 0) {
+            cheat_list.Click(clicked, count);
+            ActivateCheatRow(dcp::cheats::kMenuRows[size_t(clicked)]);
+        }
+        ImGui::EndChild();
+        ImGui::Separator();
+        ImGui::TextColored(dim, "%s", dcp::Tr(dcp::cheats::kMenuCloseHint));
+        ImGui::TextColored(dim, "%s", dcp::Tr(dcp::cheats::kMenuNote));
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(5);
+}
+
+void OpenCheatMenu() {
+    cheat_open = true;
+    menu_close = {};
+    menu_pressed.reset();
+    cheat_focused = false;
+    cheat_list.Open();
+    ImGui::GetIO().MouseDrawCursor = true;
+}
+
+// F10 opens and closes the cheat menu; it stays away from the game's own dialogs and the Options menu.
+void PressCheatMenuKey(bool repeat) {
+    const bool busy = text_entry_active || choice_active || loading || options_open;
+    switch (dcp::cheats::MenuKeyPress(repeat, runtime_cheats_online_locked() != 0, cheat_open, busy)) {
+    case dcp::cheats::MenuKeyAction::Open: OpenCheatMenu(); break;
+    case dcp::cheats::MenuKeyAction::Close: menu_close.Request(); break;
+    case dcp::cheats::MenuKeyAction::OnlineHint: SetNotice(dcp::Tr(dcp::cheats::kOnlineLockoutText)); break;
+    case dcp::cheats::MenuKeyAction::None: break;
+    }
+}
+
+const DcpOptionsUi::CheatRows options_cheats{dcp::cheats::kMenuRows.size(), OptionsCheatView, OptionsCheatActivate,
+                                             OptionsCheatNote, OptionsOnlinePlay};
+
+void OptionsMenu() {
+    TrackMenuKeys();
+    if (menu_close.requested()) {
+        if (menu_close.Step(menu_pressed.any(), ImGui::GetTime())) {
+            runtime_cheat_clear_actions();
+            options_open = false;
+            menu_close = {};
+            menu_pressed.reset();
+            ImGuiIO& io = ImGui::GetIO();
+            io.ClearInputKeys();
+            io.MouseDrawCursor = false;
+        }
+        return;
+    }
+    if (DcpOptionsUi::Frame(options_cheats) == DcpOptionsUi::Result::Close) {
+        menu_close.Request();
+    }
+}
+
+// F1 and the L3 + R3 chord open and close the Options menu; it stays away from the cheat menu and the game's own dialogs.
+void PressOptionsMenuKey(bool repeat) {
+    const bool busy = cheat_open || text_entry_active || choice_active || loading;
+    switch (dcp::menu::TogglePress(repeat, options_open, busy)) {
+    case dcp::menu::ToggleAction::Open:
+        options_open = true;
+        menu_close = {};
+        menu_pressed.reset();
+        DcpOptionsUi::Reset();
+        ImGui::GetIO().MouseDrawCursor = true;
+        break;
+    case dcp::menu::ToggleAction::Close: menu_close.Request(); break;
+    case dcp::menu::ToggleAction::None: break;
+    }
+}
+
+// The game's text dialog: what is typed, and how to finish (keyboard or controller).
+void TextEntryBox() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.42f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(viewport->WorkSize.x * 0.32f, 0.0f),
+                                        ImVec2(viewport->WorkSize.x * 0.8f, FLT_MAX));
+    ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::Begin("##text_entry", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", text_entry_prompt.c_str());
+    ImGui::Separator();
+    ImGui::SetWindowFontScale(1.4f);
+    ImGui::Text("%s_", text_entry_text.c_str());
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", dcp::Tr("Keyboard: type, Backspace to erase, Enter = OK, Esc = cancel"));
+    ImGui::TextDisabled("%s", dcp::Tr("Controller: Cross (A) = OK, Circle (B) = cancel"));
+    ImGui::End();
+}
+
+void ChoiceBox() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(viewport->WorkSize.x * 0.36f, 0.0f),
+                                        ImVec2(viewport->WorkSize.x * 0.8f, viewport->WorkSize.y * 0.8f));
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    ImGui::Begin("##choice", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "%s", choice_title.c_str());
+    ImGui::Separator();
+    // Save pictures are 228x128; rows without one keep the text aligned when others have one.
+    const bool pictures = std::any_of(choice_textures.begin(), choice_textures.end(),
+                                      [](ImTextureData* tex) { return tex != nullptr; });
+    const ImVec2 picture_size(228.0f * base_scale, 128.0f * base_scale);
+    for (int i = 0; i < int(choice_items.size()); ++i) {
+        const bool selected = i == choice_index;
+        ImGui::BeginGroup();
+        ImTextureData* tex = i < int(choice_textures.size()) ? choice_textures[i] : nullptr;
+        if (tex) {
+            ImGui::Image(tex->GetTexRef(), picture_size);
+        } else if (pictures) {
+            ImGui::Dummy(picture_size);
+        }
+        if (pictures) {
+            ImGui::SameLine();
+        }
+        if (selected) {
+            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.55f, 1.0f), "> %s", choice_items[i].c_str());
+        } else {
+            ImGui::Text("  %s", choice_items[i].c_str());
+        }
+        ImGui::EndGroup();
+        if (selected) {
+            if (pictures) {
+                const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+                const float pad = 3.0f * base_scale;
+                ImGui::GetWindowDrawList()->AddRect(ImVec2(min.x - pad, min.y - pad),
+                                                    ImVec2(max.x + pad, max.y + pad),
+                                                    IM_COL32(255, 230, 140, 255), 0.0f, 0,
+                                                    2.0f * base_scale);
+            }
+            ImGui::SetScrollHereY();
+        }
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", dcp::Tr("Up/Down or D-pad: choose   Enter or Cross (A): OK   Esc or Circle (B): cancel"));
+    ImGui::End();
+}
+
+void LoadingScreen() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x * 0.4f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::Begin("##loading", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    const u32 done = loading_done, total = loading_total;
+    ImGui::SetWindowFontScale(1.6f);
+    ImGui::TextUnformatted(dcp::Tr(total ? "Loading shader cache..." : "Preparing graphics..."));
+    ImGui::SetWindowFontScale(1.0f);
+    if (total) {
+        char count[64];
+        std::snprintf(count, sizeof(count), "%u / %u (%u%%)", done, total,
+                      u32(u64(done) * 100 / total));
+        ImGui::ProgressBar(float(done) / float(total), ImVec2(-1.0f, 0.0f), count);
+    }
+    ImGui::TextDisabled("%s", dcp::Tr("The first start after an update takes longer."));
+    ImGui::End();
+}
+
+void FpsCounter() {
+    if (frame_ms_avg <= 0.0f) {
+        return;
+    }
+    const std::string label = OverlayText();
+    DrawOverlayPanel(FpsCounterBox(label.c_str()), label.c_str());
+}
+
+void PingCounter() {
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch()).count();
+    const std::string label = DcpPing::Text(ping_readout.Shown(now_ms, [] { return runtime_online_peer_ping_ms(); }));
+    const int corner = DcpSettings::Get().overlay_corner;
+    if (!FpsCounterShown()) {
+        DrawOverlayPanel(PlaceOverlayPanel(label.c_str(), corner), label.c_str());
+        return;
+    }
+    const OverlayPanel fps = FpsCounterBox(OverlayText().c_str());
+    DrawOverlayPanel(PlaceOverlayPanel(label.c_str(), corner, &fps), label.c_str());
+}
+
+void BackgroundLoading() {
+    const u32 done = background_done, total = std::max(background_total.load(), 1u);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float pad = 12.0f * base_scale;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + pad,
+                                   viewport->WorkPos.y + viewport->WorkSize.y - pad),
+                            ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.35f);
+    ImGui::Begin("##background_loading", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextDisabled("%s %u%%", dcp::Tr("Loading shader cache"), u32(u64(done) * 100 / total));
+    ImGui::End();
+}
+
+bool NoticeShown() {
+    return std::chrono::steady_clock::now().time_since_epoch().count() < notice_until.load();
+}
+
+void Notice() {
+    const int corner = DcpOverlayBox::NoticeCorner(DcpSettings::Get().overlay_corner);
+    DrawOverlayPanel(PlaceOverlayPanel(notice_text.c_str(), corner), notice_text.c_str());
+}
+
+// An online room of an incompatible port version was left out or refused: long enough to read three lines.
+// "Label: value" lines keep their value; the label and the plain lines are translated.
+std::string TranslateNotice(const std::string& text) {
+    std::string out;
+    size_t start = 0;
+    while (true) {
+        const size_t end = text.find('\n', start);
+        const std::string line = text.substr(start, end == std::string::npos ? end : end - start);
+        const size_t colon = line.find(": v");
+        out += colon == std::string::npos ? dcp::Tr(line) : dcp::Tr(line.substr(0, colon)) + line.substr(colon);
+        if (end == std::string::npos) {
+            return out;
+        }
+        out += '\n';
+        start = end + 1;
+    }
+}
+
+void PollOnlineNotice() {
+    char text[256];
+    if (!runtime_online_take_notice(text, sizeof(text))) {
+        return;
+    }
+    std::scoped_lock lock{imgui_mutex};
+    SetNotice(TranslateNotice(text), std::chrono::seconds(6));
+}
+
+void PollBossBattleNotice() {
+    char text[192];
+    if (!boss_battle_take_notice(text, sizeof(text))) {
+        return;
+    }
+    std::scoped_lock lock{imgui_mutex};
+    SetNotice(dcp::Tr(text));
+}
+
+} // namespace
+
+// imgui_mutex held.
+void CreateImGuiContext() {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; // window positions are not kept
+    io.LogFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    io.BackendPlatformName = "dcp";
+
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.Colors[ImGuiCol_WindowBg].w = 0.92f;
+
+    ImFontConfig font_config;
+    font_config.FontDataOwnedByAtlas = false;
+    io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(dcp_font_ttf),
+                                   int(dcp_font_ttf_end - dcp_font_ttf), 18.0f, &font_config);
+}
+
+void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) {
+    std::scoped_lock lock{imgui_mutex};
+    if (initialized) {
+        return;
+    }
+    CreateImGuiContext();
+
+    const vk::Instance vk_instance = instance.GetInstance();
+    ImGui_ImplVulkan_LoadFunctions(
+        instance.ApiVersion(),
+        [](const char* name, void* user) {
+            return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(
+                *static_cast<const vk::Instance*>(user), name);
+        },
+        const_cast<vk::Instance*>(&vk_instance));
+
+    const VkFormat color_format = static_cast<VkFormat>(format);
+    ImGui_ImplVulkan_InitInfo info{};
+    info.ApiVersion = instance.ApiVersion();
+    info.Instance = vk_instance;
+    info.PhysicalDevice = instance.GetPhysicalDevice();
+    info.Device = instance.GetDevice();
+    info.QueueFamily = instance.GetGraphicsQueueFamilyIndex();
+    info.Queue = instance.GetGraphicsQueue();
+    // Font atlas plus the save list pictures (up to 33, and a closed list's until freed).
+    info.DescriptorPoolSize = 128;
+    info.MinImageCount = std::max(image_count, 2u);
+    info.ImageCount = std::max(image_count, 2u);
+    info.UseDynamicRendering = true;
+    info.PipelineInfoMain.PipelineRenderingCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &color_format,
+    };
+    if (!ImGui_ImplVulkan_Init(&info)) {
+        std::printf("Overlay: ImGui Vulkan backend init failed\n");
+        ImGui::DestroyContext();
+        return;
+    }
+    initialized = true;
+}
+
+void InitOpenGL() {
+    std::scoped_lock lock{imgui_mutex};
+    if (initialized) {
+        return;
+    }
+    CreateImGuiContext();
+#ifdef _WIN32
+    const bool started = DcpRenderer::Active() == DcpRenderer::Backend::Direct3D11
+                             ? InitImGuiGles3()
+                             : ImGui_ImplOpenGL3_Init("#version 330 core");
+#else
+    const bool started = ImGui_ImplOpenGL3_Init("#version 330 core");
+#endif
+    if (!started) {
+        std::printf("Overlay: ImGui OpenGL backend init failed\n");
+        ImGui::DestroyContext();
+        return;
+    }
+    initialized = true;
+}
+
+// imgui_mutex held. The backend frees a texture some frames after its last use.
+void RetireChoiceTextures() {
+    for (ImTextureData* tex : choice_textures) {
+        if (tex) {
+            tex->WantDestroyNextFrame = true;
+            choice_retired.push_back(tex);
+        }
+    }
+    choice_textures.clear();
+    choice_pictures.clear();
+    choice_retiring = !choice_retired.empty();
+}
+
+// imgui_mutex held, before NewFrame: new pictures become textures, destroyed ones are freed.
+void UpdateChoiceTextures() {
+    if (!choice_pictures.empty()) {
+        choice_textures.assign(choice_pictures.size(), nullptr);
+        for (size_t i = 0; i < choice_pictures.size(); ++i) {
+            const DcpPng::Image& picture = choice_pictures[i];
+            if (picture.rgba.empty()) {
+                continue;
+            }
+            ImTextureData* tex = IM_NEW(ImTextureData)();
+            tex->Create(ImTextureFormat_RGBA32, picture.width, picture.height);
+            std::memcpy(tex->GetPixels(), picture.rgba.data(), picture.rgba.size());
+            ImGui::RegisterUserTexture(tex);
+            choice_textures[i] = tex;
+        }
+        choice_pictures.clear();
+    }
+    std::erase_if(choice_retired, [](ImTextureData* tex) {
+        if (tex->Status != ImTextureStatus_Destroyed) {
+            return false;
+        }
+        ImGui::UnregisterUserTexture(tex);
+        IM_DELETE(tex);
+        return true;
+    });
+    choice_retiring = !choice_retired.empty();
+}
+
+// The save list takes the keys and buttons that move and confirm; the rest stays with the game
+// (held neutral by CapturesInput).
+// Moves or closes the list (lock held). finish: 1 accept, 2 cancel.
+void ChoiceStep(int move, int finish) {
+    if (!choice_active) {
+        return;
+    }
+    const int count = int(choice_items.size());
+    if (move && count) {
+        choice_index = (choice_index + move + count) % count;
+    }
+    if (finish) {
+        choice_result = finish == 1 && count ? choice_index : -2;
+        choice_active = false;
+        RetireChoiceTextures();
+    }
+}
+
+// The runtime's buttons for the list (gamepad and keyboard as mapped, scripted input, the left
+// stick as up/down), polled every frame: the game may stop reading the pad during the dialog and
+// raw window events depend on focus. Holding up or down repeats.
+uint32_t (*choice_input)() = nullptr;
+
+void PollChoiceInput() {
+    static std::mutex poll_mutex; // the present thread and the game thread both poll
+    std::scoped_lock poll_lock{poll_mutex};
+    static uint32_t previous = 0;
+    static bool open = false;
+    static std::chrono::steady_clock::time_point repeat_at{};
+    if (!choice_input) {
+        return;
+    }
+    if (!choice_active) {
+        open = false;
+        return;
+    }
+    const uint32_t buttons = choice_input();
+    const auto now = std::chrono::steady_clock::now();
+    if (!open) { // buttons held when the list opened (the press that opened it) wait for release
+        open = true;
+        previous = buttons;
+        return;
+    }
+    constexpr uint32_t Up = 0x10, Down = 0x40, Circle = 0x2000, Cross = 0x4000;
+    const uint32_t pressed = buttons & ~previous;
+    previous = buttons;
+    int move = (pressed & Up) ? -1 : (pressed & Down) ? 1 : 0;
+    if (move) {
+        repeat_at = now + std::chrono::milliseconds(400);
+    } else if ((buttons & (Up | Down)) && now >= repeat_at) {
+        move = (buttons & Up) ? -1 : 1;
+        repeat_at = now + std::chrono::milliseconds(120);
+    }
+    const int finish = (pressed & Cross) ? 1 : (pressed & Circle) ? 2 : 0;
+    if (move || finish) {
+        std::scoped_lock lock{imgui_mutex};
+        ChoiceStep(move, finish);
+    }
+}
+
+bool HandleChoiceEvent(const SDL_Event& event) {
+    int move = 0, finish = 0; // finish: 1 accept, 2 cancel
+    if (event.type == SDL_EVENT_KEY_DOWN) {
+        const SDL_Keycode key = event.key.key;
+        move = key == SDLK_UP || key == SDLK_W ? -1 : key == SDLK_DOWN || key == SDLK_S ? 1 : 0;
+        finish = key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE ? 1
+                 : key == SDLK_ESCAPE || key == SDLK_BACKSPACE                   ? 2
+                                                                                 : 0;
+    } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        if (choice_input) {
+            return true; // PollChoiceInput reads the gamepad
+        }
+        const u8 button = event.gbutton.button;
+        move = button == SDL_GAMEPAD_BUTTON_DPAD_UP ? -1 : button == SDL_GAMEPAD_BUTTON_DPAD_DOWN ? 1 : 0;
+        finish = button == SDL_GAMEPAD_BUTTON_SOUTH ? 1 : button == SDL_GAMEPAD_BUTTON_EAST ? 2 : 0;
+    } else {
+        return event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP;
+    }
+    ChoiceStep(move, finish);
+    return true;
+}
+
+void SetChoiceInput(uint32_t (*buttons)()) {
+    choice_input = buttons;
+}
+
+bool HandleEvent(const SDL_Event& event) {
+    std::scoped_lock lock{imgui_mutex};
+    if (!initialized) {
+        return false;
+    }
+    if (choice_active) {
+        return HandleChoiceEvent(event);
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    switch (event.type) {
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (down && event.key.scancode == kBossBattleQuitKey &&
+            boss_battle_quit_key(event.key.repeat, (event.key.mod & kBossBattleQuitModifiers) != 0,
+                                 MenuOpen() || text_entry_active || choice_active)) {
+            return true;
+        }
+        if (event.key.scancode == DcpSettings::Get().menu_key) {
+            if (down) {
+                PressCheatMenuKey(event.key.repeat);
+            }
+            return true;
+        }
+        if (event.key.scancode == DcpOptions::kKey) {
+            if (down) {
+                PressOptionsMenuKey(event.key.repeat);
+            }
+            return true;
+        }
+        if (MenuOpen() && event.key.key == SDLK_ESCAPE && down) {
+            if (!event.key.repeat) {
+                menu_close.Request();
+            }
+            return true;
+        }
+        if (!MenuOpen()) {
+            return false;
+        }
+        io.AddKeyEvent(ImGuiMod_Ctrl, (event.key.mod & SDL_KMOD_CTRL) != 0);
+        io.AddKeyEvent(ImGuiMod_Shift, (event.key.mod & SDL_KMOD_SHIFT) != 0);
+        io.AddKeyEvent(ImGuiMod_Alt, (event.key.mod & SDL_KMOD_ALT) != 0);
+        if (const ImGuiKey key = KeyFromSdl(event.key.key); key != ImGuiKey_None) {
+            io.AddKeyEvent(key, down);
+        }
+        return true;
+    }
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+        const bool down = event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        if (DcpOptionsUi::TrackChord(event.gbutton.which, event.gbutton.button, down)) {
+            PressOptionsMenuKey(false);
+        }
+        if (!MenuOpen()) {
+            return false;
+        }
+        if (const ImGuiKey key = KeyFromGamepad(event.gbutton.button); key != ImGuiKey_None) {
+            io.AddKeyEvent(key, down);
+        }
+        return true;
+    }
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        DcpOptionsUi::ForgetPad(event.gdevice.which);
+        return false;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+        if (MenuOpen() && (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTX || event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY)) {
+            constexpr float kStickDeadZone = 0.25f;
+            const float amount = event.gaxis.value / 32767.0f;
+            const bool vertical = event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY;
+            const ImGuiKey negative = vertical ? ImGuiKey_GamepadLStickUp : ImGuiKey_GamepadLStickLeft;
+            const ImGuiKey positive = vertical ? ImGuiKey_GamepadLStickDown : ImGuiKey_GamepadLStickRight;
+            const bool up = amount < -kStickDeadZone, down = amount > kStickDeadZone;
+            io.AddKeyAnalogEvent(negative, up, up ? -amount : 0.0f);
+            io.AddKeyAnalogEvent(positive, down, down ? amount : 0.0f);
+            return true;
+        }
+        return false;
+    }
+    case SDL_EVENT_TEXT_INPUT:
+        return MenuOpen();
+    case SDL_EVENT_MOUSE_MOTION: {
+        if (!MenuOpen()) {
+            return false;
+        }
+        const float density = PixelDensity(event.motion.windowID);
+        io.AddMousePosEvent(event.motion.x * density, event.motion.y * density);
+        return true;
+    }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        if (!MenuOpen()) {
+            return false;
+        }
+        const int button = event.button.button == SDL_BUTTON_LEFT    ? 0
+                           : event.button.button == SDL_BUTTON_RIGHT  ? 1
+                           : event.button.button == SDL_BUTTON_MIDDLE ? 2
+                                                                      : -1;
+        if (button >= 0) {
+            io.AddMouseButtonEvent(button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+        }
+        return true;
+    }
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (!MenuOpen()) {
+            return false;
+        }
+        io.AddMouseWheelEvent(event.wheel.x, event.wheel.y);
+        return true;
+    default:
+        return false;
+    }
+}
+
+void SetBackgroundLoading(u32 done, u32 total) {
+    background_done = done;
+    background_total = total;
+}
+
+void SetLoading(bool active, u32 done, u32 total) {
+    loading_done = done;
+    loading_total = total;
+    loading = active;
+}
+
+void ShowNotice(const std::string& text) {
+    std::scoped_lock lock{imgui_mutex};
+    SetNotice(text);
+}
+
+bool Visible() {
+    const auto& s = DcpSettings::Get();
+    return initialized && (loading || background_total || cheat_open || options_open || text_entry_active || choice_active ||
+                           choice_retiring || s.show_fps || PingShown() || NoticeShown());
+}
+
+void SetDisplayScale(float scale) {
+    display_scale = scale > 0.0f ? scale : 1.0f;
+}
+
+bool CapturesInput() {
+    return cheat_open || options_open || text_entry_active || choice_active;
+}
+
+void BeginChoice(const std::string& title, const std::vector<std::string>& items,
+                 std::vector<DcpPng::Image> pictures, int focus) {
+    std::scoped_lock lock{imgui_mutex};
+    RetireChoiceTextures();
+    choice_pictures = std::move(pictures);
+    choice_pictures.resize(items.size());
+    choice_title = title;
+    choice_items = items;
+    choice_index = focus >= 0 && focus < int(items.size()) ? focus : 0;
+    choice_result = -1;
+    choice_active = true;
+}
+
+int PollChoice() {
+    return choice_result;
+}
+
+void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
+    std::scoped_lock lock{imgui_mutex};
+    text_entry_active = active;
+    text_entry_prompt = prompt;
+    text_entry_text = text;
+}
+
+std::atomic<u64> presented_frames{0};
+
+u64 PresentedFrames() {
+    return presented_frames.load(std::memory_order_relaxed);
+}
+
+void LogPresent() {
+    presented_frames.fetch_add(1, std::memory_order_relaxed);
+}
+
+namespace {
+
+float last_interval_ms = 0.0f;
+
+// Everything that runs every presented frame; false when nothing is on screen.
+bool BeginPresent() {
+    // Present interval for the FPS readout (measured also while nothing is drawn).
+    const auto now = std::chrono::steady_clock::now();
+    const float ms = std::chrono::duration<float, std::milli>(now - last_present).count();
+    last_present = now;
+    last_interval_ms = ms;
+    if (ms > 0.0f && ms < 1000.0f) {
+        frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
+    }
+    PollChoiceInput();
+    if (!PingShown()) {
+        ping_readout.Reset();
+    }
+    PollOnlineNotice();
+    PollBossBattleNotice();
+    return Visible();
+}
+
+// imgui_mutex held. `new_frame` is the renderer backend's.
+void BuildFrame(u32 width, u32 height, void (*new_frame)()) {
+    const float ms = last_interval_ms;
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(float(width), float(height));
+    io.DeltaTime = ms > 0.0f && ms < 1000.0f ? ms / 1000.0f : 1.0f / 60.0f;
+    // UI scale follows the display height (1080p = 1).
+    const float scale = std::max(float(height) / 1080.0f, 0.75f);
+    if (std::abs(scale - base_scale) > 0.01f) {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.ScaleAllSizes(scale / base_scale);
+        style.FontScaleMain = scale;
+        base_scale = scale;
+    }
+
+    UpdateChoiceTextures();
+    new_frame();
+    ImGui::NewFrame();
+    if (loading) {
+        LoadingScreen();
+    }
+    if (cheat_open) {
+        CheatMenu();
+    }
+    if (options_open) {
+        OptionsMenu();
+    }
+    if (DcpSettings::Get().show_fps) {
+        FpsCounter();
+    }
+    if (PingShown()) {
+        PingCounter();
+    }
+    if (background_total && !loading) {
+        BackgroundLoading();
+    }
+    if (NoticeShown()) {
+        Notice();
+    }
+    if (text_entry_active) {
+        TextEntryBox();
+    }
+    if (choice_active) {
+        ChoiceBox();
+    }
+    ImGui::Render();
+}
+
+} // namespace
+
+void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+    if (!BeginPresent()) {
+        return;
+    }
+    std::scoped_lock lock{imgui_mutex};
+    BuildFrame(extent.width, extent.height, ImGui_ImplVulkan_NewFrame);
+
+    const vk::RenderingAttachmentInfo attachment{
+        .imageView = view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eLoad,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+    cmdbuf.beginRendering(vk::RenderingInfo{
+        .renderArea = {{0, 0}, extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    });
+    {
+        // Font atlas uploads submit to the graphics queue themselves.
+        std::scoped_lock submit_lock{Vulkan::Scheduler::submit_mutex};
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
+    }
+    cmdbuf.endRendering();
+}
+
+void RenderOpenGL(u32 width, u32 height) {
+    if (!BeginPresent()) {
+        return;
+    }
+    std::scoped_lock lock{imgui_mutex};
+#ifdef _WIN32
+    if (DcpRenderer::Active() == DcpRenderer::Backend::Direct3D11) {
+        BuildFrame(width, height, ImGuiGles3NewFrame);
+        ImGuiGles3RenderDrawData(ImGui::GetDrawData());
+        return;
+    }
+#endif
+    BuildFrame(width, height, ImGui_ImplOpenGL3_NewFrame);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+} // namespace DcpOverlay

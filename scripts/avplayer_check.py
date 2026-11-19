@@ -1,0 +1,124 @@
+"""Checks the libSceAvPlayer imports of every prepared eboot against the AvPlayer port in gpu/shadps4.
+
+    python scripts/avplayer_check.py [--report docs/avplayer-imports.md]
+
+Each import must be registered by Libraries::AvPlayer::RegisterLib under its NID, carry a symbolic name in
+src/import_names.inc whose hash is that NID, and be implemented (a function marked STUBBED is a stub). The report
+lists NID, symbol, call sites and binding per build.
+"""
+import re
+import struct
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ps4_module as pm  # noqa: E402
+
+LIBRARY = 'libSceAvPlayer'
+AVPLAYER_SOURCE = ROOT / 'gpu' / 'shadps4' / 'core' / 'libraries' / 'avplayer' / 'avplayer.cpp'
+REGISTER = re.compile(r'LIB_FUNCTION\("([^"]+)",\s*"libSceAvPlayer",\s*1,\s*"libSceAvPlayer",\s*(\w+)\)')
+FUNCTION = re.compile(r'^\S[^\n]*?\b(sceAvPlayer\w+)\(([^)]*)\)\s*\{(.*?)^\}', re.M | re.S)
+
+
+def registered():
+    """NID -> (function name, True when the function is a stub)."""
+    text = AVPLAYER_SOURCE.read_text()
+    stubs = {m.group(1): '(STUBBED)' in m.group(3) for m in FUNCTION.finditer(text)}
+    return {nid: (name, stubs.get(name, False)) for nid, name in REGISTER.findall(text)
+            if not text[text.rfind('\n', 0, text.find(f'"{nid}"')):text.find(f'"{nid}"')].lstrip().startswith('//')}
+
+
+def symbol_names():
+    names = {}
+    for line in (ROOT / 'src' / 'import_names.inc').read_text(errors='replace').splitlines():
+        m = re.match(r'\{"([^"]+)#libSceAvPlayer","([^"]+)"\}', line.strip())
+        if m:
+            names[m.group(1)] = m.group(2)
+    return names
+
+
+def scan(path):
+    """NID -> [(call site, 'call'|'jmp')] for the libSceAvPlayer imports of an eboot."""
+    module = pm.read_module(path)
+    loads = [p for p in module['ph'] if p['type'] == 1]
+    image = bytearray(max(p['vaddr'] + p['memsz'] for p in loads))
+    for p in loads:
+        image[p['vaddr']:p['vaddr'] + p['filesz']] = module['elf'][p['offset']:p['offset'] + p['filesz']]
+    image = bytes(image)
+    symbols = module['symbols']
+    slots = {}
+    for target, _kind, index, _addend in module['relocs']:
+        if index and index < len(symbols) and symbols[index]['section'] == 0 and symbols[index]['identity']:
+            nid, library, _module = symbols[index]['identity']
+            if library[0] == LIBRARY:
+                slots[target] = nid
+    stubs = {}
+    for m in re.finditer(re.compile(bytes([0xff, 0x25])), image):
+        at = m.start()
+        if at + 6 <= len(image):
+            slot = at + 6 + struct.unpack_from('<i', image, at + 2)[0]
+            if slot in slots:
+                stubs[at] = slots[slot]
+    sites = {nid: [] for nid in slots.values()}
+    for m in re.finditer(re.compile(b'[' + bytes([0xe8, 0xe9]) + b']'), image):
+        at = m.start()
+        if at + 5 <= len(image):
+            target = at + 5 + struct.unpack_from('<i', image, at + 1)[0]
+            if target in stubs:
+                sites[stubs[target]].append((at, 'jmp' if image[at] == 0xe9 else 'call'))
+    return sites
+
+
+def main(argv):
+    report = Path(argv[argv.index('--report') + 1]) if '--report' in argv else None
+    bound = registered()
+    names = symbol_names()
+    builds = sorted((ROOT / 'game' / 'prepared').glob('*/eboot.bin'))
+    if not builds:
+        print('  [skip] no prepared eboot.bin found')
+        return 0
+    failures = 0
+    scans = {}
+    for path in builds:
+        label = path.parent.name
+        sites = scan(path)
+        scans[label] = sites
+        unresolved = sorted(n for n in sites if n not in bound)
+        unnamed = sorted(n for n in sites if n not in names or pm.nid(names[n]) != n)
+        stubs = sorted(n for n in sites if n in bound and bound[n][1])
+        real = len(sites) - len(unresolved) - len(stubs)
+        print(f'  {label}: {len(sites)} AvPlayer imports, {real} bound real, {len(stubs)} bound stub, '
+              f'{len(unresolved)} unresolved')
+        for ok, text in ((not unresolved, f'every import is registered (unresolved: {unresolved})'),
+                         (not unnamed, f'every import has a symbolic name whose hash is its NID (unnamed: {unnamed})'),
+                         (all(sites[n] for n in sites), 'every import has a call site')):
+            print(f'  [{"ok  " if ok else "fail"}] {label}: {text}')
+            failures += 0 if ok else 1
+    if len({tuple(sorted(s)) for s in scans.values()}) != 1:
+        print('  [note] the prepared builds do not import the same AvPlayer functions')
+    if report:
+        write_report(report, scans, bound, names)
+    return 1 if failures else 0
+
+
+def write_report(path, scans, bound, names):
+    labels = sorted(scans)
+    nids = sorted({n for s in scans.values() for n in s}, key=lambda n: names.get(n, n))
+    lines = ['# libSceAvPlayer imports', '',
+             'Generated by `scripts/avplayer_check.py`. Call sites are image offsets of the call or jump to the import stub.', '',
+             '| NID | Symbol | Binding | ' + ' | '.join(f'{label} sites' for label in labels) + ' |',
+             '|---|---|---|' + '---|' * len(labels)]
+    for nid in nids:
+        binding = 'unresolved' if nid not in bound else ('stub' if bound[nid][1] else 'real')
+        cells = []
+        for label in labels:
+            sites = scans[label].get(nid)
+            cells.append('absent' if sites is None else ', '.join(f'{at:#x}' for at, _ in sites))
+        lines.append(f'| {nid} | {names.get(nid, "?")} | {binding} | ' + ' | '.join(cells) + ' |')
+    lines.append('')
+    path.write_text('\n'.join(lines))
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

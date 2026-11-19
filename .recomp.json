@@ -1,0 +1,24 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "God of War: Sons of Sparta",
+  "system": "PS4",
+  "type": "recomp",
+  "original": {
+    "revision": "01.01",
+    "serial": "CUSA57767"
+  },
+  "project": "God of War: Sons of Sparta PC Port",
+  "status": "in-development",
+  "targets": [
+    "Windows"
+  ],
+  "toolchain": "shadPS4-derived runtime",
+  "approach": "Original PS4 x86-64 game code running directly on Windows through replacement PS4 system libraries and a Vulkan renderer derived from shadPS4",
+  "maintainers": [
+    {
+      "name": "saulob",
+      "link": "https://github.com/saulob"
+    }
+  ],
+  "notes": "Native Windows port of the PS4 release (Unity 2022.3 IL2CPP). No game files are included."
+}

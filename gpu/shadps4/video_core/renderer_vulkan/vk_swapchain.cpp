@@ -1,0 +1,453 @@
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include <algorithm>
+#include <cstdio>
+#include <limits>
+#include <string>
+#include "common/assert.h"
+#include "common/logging/log.h"
+#include "core/emulator_settings.h"
+#include "dcp_present.h"
+#include "dcp_settings.h"
+#include "imgui/renderer/imgui_core.h"
+#include "sdl_window.h"
+#include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_swapchain.h"
+
+namespace Vulkan {
+
+// dcp: vkDeviceWaitIdle needs every queue of the device externally synchronized, and the GPU thread keeps
+// submitting while the window changes size (F11, display mode, VSync).
+static void WaitDeviceIdle(const Instance& instance, const char* why) {
+    std::scoped_lock lock{Scheduler::submit_mutex};
+    if (const auto result = instance.GetDevice().waitIdle(); result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "Failed to wait for the device to become idle {}: {}", why,
+                    vk::to_string(result));
+    }
+}
+
+static constexpr vk::SurfaceFormatKHR SURFACE_FORMAT_HDR = {
+    .format = vk::Format::eA2B10G10R10UnormPack32,
+    .colorSpace = vk::ColorSpaceKHR::eHdr10St2084EXT,
+};
+
+static_assert(vk::PresentModeKHR(DcpPresent::Mode::Immediate) == vk::PresentModeKHR::eImmediate &&
+              vk::PresentModeKHR(DcpPresent::Mode::Mailbox) == vk::PresentModeKHR::eMailbox &&
+              vk::PresentModeKHR(DcpPresent::Mode::Fifo) == vk::PresentModeKHR::eFifo);
+
+Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& window_)
+    : instance{instance_}, window{window_}, surface{CreateSurface(instance.GetInstance(), window)},
+      gamescope{DcpPresent::GamescopeSession()} {
+    FindPresentFormat();
+    FindPresentMode();
+
+    Create(window.GetWidth(), window.GetHeight());
+    std::printf("Swapchain: %s %s, %u images, %ux%u\n", vk::to_string(surface_format.format).c_str(),
+                vk::to_string(surface_format.colorSpace).c_str(), image_count, extent.width, extent.height);
+    ImGui::Core::Initialize(instance, window, image_count, surface_format.format);
+}
+
+Swapchain::~Swapchain() {
+    Destroy();
+    instance.GetInstance().destroySurfaceKHR(surface);
+}
+
+void Swapchain::Create(u32 width_, u32 height_) {
+    width = width_;
+    height = height_;
+    health.Recreated();
+
+    Destroy();
+
+    SetSurfaceProperties();
+
+    const std::array queue_family_indices = {
+        instance.GetGraphicsQueueFamilyIndex(),
+        instance.GetPresentQueueFamilyIndex(),
+    };
+
+    const bool exclusive = queue_family_indices[0] == queue_family_indices[1];
+    const u32 queue_family_indices_count = exclusive ? 1u : 2u;
+    const vk::SharingMode sharing_mode =
+        exclusive ? vk::SharingMode::eExclusive : vk::SharingMode::eConcurrent;
+    const auto format = needs_hdr ? SURFACE_FORMAT_HDR : surface_format;
+    const vk::SwapchainCreateInfoKHR swapchain_info = {
+        .surface = surface,
+        .minImageCount = image_count,
+        .imageFormat = format.format,
+        .imageColorSpace = format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment |
+                      vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+        .imageSharingMode = sharing_mode,
+        .queueFamilyIndexCount = queue_family_indices_count,
+        .pQueueFamilyIndices = queue_family_indices.data(),
+        .preTransform = transform,
+        .compositeAlpha = composite_alpha,
+        .presentMode = present_mode,
+        .clipped = true,
+        .oldSwapchain = nullptr,
+    };
+
+    auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
+    ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
+               vk::to_string(swapchain_result));
+    swapchain = chain;
+
+    SetupImages();
+    RefreshSemaphores();
+    frame_index = 0; // the semaphores are new and sized for the returned image count
+    LogImages();
+    LogCreation();
+}
+
+// Once per change of the image counts or the present mode: a window resize alone is not logged again.
+void Swapchain::LogImages() {
+    char counts[192];
+    std::snprintf(counts, sizeof(counts), "requested %u, got %u (surface min %u, max %u), %s, %s", requested_images,
+                  image_count, surface_min_images, surface_max_images, vk::to_string(present_mode).c_str(),
+                  gamescope ? "Gamescope low-latency count" : "default count");
+    if (logged_images == counts) {
+        return;
+    }
+    logged_images = counts;
+    std::printf("Swapchain: images %s, extent %ux%u\n", counts, extent.width, extent.height);
+}
+
+void Swapchain::Recreate(u32 width_, u32 height_) {
+    LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
+              needs_hdr);
+    Create(width_, height_);
+}
+
+void Swapchain::SetHDR(bool hdr) {
+    if (needs_hdr == hdr) {
+        return;
+    }
+
+    WaitDeviceIdle(instance, "on an HDR change");
+    needs_hdr = hdr;
+    Recreate(width, height);
+    ImGui::Core::OnSurfaceFormatChange(needs_hdr ? SURFACE_FORMAT_HDR.format
+                                                 : surface_format.format);
+}
+
+bool Swapchain::AcquireNextImage() {
+    vk::Device device = instance.GetDevice();
+    vk::Result result =
+        device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
+                                   image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
+
+    ReportResult(false, result);
+    const DcpPresent::SwapResult kind = AcquireResult(result);
+    if (kind == DcpPresent::SwapResult::Failure) {
+        LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}",
+                     vk::to_string(result));
+        UNREACHABLE();
+    }
+    const DcpPresent::SwapStep step = health.Acquire(kind);
+    LogKeptSuboptimal(kind, step);
+    return step.usable;
+}
+
+bool Swapchain::Present() {
+    const vk::PresentInfoKHR present_info = {
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &present_ready[image_index],
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+
+    auto result = instance.GetPresentQueue().presentKHR(present_info);
+    ReportResult(true, result);
+    const DcpPresent::SwapResult kind = PresentResult(result);
+    ASSERT_MSG(kind != DcpPresent::SwapResult::Failure, "Swapchain presentation failed: {}",
+               vk::to_string(result));
+    LogKeptSuboptimal(kind, health.Present(kind));
+
+    frame_index = (frame_index + 1) % image_count;
+
+    return !health.NeedsRecreation();
+}
+
+DcpPresent::SwapResult Swapchain::AcquireResult(vk::Result result) {
+    switch (result) {
+    case vk::Result::eSuccess:
+        return DcpPresent::SwapResult::Success;
+    case vk::Result::eSuboptimalKHR:
+        return DcpPresent::SwapResult::Suboptimal;
+    case vk::Result::eErrorSurfaceLostKHR:
+    case vk::Result::eErrorOutOfDateKHR:
+    case vk::Result::eErrorUnknown:
+        return DcpPresent::SwapResult::OutOfDate;
+    default:
+        return DcpPresent::SwapResult::Failure;
+    }
+}
+
+DcpPresent::SwapResult Swapchain::PresentResult(vk::Result result) {
+    switch (result) {
+    case vk::Result::eSuccess:
+        return DcpPresent::SwapResult::Success;
+    case vk::Result::eSuboptimalKHR:
+        return DcpPresent::SwapResult::Suboptimal;
+    case vk::Result::eErrorOutOfDateKHR:
+        return DcpPresent::SwapResult::OutOfDate;
+    default:
+        return DcpPresent::SwapResult::Failure;
+    }
+}
+
+void Swapchain::DescribeSurface(const vk::SurfaceCapabilitiesKHR& capabilities) {
+    if (!gamescope) {
+        return;
+    }
+    const auto usage = [&](vk::ImageUsageFlagBits bit) { return (capabilities.supportedUsageFlags & bit) ? "yes" : "NO"; };
+    char text[384];
+    std::snprintf(text, sizeof(text),
+                  "current=%ux%u min=%ux%u max=%ux%u chosen=%ux%u usage(color=%s transfer_src=%s transfer_dst=%s) "
+                  "transform=%s alpha=%s",
+                  capabilities.currentExtent.width, capabilities.currentExtent.height,
+                  capabilities.minImageExtent.width, capabilities.minImageExtent.height,
+                  capabilities.maxImageExtent.width, capabilities.maxImageExtent.height, extent.width, extent.height,
+                  usage(vk::ImageUsageFlagBits::eColorAttachment), usage(vk::ImageUsageFlagBits::eTransferSrc),
+                  usage(vk::ImageUsageFlagBits::eTransferDst), vk::to_string(transform).c_str(),
+                  vk::to_string(composite_alpha).c_str());
+    surface_summary = text;
+}
+
+void Swapchain::LogCreation() {
+    DcpPresent::g_progress.swapchain_size = DcpPresent::Pack({extent.width, extent.height});
+    if (!gamescope || logged_creations >= 16) {
+        return;
+    }
+    ++logged_creations;
+    const vk::SurfaceFormatKHR format = needs_hdr ? SURFACE_FORMAT_HDR : surface_format;
+    std::printf("Swapchain diagnostic: created #%u %s images=%u mode=%s format=%s colorspace=%s\n", logged_creations,
+                surface_summary.c_str(), image_count, vk::to_string(present_mode).c_str(),
+                vk::to_string(format.format).c_str(), vk::to_string(format.colorSpace).c_str());
+}
+
+void Swapchain::ReportResult(bool presenting, vk::Result result) {
+    const int code = static_cast<int>(result);
+    auto& progress = DcpPresent::g_progress;
+    (presenting ? progress.last_present : progress.last_acquire) = code;
+    if (presenting && PresentResult(result) != DcpPresent::SwapResult::Failure) {
+        progress.presented.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!gamescope || !(presenting ? present_reporter : acquire_reporter).Observe(code)) {
+        return;
+    }
+    if (presenting) {
+        std::printf("Swapchain diagnostic: vkQueuePresentKHR returned %s (present %llu)\n", DcpPresent::ResultName(code),
+                    static_cast<unsigned long long>(progress.presented.load()));
+    } else {
+        std::printf("Swapchain diagnostic: vkAcquireNextImageKHR returned %s, image %u\n", DcpPresent::ResultName(code),
+                    image_index);
+    }
+}
+
+// Once: a surface that stays suboptimal after its recreation is used as it is.
+void Swapchain::LogKeptSuboptimal(DcpPresent::SwapResult kind, DcpPresent::SwapStep step) {
+    if (kind != DcpPresent::SwapResult::Suboptimal || step.recreate || logged_kept_suboptimal) {
+        return;
+    }
+    logged_kept_suboptimal = true;
+    std::printf("Swapchain: the surface stays suboptimal after recreation; presenting with it (%ux%u)\n",
+                extent.width, extent.height);
+}
+
+void Swapchain::FindPresentFormat() {
+    const auto [formats_result, formats] =
+        instance.GetPhysicalDevice().getSurfaceFormatsKHR(surface);
+    ASSERT_MSG(formats_result == vk::Result::eSuccess, "Failed to query surface formats: {}",
+               vk::to_string(formats_result));
+
+    // Check if the device supports HDR formats. Here we care of Rec.2020 PQ only as it is expected
+    // game output. Other variants as e.g. linear Rec.2020 will require additional color space
+    // rotation
+    supports_hdr =
+        std::find_if(formats.begin(), formats.end(), [](const vk::SurfaceFormatKHR& format) {
+            return format == SURFACE_FORMAT_HDR;
+        }) != formats.end();
+    // Also make sure that user allowed us to use HDR
+    supports_hdr &= EmulatorSettings.IsHdrAllowed();
+
+    // If there is a single undefined surface format, the device doesn't care, so we'll just use
+    // RGBA sRGB.
+    if (formats[0].format == vk::Format::eUndefined) {
+        surface_format.format = vk::Format::eR8G8B8A8Unorm;
+        surface_format.colorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
+        return;
+    }
+
+    // Try to find a suitable format.
+    for (const vk::SurfaceFormatKHR& sformat : formats) {
+        vk::Format format = sformat.format;
+        if (format != vk::Format::eR8G8B8A8Unorm && format != vk::Format::eB8G8R8A8Unorm) {
+            continue;
+        }
+
+        surface_format.format = format;
+        surface_format.colorSpace = sformat.colorSpace;
+        return;
+    }
+
+    UNREACHABLE_MSG("Unable to find required swapchain format!");
+}
+
+void Swapchain::FindPresentMode() {
+    const auto [modes_result, modes] =
+        instance.GetPhysicalDevice().getSurfacePresentModesKHR(surface);
+    if (modes_result != vk::Result::eSuccess) {
+        LOG_ERROR(Render, "Failed to query available present modes, falling back to Fifo as "
+                          "guaranteed supported option.");
+        present_mode = vk::PresentModeKHR::eFifo;
+        return;
+    }
+
+    if (!logged_modes) {
+        logged_modes = true;
+        std::string names;
+        for (const vk::PresentModeKHR mode : modes) {
+            names += (names.empty() ? "" : ", ") + vk::to_string(mode);
+        }
+        std::printf("Swapchain: surface present modes %s\n", names.c_str());
+    }
+    vsync = DcpSettings::Get().vsync;
+    const auto has = [&](vk::PresentModeKHR mode) { return std::ranges::find(modes, mode) != modes.cend(); };
+    present_mode = vk::PresentModeKHR(
+        DcpPresent::ChooseMode(vsync, has(vk::PresentModeKHR::eMailbox), has(vk::PresentModeKHR::eImmediate)));
+    std::printf("Swapchain: VSync %s (%s)\n", vsync ? "on" : "off", vk::to_string(present_mode).c_str());
+}
+
+void Swapchain::UpdateVsync() {
+    if (DcpSettings::Get().vsync == vsync) {
+        return;
+    }
+    WaitDeviceIdle(instance, "before a VSync change");
+    FindPresentMode();
+    Recreate(width, height);
+}
+
+void Swapchain::SetSurfaceProperties() {
+    const auto [capabilities_result, capabilities] =
+        instance.GetPhysicalDevice().getSurfaceCapabilitiesKHR(surface);
+    ASSERT_MSG(capabilities_result == vk::Result::eSuccess,
+               "Failed to query surface capabilities: {}", vk::to_string(capabilities_result));
+
+    extent = capabilities.currentExtent;
+    if (capabilities.currentExtent.width == std::numeric_limits<u32>::max()) {
+        extent.width = std::max(capabilities.minImageExtent.width,
+                                std::min(capabilities.maxImageExtent.width, width));
+        extent.height = std::max(capabilities.minImageExtent.height,
+                                 std::min(capabilities.maxImageExtent.height, height));
+    }
+
+    surface_min_images = capabilities.minImageCount;
+    surface_max_images = capabilities.maxImageCount;
+    requested_images = DcpPresent::ImageCount(surface_min_images, surface_max_images, gamescope);
+    image_count = requested_images;
+
+    // Prefer identity transform if possible
+    transform = vk::SurfaceTransformFlagBitsKHR::eIdentity;
+    if (!(capabilities.supportedTransforms & transform)) {
+        transform = capabilities.currentTransform;
+    }
+
+    // Opaque is not supported everywhere.
+    composite_alpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    if (!(capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::eOpaque)) {
+        composite_alpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
+    }
+    DescribeSurface(capabilities);
+}
+
+void Swapchain::Destroy() {
+    vk::Device device = instance.GetDevice();
+    WaitDeviceIdle(instance, "before destroying the swapchain");
+
+    for (auto& image_view : images_view) {
+        device.destroyImageView(image_view);
+    }
+    images_view.clear();
+
+    if (swapchain) {
+        device.destroySwapchainKHR(swapchain);
+    }
+
+    for (const auto& sem : image_acquired) {
+        device.destroySemaphore(sem);
+    }
+    for (const auto& sem : present_ready) {
+        device.destroySemaphore(sem);
+    }
+
+    image_acquired.clear();
+    present_ready.clear();
+}
+
+void Swapchain::RefreshSemaphores() {
+    const vk::Device device = instance.GetDevice();
+    image_acquired.resize(image_count);
+    present_ready.resize(image_count);
+
+    for (vk::Semaphore& semaphore : image_acquired) {
+        auto [semaphore_result, sem] = device.createSemaphore({});
+        ASSERT_MSG(semaphore_result == vk::Result::eSuccess,
+                   "Failed to create image acquired semaphore: {}",
+                   vk::to_string(semaphore_result));
+        semaphore = sem;
+    }
+    for (vk::Semaphore& semaphore : present_ready) {
+        auto [semaphore_result, sem] = device.createSemaphore({});
+        ASSERT_MSG(semaphore_result == vk::Result::eSuccess,
+                   "Failed to create present ready semaphore: {}", vk::to_string(semaphore_result));
+        semaphore = sem;
+    }
+
+    for (u32 i = 0; i < image_count; ++i) {
+        SetObjectName(device, image_acquired[i], "Swapchain Semaphore: image_acquired {}", i);
+        SetObjectName(device, present_ready[i], "Swapchain Semaphore: present_ready {}", i);
+    }
+}
+
+void Swapchain::SetupImages() {
+    vk::Device device = instance.GetDevice();
+    auto [images_result, imgs] = device.getSwapchainImagesKHR(swapchain);
+    ASSERT_MSG(images_result == vk::Result::eSuccess, "Failed to create swapchain images: {}",
+               vk::to_string(images_result));
+    images = std::move(imgs);
+    image_count = static_cast<u32>(images.size());
+    images_view.resize(image_count);
+    for (u32 i = 0; i < image_count; ++i) {
+        if (images_view[i]) {
+            device.destroyImageView(images_view[i]);
+        }
+        auto [im_view_result, im_view] = device.createImageView(vk::ImageViewCreateInfo{
+            .image = images[i],
+            .viewType = vk::ImageViewType::e2D,
+            .format = needs_hdr ? SURFACE_FORMAT_HDR.format : surface_format.format,
+            .subresourceRange =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                },
+        });
+        ASSERT_MSG(im_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+                   vk::to_string(im_view_result));
+        images_view[i] = im_view;
+    }
+
+    for (u32 i = 0; i < image_count; ++i) {
+        SetObjectName(device, images[i], "Swapchain Image {}", i);
+        SetObjectName(device, images_view[i], "Swapchain ImageView {}", i);
+    }
+}
+
+} // namespace Vulkan

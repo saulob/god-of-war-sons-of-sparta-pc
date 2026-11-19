@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "dcp_settings.h"
+#include "dcp_frame_pacing.h"
+#include "dcp_graphics.h"
+#include "dcp_keys.h"
+#include "dcp_renderer.h"
+
+#include <algorithm>
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace DcpSettings {
+
+namespace {
+
+std::filesystem::path file_path;
+std::mutex file_mutex; // Load and F11 (window thread)
+
+constexpr const char* FileHeader[] = {
+    "# Dragon's Crown Pro user settings (written by the launcher; F11 saves the display mode).",
+    "# Remove a line to use the default.",
+};
+
+std::filesystem::path PathFromUtf8(const std::string& text) {
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
+std::string Utf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+std::string Trim(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    return first == std::string::npos ? std::string{}
+                                      : text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+int ParseInt(const std::string& value, int fallback) {
+    char* end = nullptr;
+    const long number = std::strtol(value.c_str(), &end, 10);
+    return end == value.c_str() ? fallback : int(std::clamp<long>(number, INT_MIN, INT_MAX));
+}
+
+void Set(Values& v, const std::string& key, const std::string& value) {
+    if (key == "show_fps") {
+        v.show_fps = ParseBool(value, v.show_fps);
+    } else if (key == "show_ping") {
+        v.show_ping = ParseBool(value, v.show_ping);
+    } else if (key == "overlay_scale") {
+        v.overlay_scale = std::clamp(ParseInt(value, 100), 50, 300);
+    } else if (key == "overlay_corner") {
+        const int corner = ParseInt(value, 1);
+        v.overlay_corner = corner >= 0 && corner <= 3 ? corner : 1;
+    } else if (key == "display_mode") {
+        v.display_mode = DcpGraphics::ParseDisplayMode(value);
+    } else if (key == "vsync") {
+        v.vsync = ParseBool(value, v.vsync);
+    } else if (key == "presentation") {
+        v.presentation = DcpGraphics::ParsePresentation(value);
+    } else if (key == "fsr1") {
+        v.fsr1 = ParseBool(value, v.fsr1);
+    } else if (key == "rcas") {
+        v.rcas = ParseBool(value, v.rcas);
+    } else if (key == "rcas_strength") {
+        v.rcas_strength = DcpGraphics::ParseRcasStrength(ParseInt(value, -1));
+    } else if (key == "smaa") {
+        v.smaa = ParseBool(value, v.smaa);
+    } else if (key == "graphics_card") {
+        v.graphics_card = value == "automatic" ? std::string() : value;
+    } else if (key == "renderer") {
+        v.renderer = DcpRenderer::ParseChoice(value);
+    } else if (key == "render_resolution") {
+        v.render_resolution = DcpGraphics::ParseRenderResolution(value);
+    } else if (key == "aspect_ratio") {
+        v.aspect_ratio = DcpGraphics::ParseAspectRatio(value).key;
+    } else if (key == "true_ultrawide") {
+        v.true_ultrawide = ParseBool(value, v.true_ultrawide);
+    } else if (key == "dcp_japanese_npc_voices") {
+        v.japanese_npc_voices = ParseBool(value, v.japanese_npc_voices);
+    } else if (key == "anisotropy") {
+        v.anisotropy = DcpGraphics::ParseAnisotropy(ParseInt(value, 0));
+    } else if (key == "window_width") {
+        v.requested_width = std::clamp(ParseInt(value, 0), 0, 16384);
+    } else if (key == "window_height") {
+        v.requested_height = std::clamp(ParseInt(value, 0), 0, 16384);
+    } else if (key == "monitor") {
+        v.monitor = std::max(ParseInt(value, 1), 1);
+    } else if (key == "show_fps_title") {
+        v.show_fps_title = ParseBool(value, v.show_fps_title);
+    } else if (key == "show_resolution_title") {
+        v.show_resolution_title = ParseBool(value, v.show_resolution_title);
+    } else if (key == "skip_intro") {
+        v.skip_intro = ParseBool(value, v.skip_intro);
+    } else if (key == "japanese_menu_buttons") {
+        v.japanese_menu_buttons = ParseBool(value, v.japanese_menu_buttons);
+    } else if (key == "controller_rumble") {
+        v.controller_rumble = ParseBool(value, v.controller_rumble);
+    } else if (key == "mouse_pointer_sensitivity") {
+        v.mouse_sensitivity = dcp_mouse_setting_value_valid(key.c_str(), value.c_str())
+                                  ? dcp_pointer_sensitivity_normalize(ParseInt(value, 100))
+                                  : 100;
+    } else if (key == "mouse_controls") {
+        v.mouse_controls = ParseBool(value, v.mouse_controls);
+    } else if (key == "enable_boss_battle") {
+        v.enable_boss_battle = ParseBool(value, v.enable_boss_battle);
+    } else if (key == "unlock_gallery") {
+        v.unlock_gallery = ParseBool(value, v.unlock_gallery);
+    } else if (key == "story_skip_offer") {
+        v.story_skip_offer = ParseBool(value, v.story_skip_offer);
+    } else if (key == "tutorial_skip_offer") {
+        v.tutorial_skip_offer = ParseBool(value, v.tutorial_skip_offer);
+    } else if (key == "unlock_labyrinth") {
+        v.unlock_labyrinth = ParseBool(value, v.unlock_labyrinth);
+    } else if (key == "unlock_ultimate_tower") {
+        v.unlock_ultimate_tower = ParseBool(value, v.unlock_ultimate_tower);
+    } else if (key == "frame_rate") {
+        v.frame_rate = DcpFramePacing::ParseFrameRate(value);
+    } else if (const int scancode = dcp_key_from_name(value.c_str()); scancode != 0) {
+        std::atomic<int>* const hotkeys[] = {&v.menu_key, &v.window_mode_key};
+        for (int i = 0; i < DCP_KEY_COUNT - DCP_KEY_FIRST_HOTKEY; ++i) {
+            if (key == dcp_key_actions[DCP_KEY_FIRST_HOTKEY + i].ini_key) {
+                *hotkeys[i] = scancode;
+            }
+        }
+    }
+}
+
+// Every line holding one of `entries` is rewritten in place and missing ones are appended; all other lines stay.
+bool WriteEntries(const Entries& entries) {
+    std::scoped_lock lock{file_mutex};
+    if (file_path.empty()) {
+        return false;
+    }
+    std::vector<std::string> lines;
+    if (std::ifstream in{file_path}) {
+        for (std::string line; std::getline(in, line);) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            lines.push_back(std::move(line));
+        }
+    } else {
+        lines.assign(std::begin(FileHeader), std::end(FileHeader));
+    }
+    std::vector<bool> written(entries.size(), false);
+    for (std::string& line : lines) {
+        std::string key, value;
+        if (!ParseLine(line, key, value)) {
+            continue;
+        }
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].first == key) {
+                line = key + " = " + entries[i].second;
+                written[i] = true;
+            }
+        }
+    }
+    bool header = false;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (written[i]) {
+            continue;
+        }
+        if (!header) {
+            if (!lines.empty() && !Trim(lines.back()).empty()) {
+                lines.emplace_back();
+            }
+            lines.emplace_back("# Set in the game");
+            header = true;
+        }
+        lines.push_back(entries[i].first + " = " + entries[i].second);
+    }
+    std::error_code ec;
+    if (file_path.has_parent_path()) {
+        std::filesystem::create_directories(file_path.parent_path(), ec);
+    }
+    std::filesystem::path temporary = file_path;
+    temporary += ".tmp";
+    {
+        std::ofstream out{temporary, std::ios::binary | std::ios::trunc};
+        for (const std::string& line : lines) {
+            out << line << '\n';
+        }
+        if (!out.flush()) {
+            std::printf("Settings: cannot write %s\n", Utf8(file_path).c_str());
+            return false;
+        }
+    }
+    std::filesystem::rename(temporary, file_path, ec);
+    if (ec) {
+        std::printf("Settings: cannot replace %s: %s\n", Utf8(file_path).c_str(), ec.message().c_str());
+        std::filesystem::remove(temporary, ec);
+        return false;
+    }
+    return true;
+}
+
+std::string DisplayModeKey() {
+    return std::string(DcpGraphics::DisplayModeKeys[std::clamp(Get().display_mode.load(), 0,
+                                                               int(DcpGraphics::DisplayModeCount) - 1)]);
+}
+
+} // namespace
+
+bool ParseLine(const std::string& line, std::string& key, std::string& value) {
+    const std::string text = Trim(line);
+    const size_t eq = text.find('=');
+    if (text.empty() || text[0] == '#' || eq == std::string::npos) {
+        return false;
+    }
+    key = Trim(text.substr(0, eq));
+    if (key.empty() || key.find_first_of(" \t") != std::string::npos) {
+        return false;
+    }
+    value = Trim(text.substr(eq + 1));
+    if (const size_t comment = value.find(" #"); comment != std::string::npos) {
+        value = Trim(value.substr(0, comment));
+    }
+    return true;
+}
+
+bool ParseBool(const std::string& value, bool fallback) {
+    if (value == "1" || value == "on" || value == "yes" || value == "true") {
+        return true;
+    }
+    if (value == "0" || value == "off" || value == "no" || value == "false") {
+        return false;
+    }
+    return fallback;
+}
+
+Values& Get() {
+    static Values values;
+    return values;
+}
+
+bool Read(const std::string& path, Values& values) {
+    std::ifstream in{PathFromUtf8(path)};
+    if (!in) {
+        return false;
+    }
+    for (std::string line; std::getline(in, line);) {
+        std::string key, value;
+        if (ParseLine(line, key, value)) {
+            Set(values, key, value);
+        }
+    }
+    return true;
+}
+
+void Load(const std::string& path) {
+    auto& v = Get();
+    {
+        std::scoped_lock lock{file_mutex};
+        file_path = PathFromUtf8(path);
+    }
+    if (!Read(path, v)) {
+        std::printf("Settings: %s not found, using the defaults\n", path.c_str());
+        return;
+    }
+    std::printf("Settings: %s\n", path.c_str());
+    if (v.smaa) {
+        std::printf("GPU: anti-aliasing SMAA\n");
+    }
+    if (v.anisotropy) {
+        std::printf("GPU: texture filtering %dx\n", v.anisotropy.load());
+    }
+}
+
+bool SaveDisplayMode() {
+    return WriteEntries({{"display_mode", DisplayModeKey()}});
+}
+
+bool SaveEntries(const Entries& entries) {
+    return WriteEntries(entries);
+}
+
+} // namespace DcpSettings
