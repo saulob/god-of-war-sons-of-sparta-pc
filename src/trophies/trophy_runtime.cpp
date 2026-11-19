@@ -1,40 +1,57 @@
 #include "trophies/trophy_runtime.h"
 
-static int32_t next_id;
+#include "trophies/trophy_service.h"
+#include "utf8.h"
 
-int32_t trophy_runtime_create_context(int32_t *ctx, int32_t user, uint32_t label, uint64_t options) {
-    (void)user; (void)label; (void)options;
-    if (!ctx) return -1;
-    *ctx = ++next_id;
-    return 0;
+namespace {
+
+sos::trophies::TrophyService& Service() {
+    static sos::trophies::TrophyService service;
+    return service;
 }
+
+} // namespace
+
+extern "C" {
+
+void trophy_runtime_configure(const char *app0, const char *user_dir) {
+    Service().Configure(sos::PathFromUtf8(app0 ? app0 : ""), sos::PathFromUtf8(user_dir ? user_dir : "user"));
+}
+
+int32_t trophy_runtime_create_context(int32_t *context, int32_t user, uint32_t label, uint64_t options) {
+    return Service().CreateContext(context, user, label, options);
+}
+
 int32_t trophy_runtime_create_handle(int32_t *handle) {
-    if (!handle) return -1;
-    *handle = ++next_id;
-    return 0;
+    return Service().CreateHandle(handle);
 }
-int32_t trophy_runtime_register_context(int32_t ctx, int32_t handle, uint64_t options) {
-    (void)ctx; (void)handle; (void)options;
-    return 0;
+
+int32_t trophy_runtime_register_context(int32_t context, int32_t handle, uint64_t options) {
+    return Service().RegisterContext(context, handle, options);
 }
-int32_t trophy_runtime_unlock(int32_t ctx, int32_t handle, int32_t id, int32_t *platinum) {
-    (void)ctx; (void)handle; (void)id;
-    if (platinum) *platinum = 0;
-    return 0;
+
+int32_t trophy_runtime_destroy_handle(int32_t handle) {
+    return Service().DestroyHandle(handle);
 }
-int32_t trophy_runtime_game_info(int32_t ctx, int32_t handle, void *details, void *data) {
-    (void)ctx; (void)handle; (void)details; (void)data;
-    return 0;
+
+int32_t trophy_runtime_destroy_context(int32_t context) {
+    return Service().DestroyContext(context);
 }
-int32_t trophy_runtime_trophy_info(int32_t ctx, int32_t handle, int32_t id, void *details, void *data) {
-    (void)ctx; (void)handle; (void)id; (void)details; (void)data;
-    return 0;
+
+int32_t trophy_runtime_unlock(int32_t context, int32_t handle, int32_t trophy_id, int32_t *platinum_id) {
+    return Service().UnlockTrophy(context, handle, trophy_id, platinum_id);
 }
-int32_t trophy_runtime_unlock_state(int32_t ctx, int32_t handle, uint32_t *flags, uint32_t *count) {
-    (void)ctx; (void)handle;
-    if (flags) *flags = 0;
-    if (count) *count = 0;
-    return 0;
+
+int32_t trophy_runtime_game_info(int32_t context, int32_t handle, void *details, void *data) {
+    return Service().GetGameInfo(context, handle, details, data);
 }
-int32_t trophy_runtime_destroy_handle(int32_t handle) { (void)handle; return 0; }
-int32_t trophy_runtime_destroy_context(int32_t ctx) { (void)ctx; return 0; }
+
+int32_t trophy_runtime_trophy_info(int32_t context, int32_t handle, int32_t trophy_id, void *details, void *data) {
+    return Service().GetTrophyInfo(context, handle, trophy_id, details, data);
+}
+
+int32_t trophy_runtime_unlock_state(int32_t context, int32_t handle, uint32_t *flags, uint32_t *count) {
+    return Service().GetUnlockState(context, handle, reinterpret_cast<sos::trophies::FlagArray *>(flags), count);
+}
+
+}

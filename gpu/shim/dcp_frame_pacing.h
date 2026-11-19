@@ -84,9 +84,10 @@ constexpr unsigned RepeatCadenceHz(int setting, bool vsync = false, double displ
     return cadence > kGameHz ? static_cast<unsigned>(cadence) : 0u;
 }
 
-// 30 keeps the 60 Hz vblank and presents every second flip; all flips are still consumed.
-constexpr bool PresentsFlip(int setting, std::uint64_t flip_index) {
-    return RenderFps(setting) != 30 || flip_index % 2 == 0;
+// 30 keeps the 60 Hz vblank and presents every second flip; all flips are still consumed. A game already flipping
+// every second vblank (flip_rate 1 or more) is shown whole, so 30 never halves it again.
+constexpr bool PresentsFlip(int setting, std::uint64_t flip_index, int flip_rate = 0) {
+    return RenderFps(setting) != 30 || flip_rate > 0 || flip_index % 2 == 0;
 }
 
 // Releases one presentation per period on absolute slots of a monotonic clock, so a late wake does not shift

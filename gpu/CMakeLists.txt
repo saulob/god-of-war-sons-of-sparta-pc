@@ -139,6 +139,7 @@ target_compile_definitions(dcpgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG IMGUI_IMP
 set_source_files_properties(shim/imgui_impl_gles3.cpp PROPERTIES
     INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/shim/gles3_shim)
 target_compile_options(dcpgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
+target_link_libraries(dcpgpu PRIVATE $<LINK_ONLY:sos_startup_phase>)
 target_link_libraries(dcpgpu PUBLIC Vulkan::Headers Vulkan::Vulkan fmt::fmt Boost::headers magic_enum tsl::robin_map
     VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::FFMPEG SDL3::SDL3 PNG::PNG miniz Zydis::Zydis sirit)
 if (WIN32)

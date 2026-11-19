@@ -19,7 +19,8 @@ enum Feature : unsigned {
     JapaneseNpcVoices = 1u << 2,
     UnlockGallery = 1u << 3,
     BossBattle = 1u << 4,
-    AllFeatures = (1u << 5) - 1,
+    SkipIntro = 1u << 5,
+    AllFeatures = (1u << 6) - 1,
 };
 
 struct Values {

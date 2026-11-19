@@ -12,12 +12,14 @@
 #include "common/logging/log.h"
 #include "sdl_window.h"
 #include "sos_sdl_compat.h"
+#include "sos_window_fit.h"
 #include "dcp_overlay.h"
 #include "dcp_graphics.h"
 #include "dcp_latency_trace.h"
 #include "dcp_mouse.h"
 #include "dcp_present.h"
 #include "dcp_settings.h"
+#include "dcp_title.h"
 #ifdef _WIN32
 #include "video_core/renderer_opengl/gl_angle.h"
 #endif
@@ -120,6 +122,17 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title, GraphicsApi api
     } else {
         UNREACHABLE_MSG("Unsupported SDL video driver {}", driver ? driver : "(none)");
     }
+    if (display) {
+        // Hidden until the real title bar and frame are known, so the decorated window is fitted and centred once.
+        sos::WindowBorders borders;
+        SDL_GetWindowBordersSize(window, &borders.top, &borders.left, &borders.bottom, &borders.right);
+        const sos::WindowFit fit = sos::FitWindowToArea(window_width, window_height, borders, display->usable.x,
+                                                        display->usable.y, display->usable.w, display->usable.h);
+        window_width = fit.width;
+        window_height = fit.height;
+        SDL_SetWindowSize(window, fit.width, fit.height);
+        SDL_SetWindowPosition(window, fit.x, fit.y);
+    }
     ApplyDisplayMode(DcpSettings::Get().display_mode);
     SDL_ShowWindow(window);
     if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window))) {
@@ -213,20 +226,15 @@ void WindowSDL::RefreshTitle() {
     if (text_active) {
         entry = " \u2014 " + text_prompt + ": " + text + "_  (Enter = OK, Esc = cancel)";
     }
-    const std::string title = [&] {
-        std::string composed{base_title};
-        if (settings.show_resolution_title && settings.image_width > 0 && settings.image_height > 0) {
-            composed += " | " + std::to_string(settings.image_width) + "x" + std::to_string(settings.image_height);
-        }
-        if (!entry.empty()) {
-            composed += entry;
-        } else if (settings.show_fps_title && fps >= 0.0) {
-            char digits[32];
-            std::snprintf(digits, sizeof(digits), "%.2f", fps);
-            composed += std::string(" | FPS: ") + digits;
-        }
-        return composed;
-    }();
+    const std::string title = DcpTitle::Compose({
+        .base = base_title,
+        .show_resolution = settings.show_resolution_title,
+        .width = settings.image_width,
+        .height = settings.image_height,
+        .show_fps = settings.show_fps_title,
+        .fps = fps,
+        .entry = entry,
+    });
     if (title != title_shown) {
         SDL_SetWindowTitle(window, title.c_str());
         title_shown = title;
@@ -448,6 +456,11 @@ bool WindowSDL::PollEvents() {
             LogGamescopeWindow();
             break;
         }
+        case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+            if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window))) {
+                DcpSettings::Get().display_refresh_hz = mode->refresh_rate;
+            }
+            break;
         case SDL_EVENT_WINDOW_MINIMIZED:
         case SDL_EVENT_WINDOW_HIDDEN:
             DcpPresent::g_progress.window_active = false;

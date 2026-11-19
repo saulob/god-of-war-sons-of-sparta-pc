@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <vector>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -303,6 +304,7 @@ void Swapchain::FindPresentFormat() {
 void Swapchain::FindPresentMode() {
     const auto [modes_result, modes] =
         instance.GetPhysicalDevice().getSurfacePresentModesKHR(surface);
+    vsync = DcpSettings::Get().vsync;
     if (modes_result != vk::Result::eSuccess) {
         LOG_ERROR(Render, "Failed to query available present modes, falling back to Fifo as "
                           "guaranteed supported option.");
@@ -318,10 +320,11 @@ void Swapchain::FindPresentMode() {
         }
         std::printf("Swapchain: surface present modes %s\n", names.c_str());
     }
-    vsync = DcpSettings::Get().vsync;
-    const auto has = [&](vk::PresentModeKHR mode) { return std::ranges::find(modes, mode) != modes.cend(); };
-    present_mode = vk::PresentModeKHR(
-        DcpPresent::ChooseMode(vsync, has(vk::PresentModeKHR::eMailbox), has(vk::PresentModeKHR::eImmediate)));
+    std::vector<int> available;
+    for (const vk::PresentModeKHR mode : modes) {
+        available.push_back(int(mode));
+    }
+    present_mode = vk::PresentModeKHR(DcpPresent::ChooseFromSurface(vsync, available));
     std::printf("Swapchain: VSync %s (%s)\n", vsync ? "on" : "off", vk::to_string(present_mode).c_str());
 }
 

@@ -357,8 +357,8 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
-    const bool present =
-        DcpFramePacing::PresentsFlip(DcpSettings::Get().frame_rate.load(), flips_consumed++);
+    const bool present = DcpFramePacing::PresentsFlip(DcpSettings::Get().frame_rate.load(), flips_consumed++,
+                                                      req.port->flip_rate);
     // Update HDR status before presenting, then present the frame on the swap thread.
     DcpStartupWatch::Mark(DcpStartupWatch::FlipTaken);
     RunPresenter([this, frame = req.frame, hdr = req.port->is_hdr, submitted = req.submitted, present] {

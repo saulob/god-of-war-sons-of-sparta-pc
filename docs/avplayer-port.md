@@ -74,6 +74,15 @@ file succeeds (the demuxer has released its own thread by then) and sends no sec
 out. At the end of the demuxed file each decoder is flushed (`avcodec_send_packet(nullptr)`) so the frames it holds back are
 delivered; `StateStop` follows only once every queued frame was consumed.
 
+## Skip Intro
+
+With `skip_intro` on, for a build that has `GameBuild::skip_intro` (CUSA57767 1.00), the first source the game opens
+is the startup video: every run log opens exactly one MP4 before `SplashScreen: Finished video`. Its demuxer stops after
+`SkipIntro::kPlayableMillis` (200 ms), so the end of the file, `StateStop` and every other transition are the natural
+ones; its audio is delivered silent and it never loops back. The game's start-up seek still finds frames with different
+timestamps. Later sources (tutorial videos) play completely. CUSA57767 1.01 stays off: its Il2cppUserAssemblies.prx and
+global-metadata.dat differ from 1.00 and no 1.01 run log shows its startup sequence.
+
 ## FFmpeg
 
 `gpu/ffmpeg.txt` pins FFmpeg 8.1.3, built LGPL with only the MP4 demuxer and the H.264, HEVC and AAC decoders (the codecs

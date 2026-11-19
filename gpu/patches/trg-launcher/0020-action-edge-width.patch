@@ -1,0 +1,99 @@
+diff --git a/include/trg/launcher.h b/include/trg/launcher.h
+--- a/include/trg/launcher.h
++++ b/include/trg/launcher.h
+@@ -76,6 +76,7 @@
+   ImVec4 sponsor_hot = ImVec4(0.88f, 0.27f, 0.59f, 1.0f);
+   ImVec4 sponsor_active = ImVec4(0.68f, 0.14f, 0.43f, 1.0f);
+   ImVec4 sponsor_link = ImVec4(0.92f, 0.40f, 0.68f, 1.0f);
++  float action_edge_width = 1.0f;  // logical pixels of the action edge: selected page, PLAY, accent buttons
+ 
+   // Deep space blue with a green accent (Outpost Kaloki X).
+   static Theme Midnight();
+diff --git a/include/trg/layout.h b/include/trg/layout.h
+--- a/include/trg/layout.h
++++ b/include/trg/layout.h
+@@ -93,6 +93,9 @@
+ // The panel drawn over a border softens one pixel of it.
+ inline float PanelBorderWidth(float scale) { return LineThickness(scale) + 1.0f; }
+ 
++// The action edge: `width` logical pixels, in whole pixels at this scale and never thinner than one.
++inline float ActionEdgeThickness(float width, float scale) { return std::max(1.0f, std::floor(width * scale + 0.5f)); }
++
+ // A page's width with room for its scrollbar, so that the bar appearing moves nothing.
+ inline float StableContentWidth(float body_width, float scrollbar_size) { return body_width - scrollbar_size; }
+ 
+diff --git a/src/launcher.cpp b/src/launcher.cpp
+--- a/src/launcher.cpp
++++ b/src/launcher.cpp
+@@ -94,11 +94,27 @@
+   t.link = t.accent;
+ }
+ 
+-void PushAccent(const Theme& t) {
++void DrawActionEdge(ImDrawList* dl, ImVec2 min, ImVec2 max, const Theme& t, float rounding, float scale) {
++  const float edge = layout::ActionEdgeThickness(t.action_edge_width, scale);
++  const float inset = edge * 0.5f;
++  dl->AddRect(ImVec2(min.x + inset, min.y + inset), ImVec2(max.x - inset, max.y - inset), Col(t.action_edge),
++              std::max(0.0f, rounding - inset), 0, edge);
++}
++
++constexpr int kAccentColors = 5;
++
++void PushAccent(const Theme& t, float scale) {
+   ImGui::PushStyleColor(ImGuiCol_Button, t.action);
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, t.action_hot);
+   ImGui::PushStyleColor(ImGuiCol_ButtonActive, t.action_active);
+   ImGui::PushStyleColor(ImGuiCol_Text, t.on_action);
++  ImGui::PushStyleColor(ImGuiCol_Border, t.action_edge);
++  ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, layout::ActionEdgeThickness(t.action_edge_width, scale));
++}
++
++void PopAccent() {
++  ImGui::PopStyleVar();
++  ImGui::PopStyleColor(kAccentColors);
+ }
+ 
+ // Draws `text` at `pos` and returns its advance. A non-empty url makes it a
+@@ -457,20 +473,20 @@
+   for (size_t i = 0; i < labels.size(); ++i) {
+     if (i) ImGui::SameLine(0, gap);
+     const bool sel = int(i) == selected;
+-    if (sel) PushAccent(theme());
++    if (sel) PushAccent(theme(), scale_);
+     ImGui::PushID(int(i));
+     if (ImGui::Button(T(labels[i].c_str()), ImVec2(equal ? equal_w : text_w[i] + spare, 0)) && !sel) clicked = int(i);
+     ImGui::PopID();
+-    if (sel) ImGui::PopStyleColor(4);
++    if (sel) PopAccent();
+   }
+   ImGui::PopID();
+   return clicked;
+ }
+ 
+ bool Ui::AccentButton(const char* label, ImVec2 size) {
+-  PushAccent(theme());
++  PushAccent(theme(), scale_);
+   const bool r = ImGui::Button(T(label), size);
+-  ImGui::PopStyleColor(4);
++  PopAccent();
+   return r;
+ }
+ 
+@@ -1258,7 +1274,7 @@
+     if (selected || hot)
+       dl->AddRectFilled(pos, ImVec2(pos.x + item.x, pos.y + item.y), Col(selected ? t.action : t.frame), 8 * s_);
+     if (selected)
+-      dl->AddRect(pos, ImVec2(pos.x + item.x, pos.y + item.y), Col(t.action_edge), 8 * s_, 0, std::max(1.0f, s_));
++      DrawActionEdge(dl, pos, ImVec2(pos.x + item.x, pos.y + item.y), t, 8 * s_, s_);
+     const ImTextureID icon = page.icon ? page.icon(icon_pixels) : ImTextureID{};
+     if (icon != ImTextureID{}) {
+       // On the pixel grid, so the image stays one texel per pixel.
+@@ -1443,7 +1459,7 @@
+   dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
+                     can_play ? Col(hot ? t.action_hot : t.action) : Col(hot ? t.frame_hot : t.frame), r);
+   if (can_play)
+-    dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y), Col(t.action_edge), r, 0, std::max(1.0f, s_));
++    DrawActionEdge(dl, p, ImVec2(p.x + size.x, p.y + size.y), t, r, s_);
+   const float fs = 20 * s_;
+   const char* play = T("PLAY");
+   const ImVec2 ts = config_.fonts.bold->CalcTextSizeA(fs, FLT_MAX, 0, play);

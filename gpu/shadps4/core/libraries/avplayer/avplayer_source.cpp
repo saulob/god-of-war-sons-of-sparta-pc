@@ -5,6 +5,7 @@
 #include "common/thread.h"
 #include "core/libraries/avplayer/avplayer_error.h"
 #include "core/libraries/avplayer/avplayer_file_streamer.h"
+#include "core/libraries/avplayer/avplayer_skip.h"
 #include "core/libraries/avplayer/avplayer_source.h"
 #include "core/libraries/videodec/video_utils.h"
 #include "core/memory.h"
@@ -56,6 +57,7 @@ AvPlayerSource::~AvPlayerSource() {
 }
 
 bool AvPlayerSource::Init(const AvPlayerInitData& init_data, std::string_view path) {
+    m_skip_intro = SkipIntro::Global().ClaimSource();
     m_memory_replacement = init_data.memory_replacement;
     m_max_num_video_framebuffers =
         std::min(std::max(2, init_data.num_output_video_framebuffers), 16);
@@ -559,6 +561,12 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
     const int audio_ffmpeg_index =
         m_audio_stream_index ? int(m_streams[m_audio_stream_index.value()].ffmpeg_index) : -1;
 
+    const auto past_skip_window = [this](const AVPacket& packet) {
+        const auto* stream = m_avformat_context->streams[packet.stream_index];
+        return SkipIntro::Policy::PastPlayableWindow(
+            TimestampToMillis(packet.dts != AV_NOPTS_VALUE ? packet.dts : packet.pts, stream->time_base));
+    };
+
     bool natural_eof = false;
     while (!stop.stop_requested()) {
         if (m_video_packets.Size() > 30 &&
@@ -570,7 +578,7 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
         const auto res = av_read_frame(m_avformat_context.get(), up_packet.get());
         if (res < 0) {
             if (res == AVERROR_EOF) {
-                if (m_is_looping) {
+                if (m_is_looping && !m_skip_intro) {
                     LOG_INFO(Lib_AvPlayer, "EOF reached in demuxer. Looping the source...");
                     m_state.OnWarning(ORBIS_AVPLAYER_ERROR_WAR_LOOPING_BACK);
                     avio_seek(m_avformat_context->pb, 0, SEEK_SET);
@@ -597,6 +605,10 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
                 m_state.OnError();
                 return;
             }
+            break;
+        }
+        if (m_skip_intro && past_skip_window(*up_packet)) {
+            natural_eof = true;
             break;
         }
         if (up_packet->stream_index == video_ffmpeg_index) {
@@ -837,7 +849,11 @@ Frame AvPlayerSource::PrepareAudioFrame(GuestBuffer buffer, const AVFrame& frame
 
     auto p_buffer = buffer.GetBuffer();
     const auto size = frame.ch_layout.nb_channels * frame.nb_samples * sizeof(u16);
-    std::memcpy(p_buffer, frame.data[0], size);
+    if (m_skip_intro) {
+        std::memset(p_buffer, 0, size);
+    } else {
+        std::memcpy(p_buffer, frame.data[0], size);
+    }
 
     const auto stream_index = m_streams[m_audio_stream_index.value()].ffmpeg_index;
     const auto stream = m_avformat_context->streams[stream_index];

@@ -1,0 +1,123 @@
+Third-party material of the launcher in God of War: Sons of Sparta PC. The port's own code is GPL-2.0-or-later; its
+source code is at https://github.com/saulob/god-of-war-sons-of-sparta-pc. The video core lineage is listed in
+gpu/VENDOR.txt of the source.
+
+This file covers what the launcher compiles in or draws: its libraries, its page icons and its sponsor heart.
+
+
+========================================================================
+Compiled into sons_of_sparta.exe
+========================================================================
+
+Dear ImGui                  MIT. Copyright (c) 2014-2025 Omar Cornut.
+                            Fetched by tools\build.ps1 (gpu\deps.txt); its licence is gpu\third_party\imgui\LICENSE.txt.
+miniz                       MIT. Copyright 2013-2014 RAD Game Tools and Valve Software;
+                            Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC.
+                            launcher\updater\third_party\miniz (licence: LICENSE in that folder). The updater reads
+                            release archives with it.
+nanosvg                     zlib. Copyright (c) 2013-14 Mikko Mononen.
+                            https://github.com/memononen/nanosvg at commit 239e102ec2c691f2902e20ace2ed36ee4a35cfe6.
+                            Altered: one cast in nsvgParseFromFile, marked in nanosvg.h. launcher\third_party\nanosvg
+                            (licence: LICENSE.txt in that folder). It draws the sidebar's page icons.
+
+TRG Launcher 1.1.0 (https://github.com/TekRantGaming/trg-launcher, b384a28c712c9320eea8f9d50639dec49981b6c1)
+  MIT License. Copyright (c) 2026 TekRantGaming. Fetched by tools\build.ps1 and patched by gpu\patches\trg-launcher.
+
+MIT License
+
+Copyright (c) 2026 TekRantGaming
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+========================================================================
+Application icon: Game Console Ecommerce
+========================================================================
+
+Source: SVG Repo (www.svgrepo.com). The file's own header reads "Uploaded to: SVG Repo, www.svgrepo.com, Generator:
+SVG Repo Mixer Tools". The source file was named game-console-ecommerce-svgrepo-com.svg.
+Modified to use the launcher accent and action edge colors (shape unchanged): the fills rgb(144,224,239) and
+rgb(25,144,167) became #DEA959 and #A82C26. packaging/icons/app-icon.svg is the only copy kept.
+The ICO and PNG icon files are renderings of the modified SVG (tools/make-app-icon.py).
+
+License: CC0 (public domain dedication), as svgrepo.com/svg/425126, collection "Ecommerce Duotone Filled Icons".
+
+
+========================================================================
+Launcher icon: Heart
+========================================================================
+
+Heart icon
+Source: SVG Repo (www.svgrepo.com), https://www.svgrepo.com/svg/532473/heart
+The file's own header reads "Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools". The source
+file was named heart-svgrepo-com.svg.
+Modified to be a white filled heart: the stroke color #000000 became #FFFFFF and a #FFFFFF fill was added (the path is
+unchanged). assets/launcher/sponsor-heart.svg is the only copy kept; assets/launcher/sponsor-heart.png is a 64 x 64
+rendering of it.
+
+License: CC0 (public domain dedication).
+
+
+========================================================================
+Launcher page icons
+========================================================================
+
+The nine sidebar icons, compiled into sons_of_sparta.exe from assets/launcher/icons of the source. Each one is
+drawn in the sidebar's colours; assets/launcher/icons/SOURCES.md records the source and every change made.
+
+display.svg, attribution required:
+  "Display Television Tv Screen Gadget" by nickylimyeanfen, collection Inc Device Icons.
+  Source: SVG Repo (www.svgrepo.com),
+  https://www.svgrepo.com/svg/381247/display-television-tv-screen-gadget
+  License: CC Attribution License, https://creativecommons.org/licenses/by/ Not CC0.
+  Adapted: renamed from display-television-tv-screen-gadget-svgrepo-com.svg and drawn scaled, in the sidebar's colours.
+
+CC0 (public domain dedication), all from SVG Repo (www.svgrepo.com):
+  play.svg       Play          https://www.svgrepo.com/svg/522228/play
+  graphics.svg   Controls Alt  https://www.svgrepo.com/svg/348105/controls-alt
+  gameplay.svg   Gamepad       https://www.svgrepo.com/svg/523439/gamepad
+  cheats.svg     Star Alt 1    https://www.svgrepo.com/svg/532289/star-alt-1
+  controls.svg   Keyboard      https://www.svgrepo.com/svg/524665/keyboard
+  trophies.svg   Achievements  https://www.svgrepo.com/svg/304482/achievements
+  about.svg      About         https://www.svgrepo.com/svg/486929/about
+
+bug-report.svg, MIT License:
+  "Bug File" by Vectopus, collection Atlas Variety Line Icons.
+  Source: SVG Repo (www.svgrepo.com), https://www.svgrepo.com/svg/456346/bug-file
+  Adapted: renamed from bug-file-svgrepo-com.svg and drawn scaled, in the sidebar's colours.
+
+Copyright (c) Vectopus
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

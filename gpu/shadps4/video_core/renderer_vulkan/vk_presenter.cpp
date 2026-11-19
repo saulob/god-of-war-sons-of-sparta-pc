@@ -110,26 +110,6 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format for
     };
 }
 
-[[nodiscard]] vk::ImageBlit MakeImageBlitStretch(s32 frame_width, s32 frame_height,
-                                                 s32 swapchain_width, s32 swapchain_height) {
-    return MakeImageBlit(frame_width, frame_height, swapchain_width, swapchain_height, 0, 0);
-}
-
-static vk::Rect2D FitImage(s32 frame_width, s32 frame_height, s32 swapchain_width,
-                           s32 swapchain_height) {
-    const DcpPresent::Region region =
-        DcpPresent::FitRegion({u32(frame_width), u32(frame_height)}, {u32(swapchain_width), u32(swapchain_height)});
-    return vk::Rect2D{{region.x, region.y}, {region.width, region.height}};
-}
-
-[[nodiscard]] vk::ImageBlit MakeImageBlitFit(s32 frame_width, s32 frame_height, s32 swapchain_width,
-                                             s32 swapchain_height) {
-    const auto& dst_rect = FitImage(frame_width, frame_height, swapchain_width, swapchain_height);
-
-    return MakeImageBlit(frame_width, frame_height, dst_rect.extent.width, dst_rect.extent.height,
-                         dst_rect.offset.x, dst_rect.offset.y);
-}
-
 Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_)
     : window{window_}, liverpool{liverpool_},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
@@ -421,9 +401,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     DcpSettings::Get().window_width = int(frame->width);
     DcpSettings::Get().window_height = int(frame->height);
     DcpSettings::Get().rcas_applied =
-        fsr_settings.use_rcas &&
-        DcpGraphics::FsrPassRuns(fsr_settings.enable, true, int(image_size.width), int(image_size.height),
-                                  int(frame->width), int(frame->height));
+        DcpGraphics::PlanPostProcess(graphics.smaa, fsr_settings.enable, fsr_settings.use_rcas,
+                                     int(image_size.width), int(image_size.height), int(frame->width),
+                                     int(frame->height)).rcas;
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);
 
@@ -752,9 +732,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
                                vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
         const bool stretch = DcpSettings::Get().presentation.load() == DcpGraphics::Stretch;
-        const vk::ImageBlit blit = stretch
-                                       ? MakeImageBlitStretch(frame->width, frame->height, extent.width, extent.height)
-                                       : MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height);
+        const DcpPresent::Region destination = DcpPresent::DestinationRegion(
+            {frame->width, frame->height}, {extent.width, extent.height}, stretch);
+        const vk::ImageBlit blit = MakeImageBlit(frame->width, frame->height, s32(destination.width),
+                                                 s32(destination.height), destination.x, destination.y);
         cmdbuf.blitImage(frame->image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
         ReportPresentGeometry(frame, extent, blit, stretch, is_reusing_frame);

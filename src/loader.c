@@ -17,6 +17,9 @@
 #include "game_build.h"
 #include "dcpgpu.h"
 #include "sos_launcher.h"
+#include "skip_intro.h"
+#include "controller_prompts.h"
+#include "trophies/trophy_runtime.h"
 #include "sos_image_format.h"
 #include "isa_emulate.h"
 #ifdef _WIN32
@@ -517,7 +520,7 @@ int main(int argc, char **argv) {
 #else
     page_size = (size_t)sysconf(_SC_PAGESIZE);
 #endif
-    int check_imports = 0, cpu_only = 0, list_all = 0, skip_launcher = 0, force_launcher = 0;
+    int check_imports = 0, cpu_only = 0, list_all = 0, skip_launcher = 0, force_launcher = 0, game_child = 0;
     const char *boot = NULL, *app0 = NULL, *content_profile = NULL;
     const char *prepare_view = NULL, *prepare_image = NULL;
     const char *user_dir = "user", *logs_dir = "logs", *log_file = NULL;
@@ -527,6 +530,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
         else if (!strcmp(argv[i], "--sos-skip-launcher")) skip_launcher = 1;
         else if (!strcmp(argv[i], "--launcher")) force_launcher = 1;
+        else if (!strcmp(argv[i], "--sos-game")) game_child = 1;
         else if (!strcmp(argv[i], "--app0") && i + 1 < argc) app0 = argv[++i];
         else if (!strcmp(argv[i], "--content-profile") && i + 1 < argc) content_profile = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) user_dir = argv[++i];
@@ -551,6 +555,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Cannot create the log under %s\n", logs_dir);
     printf("[run] God of War: Sons of Sparta PC\n[run] boot %s\n[run] log %s\n", boot ? boot : "(selected by the launcher)", log_path);
     if (app0) printf("[run] app0 %s\n[run] user %s\n", app0, user_dir);
+    atexit(runtime_log_flush);
+    runtime_log_install_cleanup();
 
     /* The build tools rebuild the installed game's image from its prepared tree; the launcher owns the installation. */
     if (prepare_view) {
@@ -584,20 +590,48 @@ int main(int argc, char **argv) {
     SosPaths paths;
     const SosPathRequest path_request = { boot, content_profile, app0, user_dir, logs_dir };
     if (!sos_resolve_paths(&path_request, &paths)) fail(paths.error);
-    if (!check_imports && !cpu_only && !skip_launcher) {
-        const SosLauncherConfig launcher = { paths.app0, paths.image_dir, paths.user_dir, NULL, paths.logs_dir, 0,
-                                            force_launcher, NULL, log_file ? log_path : NULL };
+    static char settings_file[4200];
+    snprintf(settings_file, sizeof(settings_file), "%s/sons_of_sparta.ini", paths.user_dir);
+    runtime_log_set_detailed(sos_detailed_logging(settings_file));
+    if (game_child) {
+        puts("Startup: game-only child process");
+    } else if (!check_imports && !cpu_only) {
+        int game_process = 0;
+#ifdef _WIN32
+        game_process = 1;
+#endif
+        static char log_folder[4200];
+        if (!sos_logs_directory(paths.logs_dir, log_started ? log_path : NULL, log_folder, sizeof(log_folder)))
+            snprintf(log_folder, sizeof(log_folder), "%s", paths.logs_dir);
+        const SosLauncherConfig launcher = { paths.app0, paths.image_dir, paths.user_dir, settings_file, log_folder,
+                                            skip_launcher, force_launcher, NULL, game_process,
+                                            log_started ? log_path : NULL };
         sos_startup_phase("launcher handoff");
         const SosLauncherResult launched = sos_launcher_run(&launcher);
         sos_startup_phase("launcher returned");
+        runtime_log_set_detailed(sos_detailed_logging(settings_file));
         if (launched == SOS_LAUNCHER_QUIT) {
             runtime_log_mark_clean_exit();
             runtime_log_flush();
             return 0;
         }
         if (launched == SOS_LAUNCHER_BLOCKED) return 1;
+#ifdef _WIN32
+        if (launched == SOS_LAUNCHER_GAME_STARTED) {
+            /* The game process appends to this log: nothing here may write to it once it runs. */
+            puts("Launcher: the game process continues this log");
+            runtime_log_flush();
+            runtime_log_release();
+            if (!sos_resume_game_process()) {
+                runtime_log_write_direct("Launcher: could not start the game process\n");
+                return 1;
+            }
+            return 0;
+        }
+#endif
         if (!sos_resolve_paths(&path_request, &paths)) fail(paths.error);
     }
+    printf("Overlay compatibility: %s game process\n", game_child ? "separate" : "original");
     boot = paths.boot;
     content_profile = paths.content_profile;
     app0 = paths.app0;
@@ -607,12 +641,12 @@ int main(int argc, char **argv) {
     load_content_profile(content_profile);
     report_image(boot);
     load_module_names(boot);
+    sos_log_settings_summary(settings_file, paths.image_dir);
 
     {
-        char settings_file[4200];
-        snprintf(settings_file, sizeof(settings_file), "%s/sons_of_sparta.ini", user_dir);
         if (app0) runtime_file_configure(app0, user_dir);
         runtime_savedata_configure("CUSA57767");
+        trophy_runtime_configure(app0, user_dir);
         runtime_pad_set_settings(settings_file);
     }
     dcpgpu_register_kernel();
@@ -715,14 +749,56 @@ int main(int argc, char **argv) {
 #endif
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+    SosRenderTarget render_target = sos_native_render_target();
+    {
+        SosGameBuild game_build;
+        const int known_build = sos_game_build(paths.image_dir, &game_build);
+        const int supported = known_build && game_build.resolution_site_count != 0;
+        int resolution_choice = 0, aspect_choice = 0;
+        const SosRenderTarget requested =
+            sos_render_target_from_settings(settings_file, supported, &resolution_choice, &aspect_choice);
+        if (!sos_render_target_is_native(&requested)) {
+            char error[320];
+            if (sos_apply_render_target(image, size, game_build.resolution_sites, game_build.resolution_site_count,
+                                        &requested, error, sizeof(error))) {
+                render_target = requested;
+                printf("Patch: render target %dx%d, Pro mode %s, direct memory pool +%llu MiB\n", render_target.width,
+                       render_target.height, render_target.neo ? "on" : "off",
+                       (unsigned long long)(sos_budget_growth(&render_target) >> 20));
+            } else {
+                printf("Display: render resolution ignored: %s, game build %s\n", error, game_build.label);
+                resolution_choice = aspect_choice = 0;
+            }
+        }
+        runtime_sos_set_neo_mode(render_target.neo);
+        runtime_memory_set_direct_extra(sos_budget_growth(&render_target));
+        sos_crash_context_set_display(render_target.width, render_target.height, sos_resolutions[resolution_choice].key,
+                                      sos_aspect_ratios[aspect_choice].key);
+        printf("Display: render resolution %dx%d (%s), aspect ratio %s\n", render_target.width, render_target.height,
+               sos_resolutions[resolution_choice].key, sos_aspect_ratios[aspect_choice].name);
+    }
+    {
+        SosGameBuild game_build;
+        const int style = sos_controller_prompts_from_file(settings_file);
+        if (style == SOS_PROMPTS_XBOX && sos_game_build(paths.image_dir, &game_build)) {
+            char key[64], message[200];
+            snprintf(key, sizeof(key), "%s-%s", game_build.title_id, game_build.version);
+            sos_controller_prompts_apply(image, size, key, style, message, sizeof(message));
+            printf("Controller prompts: %s\n", message);
+        } else if (style == SOS_PROMPTS_XBOX) {
+            printf("Controller prompts: Xbox requested but unavailable: not a supported game build\n");
+        } else {
+            printf("Controller prompts: %s\n", sos_prompt_style_label(style));
+        }
+    }
     if (runtime_memory_prepare()) fail("guest memory unavailable");
     {
-        char settings_file[4200];
-        snprintf(settings_file, sizeof(settings_file), "%s/sons_of_sparta.ini", user_dir);
         uint64_t sdk = 0;
         memcpy(&sdk, image + procparam + 16, 8);
+        const uint32_t gpu_features = sos_skip_intro_supported(paths.image_dir) ? DCP_GPU_FEATURE_SKIP_INTRO : 0;
         DcpGpuConfig gpu = { "God of War: Sons of Sparta", "CUSA57767", user_dir, settings_file,
-                             (uint32_t)sdk, 0, 1920, 1080, 0 };
+                             (uint32_t)sdk, 0, 1920, 1080, gpu_features, render_target.display_width,
+                             render_target.display_height };
         if (dcpgpu_available() && dcpgpu_init(&gpu) == 0) {
 #ifdef _WIN32
             gpu_enabled = 1;

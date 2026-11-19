@@ -275,7 +275,7 @@ const char* StateName(GameFileState state) {
 
 std::string InstalledGameName(GameFileState state, const GameBuild* build) {
     if (build && state == GameFileState::kValid) {
-        return std::string("PS4 ") + build->label;
+        return std::string("PS4 ") + BuildDisplayName(*build);
     }
     return "Not installed";
 }
@@ -545,6 +545,11 @@ extern "C" void sos_game_build_problem(const char* image_dir, char* out, size_t 
 }
 
 // The supported build a boot image folder was built from, for the loader; 0 when it is not one.
+extern "C" int sos_skip_intro_supported(const char* image_dir) {
+    const sos::GameBuild* build = sos::BuildOfImageDir(image_dir);
+    return build && build->skip_intro ? 1 : 0;
+}
+
 extern "C" int sos_game_build(const char* image_dir, SosGameBuild* out) {
     const sos::GameBuild* build = out ? sos::BuildOfImageDir(image_dir) : nullptr;
     if (!build) {
@@ -554,5 +559,7 @@ extern "C" int sos_game_build(const char* image_dir, SosGameBuild* out) {
     out->title_id = build->title_id;
     out->version = build->version;
     out->region = build->region;
+    out->resolution_sites = build->resolution_sites.data();
+    out->resolution_site_count = build->resolution_sites.size();
     return 1;
 }

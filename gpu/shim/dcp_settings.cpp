@@ -24,7 +24,7 @@ std::filesystem::path file_path;
 std::mutex file_mutex; // Load and F11 (window thread)
 
 constexpr const char* FileHeader[] = {
-    "# Dragon's Crown Pro user settings (written by the launcher; F11 saves the display mode).",
+    "# God of War: Sons of Sparta user settings (written by the launcher; F11 saves the display mode).",
     "# Remove a line to use the default.",
 };
 

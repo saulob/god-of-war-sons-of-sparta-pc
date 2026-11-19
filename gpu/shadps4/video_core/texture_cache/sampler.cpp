@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "dcp_graphics.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/texture_cache/sampler.h"
@@ -14,9 +15,9 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
     const bool anisotropy_enable = instance.IsAnisotropicFilteringSupported() &&
                                    (AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
                                     AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
-    const float max_anisotropy =
-        anisotropy_enable ? std::clamp(sampler.MaxAniso(), 1.0f, instance.MaxSamplerAnisotropy())
-                          : 1.0f;
+    const float max_anisotropy = DcpGraphics::EffectiveMaxAnisotropy(
+        instance.IsAnisotropicFilteringSupported(), anisotropy_enable, sampler.MaxAniso(),
+        instance.MaxSamplerAnisotropy());
     auto border_color = LiverpoolToVK::BorderColor(sampler.border_color_type);
     if (border_color == vk::BorderColor::eFloatCustomEXT &&
         !instance.IsCustomBorderColorSupported()) {

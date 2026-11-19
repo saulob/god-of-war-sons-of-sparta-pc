@@ -111,4 +111,39 @@ inline bool FsrPassRuns(bool fsr1, bool rcas, int in_w, int in_h, int out_w, int
     return (fsr1 && upscale) || (rcas && same);
 }
 
+/// The ratio (2, 4, 8 or 16) forced on a game sampler; 0 leaves the sampler as the game made it. Depth, compute,
+/// mipless and point-filtered samplers are never changed, and a sampler that already asks for the ratio or more is kept.
+inline int ForcedAnisotropyRatio(int forced, bool excluded, bool has_mips, bool linear_min, bool already_aniso,
+                                 float current_max) {
+    if (forced <= 1 || excluded || !has_mips || !linear_min || (already_aniso && current_max >= float(forced))) {
+        return 0;
+    }
+    return forced >= 16 ? 16 : forced >= 8 ? 8 : forced >= 4 ? 4 : 2;
+}
+/// What the Vulkan sampler gets: the requested ratio clamped to the device limit, or 1 without the feature or an
+/// anisotropic filter.
+inline float EffectiveMaxAnisotropy(bool feature, bool aniso_filter, float requested, float device_max) {
+    if (!feature || !aniso_filter) {
+        return 1.0f;
+    }
+    const float upper = device_max < 1.0f ? 1.0f : device_max;
+    return requested < 1.0f ? 1.0f : requested > upper ? upper : requested;
+}
+
+/// Which host passes run on the game's image.
+struct PostProcessPlan {
+    bool smaa;
+    bool fsr_pass; ///< the FSR pass runs (EASU, RCAS or both)
+    bool rcas;     ///< sharpening is applied
+};
+inline PostProcessPlan PlanPostProcess(bool smaa, bool fsr1, bool rcas, int in_w, int in_h, int out_w, int out_h) {
+    const bool pass = FsrPassRuns(fsr1, rcas, in_w, in_h, out_w, out_h);
+    return {smaa, pass, pass && rcas};
+}
+
+/// Whether render targets made for (have_w, have_h) must be recreated for (want_w, want_h).
+constexpr bool TargetsStale(unsigned have_w, unsigned have_h, unsigned want_w, unsigned want_h) {
+    return have_w != want_w || have_h != want_h;
+}
+
 } // namespace DcpGraphics

@@ -1,10 +1,10 @@
-// The accent colour of the launcher and the frame counter (#19B7A5).
+// The accent colour of the launcher, its application icon and the frame counter (#DEA959).
 #pragma once
 
 namespace sos {
 
-inline constexpr int kAccentRed = 0x19;
-inline constexpr int kAccentGreen = 0xB7;
-inline constexpr int kAccentBlue = 0xA5;
+inline constexpr int kAccentRed = 0xDE;
+inline constexpr int kAccentGreen = 0xA9;
+inline constexpr int kAccentBlue = 0x59;
 
 } // namespace sos

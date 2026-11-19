@@ -1,0 +1,86 @@
+diff --git a/include/trg/launcher.h b/include/trg/launcher.h
+--- a/include/trg/launcher.h
++++ b/include/trg/launcher.h
+@@ -71,6 +71,11 @@
+   ImVec4 warn;          // "Game files needed" card
+   ImVec4 good_dot;
+   ImVec4 warn_dot;      // also the sidebar's attention dot
++  // Sponsor on GitHub buttons: fill, hovered, pressed and the address under the card's button.
++  ImVec4 sponsor = ImVec4(0.79f, 0.18f, 0.50f, 1.0f);
++  ImVec4 sponsor_hot = ImVec4(0.88f, 0.27f, 0.59f, 1.0f);
++  ImVec4 sponsor_active = ImVec4(0.68f, 0.14f, 0.43f, 1.0f);
++  ImVec4 sponsor_link = ImVec4(0.92f, 0.40f, 0.68f, 1.0f);
+ 
+   // Deep space blue with a green accent (Outpost Kaloki X).
+   static Theme Midnight();
+diff --git a/src/launcher.cpp b/src/launcher.cpp
+--- a/src/launcher.cpp
++++ b/src/launcher.cpp
+@@ -129,11 +129,6 @@
+   return extent.x;
+ }
+ 
+-const ImVec4 kSponsorPink(0.79f, 0.18f, 0.50f, 1.0f);
+-const ImVec4 kSponsorPinkHot(0.88f, 0.27f, 0.59f, 1.0f);
+-const ImVec4 kSponsorPinkActive(0.68f, 0.14f, 0.43f, 1.0f);
+-const ImVec4 kSponsorLinkColor(0.92f, 0.40f, 0.68f, 1.0f);
+-
+ float SponsorIconSize(float font_size) { return font_size * 1.1f; }
+ 
+ float SponsorButtonWidth(const SponsorLink& sponsor, ImFont* font, float font_size, float scale) {
+@@ -180,13 +175,13 @@
+   return hints.empty() ? 0.0f : x - at.x - layout::kKeyHintGap * s;
+ }
+ 
+-bool SponsorButton(const char* id, const SponsorLink& sponsor, ImVec2 pos, ImVec2 size, ImFont* font,
+-                   float font_size, float scale) {
++bool SponsorButton(const char* id, const SponsorLink& sponsor, const Theme& theme, ImVec2 pos, ImVec2 size,
++                   ImFont* font, float font_size, float scale) {
+   ImGui::SetCursorScreenPos(pos);
+   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12 * scale);
+-  ImGui::PushStyleColor(ImGuiCol_Button, kSponsorPink);
+-  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kSponsorPinkHot);
+-  ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSponsorPinkActive);
++  ImGui::PushStyleColor(ImGuiCol_Button, theme.sponsor);
++  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.sponsor_hot);
++  ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.sponsor_active);
+   const bool pressed = ImGui::Button(id, size);
+   ImGui::PopStyleColor(3);
+   ImGui::PopStyleVar();
+@@ -843,7 +838,7 @@
+ 
+   if (has_heart) {
+     const ImVec2 min(std::floor(p.x + pad), std::floor(p.y + (h - block) * 0.5f));
+-    dl->AddRectFilled(min, ImVec2(min.x + block, min.y + block), Col(kSponsorPink), 10 * s);
++    dl->AddRectFilled(min, ImVec2(min.x + block, min.y + block), Col(t.sponsor), 10 * s);
+     const float heart = std::floor(layout::kSupportIconHeart * s);
+     const ImVec2 heart_min(std::floor(min.x + (block - heart) * 0.5f), std::floor(min.y + (block - heart) * 0.5f));
+     dl->AddImage(ImTextureRef(sponsor.icon), heart_min, ImVec2(heart_min.x + heart, heart_min.y + heart));
+@@ -859,7 +854,7 @@
+   ImGui::PopTextWrapPos();
+ 
+   const float button_x = p.x + w - pad - button.x;
+-  if (SponsorButton("##sponsor_card", sponsor, ImVec2(button_x, p.y + pad), button, font, font_size, s)) {
++  if (SponsorButton("##sponsor_card", sponsor, t, ImVec2(button_x, p.y + pad), button, font, font_size, s)) {
+     OpenUrl(sponsor.url);
+   }
+   std::string shown = sponsor.url;
+@@ -869,7 +864,7 @@
+   const float link_w = link_font->CalcTextSizeA(link_size, FLT_MAX, 0.0f, shown.c_str()).x;
+   ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+   LinkText(dl, "##sponsor_url", ImVec2(button_x + (button.x - link_w) * 0.5f, p.y + pad + button.y + link_gap),
+-           link_font, link_size, Col(kSponsorLinkColor), shown.c_str(), sponsor.url);
++           link_font, link_size, Col(t.sponsor_link), shown.c_str(), sponsor.url);
+   ImGui::PopItemFlag();
+ 
+   ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + layout::kItemGap * s));
+@@ -1385,7 +1380,8 @@
+     const float x = quit_x - gap - size.x;
+     if (x >= help_x + note_w + gap) {
+       left_end = x;
+-      if (SponsorButton("##sponsor_footer", sponsor, ImVec2(x, cy - size.y * 0.5f), size, font, font_size, s_)) {
++      if (SponsorButton("##sponsor_footer", sponsor, config_.theme, ImVec2(x, cy - size.y * 0.5f), size, font, font_size,
++                        s_)) {
+         OpenUrl(sponsor.url);
+       }
+     }

@@ -1,20 +1,40 @@
 #include "options.h"
 
+#include <SDL3/SDL_keyboard.h>
+
+#include "localization/ui_text.h"
+
 namespace sos {
 namespace {
 
+constexpr char kTimes[] = " \xC3\x97 ";
+
 std::string Dimensions(int width, int height) {
-    return std::to_string(width) + " x " + std::to_string(height);
+    return std::to_string(width) + kTimes + std::to_string(height);
+}
+
+std::string DefaultKeyName(SosKeyAction action) {
+    char name[32];
+    return sos_key_name(sos_key_actions[action].default_scancode, name, sizeof(name));
 }
 
 } // namespace
 
-std::vector<WindowSize> WindowSizes() {
+WindowSize WindowSizeOf(int height, const SosAspectRatio& aspect) {
+    const long width = (static_cast<long>(height) * aspect.width * 2 + aspect.height) / (2 * aspect.height);
+    return {static_cast<int>(width), height};
+}
+
+std::vector<WindowSize> WindowSizesFor(const SosAspectRatio& aspect) {
     std::vector<WindowSize> sizes;
     for (const int height : kWindowHeights) {
-        sizes.push_back({(height * 16 + 4) / 9, height});
+        sizes.push_back(WindowSizeOf(height, aspect));
     }
     return sizes;
+}
+
+std::string ResolutionLabel(const SosResolution& resolution) {
+    return std::string(Tr(resolution.name)) + " \xE2\x80\x94 " + Dimensions(resolution.width, resolution.height);
 }
 
 const char* PageName(PageId page) {
@@ -23,7 +43,9 @@ const char* PageName(PageId page) {
     case PageId::kDisplay: return "Display";
     case PageId::kGraphics: return "Graphics";
     case PageId::kGameplay: return "Gameplay";
+    case PageId::kCheats: return "Cheats";
     case PageId::kControls: return "Controls";
+    case PageId::kTrophies: return "Trophies";
     case PageId::kBugReport: return "Bug Report";
     case PageId::kAbout: return "About";
     }
@@ -42,7 +64,8 @@ bool WindowSizeFits(WindowSize size, const Display& display) {
 std::string WindowSizeLabel(WindowSize size) {
     std::string label = Dimensions(size.width, size.height);
     if (size == kGamePictureSize) {
-        label += "   (the game's own size)";
+        label += "   ";
+        label += Tr("(the game's own size)");
     }
     return label;
 }
@@ -50,15 +73,40 @@ std::string WindowSizeLabel(WindowSize size) {
 std::string MonitorLabel(int monitor, const std::vector<Display>& displays) {
     const std::string number = std::to_string(monitor);
     if (monitor < 1 || monitor > static_cast<int>(displays.size())) {
-        return "Display " + number + " (not connected)";
+        return Tr("Display ") + number + Tr(" (not connected)");
     }
     const Display& display = displays[static_cast<size_t>(monitor - 1)];
-    std::string label = "Display " + number + (display.primary ? " (primary)" : "") + "   " +
+    std::string label = Tr("Display ") + number + (display.primary ? Tr(" (primary)") : "") + "   " +
                         Dimensions(display.bounds.w, display.bounds.h);
     if (!display.name.empty() && display.name != "Generic PnP Monitor") {
         label += "   " + display.name;
     }
     return label;
+}
+
+std::string KeyDisplayName(int scancode) {
+    if (scancode == SDL_SCANCODE_RETURN) {
+        return "Enter";
+    }
+    return sos_key_bindable(scancode) ? SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)) : std::string();
+}
+
+int SavedKey(const trg::SettingsStore& settings, SosKeyAction action) {
+    const int saved = sos_key_from_name(settings.Get(sos_key_actions[action].ini_key).c_str());
+    return saved ? saved : sos_key_actions[action].default_scancode;
+}
+
+void SetKey(trg::SettingsStore& settings, SosKeyAction action, int scancode) {
+    char name[32];
+    if (sos_key_name(scancode, name, sizeof(name))[0]) {
+        settings.Set(sos_key_actions[action].ini_key, name);
+    }
+}
+
+void ResetKeys(trg::SettingsStore& settings) {
+    for (int action = 0; action < SOS_KEY_COUNT; ++action) {
+        settings.Set(sos_key_actions[action].ini_key, DefaultKeyName(static_cast<SosKeyAction>(action)));
+    }
 }
 
 } // namespace sos

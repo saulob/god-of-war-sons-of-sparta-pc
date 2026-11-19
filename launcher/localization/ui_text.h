@@ -1,13 +1,13 @@
-// The launcher's and the in-game menus' text lookup. Every string is English for now; drawing code keeps calling Tr so a
-// translation can be added without touching it.
+// The launcher's own text. Every call site goes through Tr so a translation table can be added without touching them.
 #pragma once
 
 #include <string>
 
 namespace sos {
 
-inline const char* Tr(const char* english) { return english; }
-inline std::string Tr(const std::string& english) { return english; }
-inline std::string TrValue(const std::string& english) { return english; }
+const char* Tr(const char* english);
+std::string Tr(const std::string& english);
+// Tr for text built at runtime; never used as a format string.
+std::string TrValue(const std::string& english);
 
 } // namespace sos

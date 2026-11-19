@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(sons_of_sparta_pc VERSION 0.2.0 LANGUAGES C CXX)
+project(sons_of_sparta_pc VERSION 0.1.0 LANGUAGES C CXX)
 
 if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "Build with Clang: MSYS2 CLANG64 on Windows.")
@@ -22,9 +22,27 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fno-omit-frame-pointer>")
 
+if (NOT PROJECT_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    message(FATAL_ERROR "project VERSION must start with MAJOR.MINOR.PATCH")
+endif()
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/sos_version.h CONTENT "#define SOS_VERSION_NUMBERS \
+${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},0\n#define SOS_FILE_VERSION_STRING \
+\"${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}.0\"\n#define SOS_VERSION_STRING \"${PROJECT_VERSION}\"\n")
+
 find_package(SDL3 CONFIG REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(Threads REQUIRED)
+
+# Keyboard bindings shared by the launcher, the runtime pad and the video core.
+add_library(sos_keys STATIC src/sos_keys.c)
+target_include_directories(sos_keys PUBLIC src)
+target_link_libraries(sos_keys PUBLIC SDL3::SDL3)
+target_compile_options(sos_keys PRIVATE -Wall -Wextra -Werror)
+
+# The stage the process is in, for the crash report: used by the launcher, the loader and the window thread.
+add_library(sos_startup_phase STATIC src/startup_phase.c)
+target_include_directories(sos_startup_phase PUBLIC src)
+target_compile_options(sos_startup_phase PRIVATE -Wall -Wextra -Werror)
 
 # The shadPS4-derived video core (Liverpool/Vulkan renderer, shader recompiler, GnmDriver, VideoOut and kernel equeues).
 add_subdirectory(gpu)
@@ -76,14 +94,11 @@ set(SOS_RUNTIME_SOURCES
     src/runtime_redzone.c
     src/runtime_module.c
     src/runtime_history.c
-    src/sos_keys.c
     src/dcp_keys.c
     src/dcp_mouse.c
     src/runtime_online.cpp
     src/runtime_json.cpp
-    src/trophies/trophy_runtime.cpp
-    src/isa_emulate.c
-    src/startup_phase.c)
+    src/isa_emulate.c)
 set(SOS_NOTO_SANS ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSans-Regular.ttf)
 set(SOS_NOTO_SANS_TC ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSansTC-Regular.otf)
 set_source_files_properties(src/runtime_font.c PROPERTIES
@@ -91,13 +106,18 @@ set_source_files_properties(src/runtime_font.c PROPERTIES
     OBJECT_DEPENDS "${SOS_NOTO_SANS};${SOS_NOTO_SANS_TC}")
 
 if (WIN32)
-    set(SOS_PLATFORM_SOURCES src/compat_win.c src/crash_guard.c src/runtime_log.c src/runtime_session_log.c)
+    enable_language(RC)
+    # Relink when the application icon or the version changes.
+    set_source_files_properties(src/sons_of_sparta.rc PROPERTIES OBJECT_DEPENDS
+        "${CMAKE_SOURCE_DIR}/packaging/icons/app-icon.ico;${CMAKE_BINARY_DIR}/generated/sos_version.h")
+    set(SOS_PLATFORM_SOURCES src/compat_win.c src/crash_guard.c src/runtime_log.c src/runtime_session_log.c
+        src/sons_of_sparta.rc)
 else()
     set(SOS_PLATFORM_SOURCES src/runtime_log_posix.c src/runtime_session_log.c)
 endif()
 
 add_executable(sons_of_sparta src/loader.c ${SOS_RUNTIME_SOURCES} ${SOS_PLATFORM_SOURCES})
-target_include_directories(sons_of_sparta PRIVATE src launcher)
+target_include_directories(sons_of_sparta PRIVATE src launcher ${CMAKE_BINARY_DIR}/generated)
 target_compile_options(sons_of_sparta PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Werror>)
 if (WIN32)
     target_compile_definitions(sons_of_sparta PRIVATE _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000007)
@@ -106,4 +126,25 @@ if (WIN32)
 else()
     target_link_options(sons_of_sparta PRIVATE -rdynamic)
     target_link_libraries(sons_of_sparta PRIVATE sos_launcher dcpgpu sos_atrac9 SDL3::SDL3 Freetype::Freetype Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
+# The launcher reads its images next to the executable; each copy is a build output, so an image-only change syncs.
+set(SOS_LAUNCHER_ASSET_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/launcher")
+set(SOS_LAUNCHER_ASSET_COPIES)
+foreach(asset sponsor-heart.png)
+    set(asset_source "${CMAKE_CURRENT_SOURCE_DIR}/assets/launcher/${asset}")
+    set(asset_copy "${SOS_LAUNCHER_ASSET_DIR}/${asset}")
+    add_custom_command(OUTPUT "${asset_copy}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SOS_LAUNCHER_ASSET_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${asset_source}" "${asset_copy}"
+        COMMAND ${CMAKE_COMMAND} -E touch_nocreate "${asset_copy}"
+        DEPENDS "${asset_source}"
+        VERBATIM)
+    list(APPEND SOS_LAUNCHER_ASSET_COPIES "${asset_copy}")
+endforeach()
+add_custom_target(sos_launcher_assets DEPENDS ${SOS_LAUNCHER_ASSET_COPIES})
+add_dependencies(sons_of_sparta sos_launcher_assets)
+if (WIN32)
+    # The launcher's updater installs through this helper, which must sit beside the executable.
+    add_dependencies(sons_of_sparta trg-updater)
 endif()

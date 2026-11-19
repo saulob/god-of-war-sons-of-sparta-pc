@@ -19,7 +19,7 @@ Rect ToRect(const SDL_Rect& rect) {
 
 SDL_Renderer* CreateLauncherRenderer(SDL_Window* window) {
 #ifdef _WIN32
-    // A Direct3D 11 device here races the NVIDIA driver's worker threads at teardown (issue #45).
+    // A Direct3D 11 device here races the NVIDIA driver's worker threads at teardown.
     return SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
 #else
     SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);

@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
+#include "dcp_graphics.h"
 #include "dcp_settings.h"
 #include "dcp_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -2396,18 +2397,18 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 }
 
 void Rasterizer::ForceAnisotropy(AmdGpu::Sampler& sharp, bool is_depth) const {
-    const int forced = DcpSettings::Get().anisotropy;
-    if (forced <= 1 || is_depth || pipeline_is_compute || sharp.mip_filter == AmdGpu::MipFilter::None ||
-        (sharp.xy_min_filter != AmdGpu::Filter::Bilinear &&
-         sharp.xy_min_filter != AmdGpu::Filter::AnisoLinear)) {
+    const bool linear_min = sharp.xy_min_filter == AmdGpu::Filter::Bilinear ||
+                            sharp.xy_min_filter == AmdGpu::Filter::AnisoLinear;
+    const int forced = DcpGraphics::ForcedAnisotropyRatio(
+        DcpSettings::Get().anisotropy, is_depth || pipeline_is_compute,
+        sharp.mip_filter != AmdGpu::MipFilter::None, linear_min, AmdGpu::IsAnisoFilter(sharp.xy_min_filter),
+        AmdGpu::IsAnisoFilter(sharp.xy_min_filter) ? sharp.MaxAniso() : 1.0f);
+    if (forced == 0) {
         return;
     }
-    const auto ratio = forced >= 16 ? AmdGpu::AnisoRatio::Sixteen
-        : forced >= 8 ? AmdGpu::AnisoRatio::Eight
-        : forced >= 4 ? AmdGpu::AnisoRatio::Four : AmdGpu::AnisoRatio::Two;
-    if (AmdGpu::IsAnisoFilter(sharp.xy_min_filter) && sharp.MaxAniso() >= forced) {
-        return;
-    }
+    const auto ratio = forced == 16 ? AmdGpu::AnisoRatio::Sixteen
+        : forced == 8 ? AmdGpu::AnisoRatio::Eight
+        : forced == 4 ? AmdGpu::AnisoRatio::Four : AmdGpu::AnisoRatio::Two;
     sharp.xy_min_filter.Assign(AmdGpu::Filter::AnisoLinear);
     if (sharp.xy_mag_filter == AmdGpu::Filter::Bilinear) {
         sharp.xy_mag_filter.Assign(AmdGpu::Filter::AnisoLinear);

@@ -20,6 +20,7 @@
 
 #include "core/libraries/avplayer/avplayer.h"
 #include "core/libraries/avplayer/avplayer_error.h"
+#include "core/libraries/avplayer/avplayer_skip.h"
 #include "core/libraries/libs.h"
 #include "core/memory.h"
 
@@ -882,6 +883,89 @@ static void test_close_variants(Api& a, int baseline) {
     check(threads_settle(baseline), "no worker thread survives the races");
 }
 
+struct Drained {
+    int frames = 0;
+    bool audio_silent = true;
+    int audio_frames = 0;
+};
+
+static Drained drain(Api& a, Player& p) {
+    Drained result;
+    const auto end = std::chrono::steady_clock::now() + 20s;
+    while (a.is_active(p.handle) && std::chrono::steady_clock::now() < end) {
+        AvPlayerFrameInfo audio{};
+        AvPlayerFrameInfoEx video{};
+        if (a.audio(p.handle, &audio)) {
+            ++result.audio_frames;
+            const auto* bytes = static_cast<const u8*>(static_cast<const void*>(audio.p_data));
+            for (u32 i = 0; i < audio.details.audio.size; ++i) {
+                result.audio_silent = result.audio_silent && bytes[i] == 0;
+            }
+        }
+        result.frames += a.video_ex(p.handle, &video);
+        std::this_thread::sleep_for(2ms);
+    }
+    return result;
+}
+
+// Skip Intro cuts the first source the game opens; the transitions are the natural end of the file.
+static void test_skip_intro(Api& a, int baseline) {
+    std::puts("media: Skip Intro");
+    SkipIntro::Global().Configure(true);
+    {
+        Player p;
+        open_player(a, p);
+        check(add_clip(a, p), "the first source opens");
+        check(wait_until([&] { return p.play > 0; }), "the first source reaches Play");
+        const Drained cut = drain(a, p);
+        check(cut.frames >= 2 && cut.frames < 10, "only the first moments of the startup video are delivered");
+        check(cut.audio_frames > 0 && cut.audio_silent, "the audio that is delivered is silent");
+        check(!a.is_active(p.handle), "the player ends without waiting for the full clip");
+        check(wait_until([&] { return p.stop == 1; }, 5s), "exactly one Stop event follows, as at a natural end");
+        check(a.pause(p.handle) == ORBIS_OK && a.resume(p.handle) == ORBIS_OK,
+              "Pause and Resume after the cut are accepted like after a natural end");
+        check(a.stop(p.handle) == ORBIS_OK, "Stop after the cut succeeds");
+        check(p.stop == 1, "Stop sends no second Stop event");
+        check(a.close(p.handle) == ORBIS_OK, "Close succeeds");
+    }
+    {
+        Player q;
+        open_player(a, q);
+        check(add_clip(a, q), "the second source opens");
+        check(wait_until([&] { return q.play > 0; }), "the second source reaches Play");
+        const Drained full = drain(a, q);
+        check(full.frames == 30, "later sources play completely");
+        check(!full.audio_silent, "later sources keep their audio");
+        a.close(q.handle);
+    }
+    SkipIntro::Global().Configure(false);
+    {
+        Player r;
+        open_player(a, r);
+        check(add_clip(a, r), "with Skip Intro off the first source opens");
+        check(wait_until([&] { return r.play > 0; }), "with Skip Intro off the source reaches Play");
+        check(drain(a, r).frames == 30, "with Skip Intro off the first source plays completely");
+        a.close(r.handle);
+    }
+    check(threads_settle(baseline), "no worker thread survives the Skip Intro test");
+}
+
+static void test_skip_intro_policy() {
+    std::puts("Skip Intro policy");
+    SkipIntro::Policy policy;
+    check(!policy.ClaimSource() && !policy.ClaimSource(), "nothing is claimed while the setting is off");
+    policy.Configure(true);
+    check(policy.ClaimSource(), "the first source is claimed");
+    check(!policy.ClaimSource() && !policy.ClaimSource(), "later sources are not");
+    policy.Configure(true);
+    check(policy.ClaimSource(), "configuring again restarts the count");
+    policy.Configure(false);
+    check(!policy.ClaimSource(), "turning the setting off claims nothing");
+    check(!SkipIntro::Policy::PastPlayableWindow(0) && !SkipIntro::Policy::PastPlayableWindow(SkipIntro::kPlayableMillis) &&
+              SkipIntro::Policy::PastPlayableWindow(SkipIntro::kPlayableMillis + 1),
+          "the playable window ends after its limit");
+}
+
 int main() {
     std::thread([] {
         std::this_thread::sleep_for(180s);
@@ -902,6 +986,7 @@ int main() {
     test_log_callback(a);
     test_invalid_handles(a);
     test_init(a);
+    test_skip_intro_policy();
     if (!g_media_dir.empty()) {
         std::this_thread::sleep_for(100ms);
         const int baseline = thread_count();
@@ -912,6 +997,7 @@ int main() {
         test_looping(a, baseline);
         test_file_replacement(a, baseline);
         test_close_variants(a, baseline);
+        test_skip_intro(a, baseline);
     } else {
         std::puts("media tests skipped: AVPLAYER_TEST_MEDIA is not set");
     }

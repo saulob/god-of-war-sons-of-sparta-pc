@@ -27,7 +27,10 @@ game and PLAY starts it. The guest entry point is not yet reached in the current
 | `src/` | Native loader, runtime and PS4 compatibility libraries |
 | `docs/` | Investigation and design notes |
 | `gpu/` | shadPS4-derived video core (not yet added) |
-| `launcher/` | TRG launcher: installation, Play, display/graphics settings and bug report |
+| `launcher/` | TRG launcher: Play and installation, display/graphics/gameplay settings, controls, trophies, About and updater |
+| `assets/launcher/` | Launcher page icons, sponsor heart and their sources (`icons/SOURCES.md`) |
+| `packaging/licenses/` | Notices of the third-party material the launcher compiles in or draws |
+| `tests/` | Focused headless tests of the launcher, updater and trophies (`tools\test_launcher.ps1`, `test_updater.ps1`, `test_trophies.ps1`) |
 
 ## Build and run
 

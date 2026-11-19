@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <string>
 
 namespace DcpPresent {
@@ -30,6 +31,12 @@ inline Mode ChooseMode(bool vsync, bool has_mailbox, bool has_immediate) {
         return Mode::Mailbox;
     }
     return has_immediate ? Mode::Immediate : Mode::Fifo;
+}
+
+/// The same choice from the present modes the surface reports (VkPresentModeKHR values); Fifo is always available.
+inline Mode ChooseFromSurface(bool vsync, std::span<const int> supported) {
+    const auto has = [&](Mode mode) { return std::find(supported.begin(), supported.end(), int(mode)) != supported.end(); };
+    return ChooseMode(vsync, has(Mode::Mailbox), has(Mode::Immediate));
 }
 
 /// Gamescope (Steam Deck Gaming Mode) sets GAMESCOPE_WAYLAND_DISPLAY for the processes it runs.
@@ -171,6 +178,11 @@ inline Region FitRegion(Size frame, Size surface) {
     }
     return {static_cast<std::int32_t>(surface.width - dst.width) / 2,
             static_cast<std::int32_t>(surface.height - dst.height) / 2, dst.width, dst.height};
+}
+
+/// Where the frame lands in the swapchain image: all of it when stretched, else letterboxed.
+inline Region DestinationRegion(Size frame, Size surface, bool stretch) {
+    return stretch ? Region{0, 0, surface.width, surface.height} : FitRegion(frame, surface);
 }
 
 struct PresentGeometry {

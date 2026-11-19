@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "common/assert.h"
+#include "dcp_graphics.h"
 #include "core/emulator_settings.h"
 #include "video_core/host_shaders/smaa_blend_frag.h"
 #include "video_core/host_shaders/smaa_blend_vert.h"
@@ -346,7 +347,7 @@ vk::ImageView SmaaPass::Render(vk::CommandBuffer cmdbuf, Scheduler& scheduler, v
     if (!lookup_ready) {
         UploadLookupTextures(cmdbuf, scheduler);
     }
-    if (size != cur_size) {
+    if (DcpGraphics::TargetsStale(cur_size.width, cur_size.height, size.width, size.height)) {
         if (edges.image) {
             DeferDestroy(scheduler, std::move(edges), std::move(weights), std::move(output));
         }

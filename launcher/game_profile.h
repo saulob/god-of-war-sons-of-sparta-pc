@@ -5,11 +5,12 @@
 #include <string>
 #include <string_view>
 
+#include "sos_resolution.h"
+
 namespace sos {
 
 inline constexpr char kGameTitle[] = "God of War: Sons of Sparta";
 inline constexpr char kPortRepository[] = "github.com/saulob/god-of-war-sons-of-sparta-pc";
-inline constexpr char kIssuesUrl[] = "https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues";
 inline constexpr char kAuthorUrl[] = "https://github.com/saulob";
 inline constexpr char kSponsorUrl[] = "https://github.com/sponsors/saulob";
 
@@ -34,13 +35,18 @@ struct GameBuild {
     std::span<const PackageLayer> layers;
     std::span<const char* const> alternate_eboots = {};
     const char* code_build = "";
+    bool skip_intro = false; // the startup video is the first AvPlayer source of this build
+    std::span<const SosResolutionSite> resolution_sites = {}; // empty: the build runs only at its native size
 };
 
 bool IsBuildExecutable(const GameBuild& build, std::string_view sha256);
 std::span<const GameBuild> SupportedBuilds();
 const PackageLayer& FinishedLayer(const GameBuild& build);
 std::string BuildMetadataText(const GameBuild& build);
+// "CUSA57767 1.00 · USA": the build and its region, as the launcher shows them.
+std::string BuildDisplayName(const GameBuild& build);
 inline bool IsUpdateBuild(const GameBuild& build) { return build.layers.size() > 1; }
+inline bool RestrictedToNativeResolution(const GameBuild* build) { return build && build->resolution_sites.empty(); }
 const GameBuild* BaseBuildOf(const GameBuild& build, std::span<const GameBuild> builds = SupportedBuilds());
 std::string SupportedBuildsText();
 std::string CodeBuildKey(const GameBuild& build);
