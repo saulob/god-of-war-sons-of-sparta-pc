@@ -9,12 +9,12 @@
 
 #include PAD_SOURCE
 
-#ifdef PAD_KIND_TEST
+#if defined(PAD_KIND_TEST) || defined(PAD_BACK_TEST)
 #pragma clang diagnostic ignored "-Wunused-function"
 #endif
 
 static struct {
-    bool present, buttons[SDL_GAMEPAD_BUTTON_COUNT];
+    bool present, touchpad, finger, buttons[SDL_GAMEPAD_BUTTON_COUNT];
     int16_t axes[SDL_GAMEPAD_AXIS_COUNT];
 } fake;
 static int capture;
@@ -41,11 +41,13 @@ bool SDL_GamepadConnected(SDL_Gamepad *gamepad) { (void)gamepad; return fake.pre
 SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad *gamepad) { (void)gamepad; return 7; }
 bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button) { (void)gamepad; return fake.buttons[button]; }
 int16_t SDL_GetGamepadAxis(SDL_Gamepad *gamepad, SDL_GamepadAxis axis) { (void)gamepad; return fake.axes[axis]; }
-int SDL_GetNumGamepadTouchpads(SDL_Gamepad *gamepad) { (void)gamepad; return 0; }
-int SDL_GetNumGamepadTouchpadFingers(SDL_Gamepad *gamepad, int touchpad) { (void)gamepad; (void)touchpad; return 0; }
+int SDL_GetNumGamepadTouchpads(SDL_Gamepad *gamepad) { (void)gamepad; return fake.touchpad ? 1 : 0; }
+int SDL_GetNumGamepadTouchpadFingers(SDL_Gamepad *gamepad, int touchpad) { (void)gamepad; (void)touchpad; return fake.touchpad ? 1 : 0; }
 bool SDL_GetGamepadTouchpadFinger(SDL_Gamepad *gamepad, int touchpad, int finger, bool *down, float *x, float *y, float *pressure) {
-    (void)gamepad; (void)touchpad; (void)finger; (void)down; (void)x; (void)y; (void)pressure;
-    return false;
+    (void)gamepad; (void)touchpad; (void)finger; (void)pressure;
+    *down = fake.finger;
+    *x = *y = 0.5f;
+    return fake.touchpad;
 }
 const char *SDL_GetGamepadName(SDL_Gamepad *gamepad) { (void)gamepad; return "Xbox Series X Controller"; }
 SDL_GamepadType SDL_GetGamepadType(SDL_Gamepad *gamepad) { (void)gamepad; return fake_type; }
@@ -59,7 +61,9 @@ bool SDL_RumbleGamepad(SDL_Gamepad *gamepad, uint16_t low, uint16_t high, uint32
 bool SDL_SetGamepadLED(SDL_Gamepad *gamepad, uint8_t r, uint8_t g, uint8_t b) { (void)gamepad; (void)r; (void)g; (void)b; return true; }
 const bool *SDL_GetKeyboardState(int *count) { (void)count; return NULL; }
 uint64_t SDL_GetTicksNS(void) { return 0; }
-SDL_GamepadButton SDL_GetGamepadButtonFromString(const char *name) { (void)name; return SDL_GAMEPAD_BUTTON_INVALID; }
+SDL_GamepadButton SDL_GetGamepadButtonFromString(const char *name) {
+    return !strcmp(name, "back") ? SDL_GAMEPAD_BUTTON_BACK : !strcmp(name, "start") ? SDL_GAMEPAD_BUTTON_START : SDL_GAMEPAD_BUTTON_INVALID;
+}
 SDL_Scancode SDL_GetScancodeFromName(const char *name) { (void)name; return SDL_SCANCODE_UNKNOWN; }
 int SDL_strcasecmp(const char *a, const char *b) {
     for (; *a && *b; ++a, ++b) {
@@ -259,7 +263,125 @@ static void capture_test(void) {
     release_all();
 }
 
-#ifdef PAD_KIND_TEST
+#ifdef PAD_BACK_TEST
+static const struct { SDL_GamepadType type; const char *name; int playstation; } kPads[] = {
+    {SDL_GAMEPAD_TYPE_XBOX360, "Xbox360", 0},    {SDL_GAMEPAD_TYPE_XBOXONE, "XboxSeries", 0},
+    {SDL_GAMEPAD_TYPE_PS4, "DualShock4", 1},     {SDL_GAMEPAD_TYPE_PS5, "DualSense", 1},
+    {SDL_GAMEPAD_TYPE_STANDARD, "Generic", 0},   {SDL_GAMEPAD_TYPE_UNKNOWN, "Unknown", 0},
+    {SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, "SwitchPro", 0},
+};
+#define PAD_COUNT (sizeof(kPads) / sizeof(*kPads))
+
+/* The same sample through both exported reads; they must agree. */
+static PadData read_both(const char *label) {
+    const PadData state = read_pad(label);
+    PadData buffered;
+    memset(&buffered, 0xaa, sizeof(buffered));
+    check(pad_read(handle, &buffered, 1) == 1, "scePadRead returns one entry");
+    check(buffered.buttons == state.buttons && buffered.touch_count == state.touch_count && buffered.left_x == state.left_x &&
+              buffered.left_y == state.left_y && buffered.l2 == state.l2 && buffered.r2 == state.r2,
+          "scePadRead and scePadReadState agree");
+    return state;
+}
+static PadData sample_as(size_t pad, const char *what, uint32_t expected, const char *tag) {
+    char label[96], text[160];
+    snprintf(label, sizeof(label), "%s/%s", kPads[pad].name, what);
+    const PadData d = read_both(label);
+    snprintf(text, sizeof(text), "%s %s: buttons 0x%x, expected 0x%x", kPads[pad].name, tag, d.buttons, expected);
+    check(d.buttons == expected, text);
+    return d;
+}
+
+/* Back is the Touchpad button except on a DualShock 4 or DualSense, whose Share/Create it is. */
+static void back_test(size_t pad) {
+    const uint32_t view = kPads[pad].playstation ? 0 : BTN_TOUCHPAD;
+    fake_type = kPads[pad].type;
+    fake.touchpad = kPads[pad].playstation;
+    release_all();
+    sample_as(pad, "idle", 0, "idle");
+    for (size_t i = 0; i < sizeof(kButtons) / sizeof(*kButtons); ++i) {
+        release_all();
+        fake.buttons[kButtons[i].button] = true;
+        sample_as(pad, kButtons[i].name, kButtons[i].button == SDL_GAMEPAD_BUTTON_BACK ? view : kButtons[i].ps, kButtons[i].name);
+    }
+    release_all();
+    fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = fake.buttons[SDL_GAMEPAD_BUTTON_START] = true;
+    sample_as(pad, "BACK+START", BTN_OPTIONS | view, "Back and Start together");
+    release_all();
+    fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = fake.buttons[SDL_GAMEPAD_BUTTON_SOUTH] = true;
+    sample_as(pad, "BACK+A", BTN_CROSS | view, "Back and A together");
+    release_all();
+    fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = fake.buttons[SDL_GAMEPAD_BUTTON_DPAD_UP] = true;
+    sample_as(pad, "BACK+DPAD", BTN_UP | view, "Back and d-pad up together");
+    release_all();
+    fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = true;
+    fake.axes[SDL_GAMEPAD_AXIS_LEFTX] = 32767;
+    fake.axes[SDL_GAMEPAD_AXIS_RIGHTY] = -32768;
+    fake.axes[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] = 32767;
+    PadData d = sample_as(pad, "BACK+STICKS", BTN_R2 | view, "Back with sticks and a trigger");
+    check(d.left_x == 255 && d.left_y == 128 && d.right_y == 0 && d.r2 == 255, "Back leaves the sticks and triggers as they are");
+    release_all();
+
+    if (kPads[pad].playstation) {
+        fake.buttons[SDL_GAMEPAD_BUTTON_TOUCHPAD] = true;
+        fake.finger = true;
+        d = sample_as(pad, "TOUCHPAD", BTN_TOUCHPAD, "the real touchpad press");
+        check(d.touch_count == 1, "the real touchpad press keeps its finger");
+        fake.finger = false;
+        sample_as(pad, "TOUCHPAD-click", BTN_TOUCHPAD, "the real touchpad click without a finger");
+        fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = true;
+        sample_as(pad, "TOUCHPAD+BACK", BTN_TOUCHPAD, "the real touchpad with Share/Create");
+        release_all();
+    }
+
+    static const unsigned plan[] = {0, 1, 1, 1, 0, 0};
+    unsigned rising = 0, falling = 0, held = 0;
+    uint32_t previous = 0;
+    for (size_t frame = 0; frame < sizeof(plan) / sizeof(*plan); ++frame) {
+        fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = plan[frame] != 0;
+        for (int k = 0; k < 2; ++k) {
+            d = sample_as(pad, "BACK-hold", plan[frame] ? view : 0, "Back press, hold and release follow the held state");
+            if (k == 0) {
+                rising += (d.buttons & BTN_TOUCHPAD) && !previous;
+                falling += !(d.buttons & BTN_TOUCHPAD) && previous;
+                held += (d.buttons & BTN_TOUCHPAD) != 0;
+                previous = d.buttons & BTN_TOUCHPAD;
+            }
+        }
+    }
+    check(view ? (rising == 1 && falling == 1 && held == 3) : (rising == 0 && falling == 0 && held == 0), "Back is one level-held press, or none on a PlayStation pad");
+    release_all();
+}
+
+/* An SOS_PAD_MAP value set by the caller; argv[1] repeats it so the expectations follow it. */
+static void map_test(const char *map) {
+    for (size_t pad = 0; pad < PAD_COUNT; ++pad) {
+        const uint32_t view = kPads[pad].playstation ? 0 : BTN_TOUCHPAD;
+        fake_type = kPads[pad].type;
+        fake.touchpad = kPads[pad].playstation;
+        release_all();
+        fake.buttons[SDL_GAMEPAD_BUTTON_BACK] = true;
+        if (!strcmp(map, "touchpad=back")) sample_as(pad, "BACK", BTN_TOUCHPAD, "an explicit touchpad=back");
+        if (!strcmp(map, "cross=back")) sample_as(pad, "BACK", BTN_CROSS | view, "cross=back keeps the default Back rule");
+        if (!strcmp(map, "touchpad=start")) sample_as(pad, "BACK", 0, "touchpad=start frees Back");
+        release_all();
+        fake.buttons[SDL_GAMEPAD_BUTTON_START] = true;
+        if (!strcmp(map, "touchpad=start")) sample_as(pad, "START", BTN_OPTIONS | BTN_TOUCHPAD, "touchpad=start");
+        release_all();
+    }
+}
+
+int main(int argc, char **argv) {
+    fake.present = true;
+    check(pad_init() == 0, "scePadInit");
+    handle = pad_open(1, 0, 0, NULL);
+    check(handle == 1, "scePadOpen gives pad handle 1");
+    if (argc > 1) map_test(argv[1]);
+    else for (size_t pad = 0; pad < PAD_COUNT; ++pad) back_test(pad);
+    printf("%u checks, %u failures\n", checks, failures);
+    return failures ? 1 : 0;
+}
+#elif defined(PAD_KIND_TEST)
 /* The controller kind the pad layer publishes for the prompts: classified when a gamepad connects or goes away, never per sample,
  * and without any change to what the pad delivers. */
 static void kind_test(void) {

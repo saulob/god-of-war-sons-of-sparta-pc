@@ -11,7 +11,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $shell = (Get-Process -Id $PID).Path
 
 $steps = @(
-    @{ Name = 'Pad delivery: buttons, sticks, press/hold/release, reads per frame, 30-240 Hz, baseline commit'; Script = 'test_pad_input.ps1' },
+    @{ Name = 'Pad delivery: buttons, Back as Touchpad (not on DualShock 4/DualSense), Map action in the game code, sticks, press/hold/release, 30-240 Hz, baseline commit'; Script = 'test_pad_input.ps1' },
     @{ Name = 'Title input path and patch combinations on the real game code'; Script = 'test_title_patches.ps1' },
     @{ Name = 'Controller prompts (Automatic hook, PlayStation, Xbox patch)'; Script = 'test_controller_prompts.ps1' },
     @{ Name = 'Settings dialog glyphs (Xbox A/B in the confirmation dialogs, restoration, hook on the real code)'; Script = 'test_prompt_dialog.ps1' },

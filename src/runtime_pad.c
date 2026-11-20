@@ -178,6 +178,8 @@ static ButtonMap pad_map={{
     {SDL_GAMEPAD_BUTTON_DPAD_UP,BTN_UP}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN,BTN_DOWN},
     {SDL_GAMEPAD_BUTTON_DPAD_LEFT,BTN_LEFT}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT,BTN_RIGHT},
 },15};
+/* Back is Share/Create on a DualShock 4 or DualSense, which have a real touchpad; elsewhere it is View/Select. */
+static bool back_is_touchpad=true;
 static ButtonMap key_map;
 static SosKeyMap keys;
 static char keys_file[4200];
@@ -230,6 +232,7 @@ static int apply_button_map(ButtonMap *map, const char *spec, bool keyboard) {
             printf("Runtime: pad map: ignored '%s=%s'\n",button,name);
             continue;
         }
+        if (!keyboard && ps==BTN_TOUCHPAD) back_is_touchpad=false;
         size_t kept=0;
         for (size_t i=0;i<map->count;++i) if (map->entries[i].ps!=ps) map->entries[kept++]=map->entries[i];
         map->count=kept;
@@ -274,8 +277,11 @@ static void sample_host(int slot, PadData *d) {
     if (g) {
         /* L3 and R3 together belong to the Options menu: the game never sees the pair. */
         const bool chord=SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+        const int kind=pad_kind_of(g);
+        const bool playstation=kind==SOS_PAD_PLAYSTATION4 || kind==SOS_PAD_PLAYSTATION5;
         for (size_t i=0;i<pad_map.count;++i) {
             const int source=pad_map.entries[i].source;
+            if (playstation && back_is_touchpad && source==SDL_GAMEPAD_BUTTON_BACK && pad_map.entries[i].ps==BTN_TOUCHPAD) continue;
             if (chord && (source==SDL_GAMEPAD_BUTTON_LEFT_STICK || source==SDL_GAMEPAD_BUTTON_RIGHT_STICK)) continue;
             if (SDL_GetGamepadButton(g,(SDL_GamepadButton)source)) d->buttons|=pad_map.entries[i].ps;
         }
