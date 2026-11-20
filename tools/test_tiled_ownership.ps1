@@ -38,7 +38,9 @@ $shaderJobs = foreach ($bits in 8, 16, 32, 64, 96, 128) {
         $name = "tiling_${kind}_${bits}_comp"
         $header = Join-Path $generated "$name.h"
         $arguments = @('--target-env', 'vulkan1.3', '-o', $header, '--vn', $name.ToUpper(), "-DBITS_PER_PIXEL=$bits", "-DIS_MACRO_TILED=$macro", (Join-Path $video 'host_shaders/tiling.comp'))
-        [pscustomobject]@{ Header = $header; Process = Start-Process -FilePath (Join-Path $tc.Bin 'glslangValidator.exe') -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput ($header + '.log') }
+        $process = Start-Process -FilePath (Join-Path $tc.Bin 'glslangValidator.exe') -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput ($header + '.log')
+        $null = $process.Handle # Windows PowerShell 5.1 reports a null ExitCode unless the handle was taken while the process ran
+        [pscustomobject]@{ Header = $header; Process = $process }
     }
 }
 foreach ($job in $shaderJobs) {
@@ -71,8 +73,9 @@ $jobs = foreach ($source in $sources) {
     $object = Join-Path $temp ([IO.Path]::GetFileNameWithoutExtension($source) + '.o')
     $log = $object + '.log'
     $arguments = $flags + @('-c', $source, '-o', $object)
-    [pscustomobject]@{ Source = $source; Object = $object; Log = $log
-        Process = Start-Process -FilePath $clang -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardError $log }
+    $process = Start-Process -FilePath $clang -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardError $log
+    $null = $process.Handle
+    [pscustomobject]@{ Source = $source; Object = $object; Log = $log; Process = $process }
 }
 $failed = $false
 foreach ($job in $jobs) {

@@ -37,14 +37,14 @@ if ($LASTEXITCODE -ne 0) { throw 'could not embed the page icons' }
 $objects = New-Object System.Collections.Generic.List[string]
 function Compile([string]$Compiler, [string[]]$Flags, [string]$Source, [string]$Name) {
     $object = Join-Path $temp ($Name + '.o')
-    & $Compiler $target @Flags @include "-DSOS_PORT_VERSION=`"$version`"" '-c' $Source '-o' $object
+    & $Compiler $target @Flags @include (Get-StringDefine 'SOS_PORT_VERSION' $version) '-c' $Source '-o' $object
     if ($LASTEXITCODE -ne 0) { throw "could not compile $Source" }
     $objects.Add($object)
 }
 
 $flags20 = @('-std=c++20', '-Wall', '-Wextra', '-Werror', '-O1')
 $root_text = $root.Replace('\', '/')
-Compile $clangxx ($flags20 + "-DSOS_SOURCE_DIR=`"$root_text`"") (Join-Path $root 'tests\launcher_tests.cpp') 'launcher_tests'
+Compile $clangxx ($flags20 + (Get-StringDefine 'SOS_SOURCE_DIR' $root_text)) (Join-Path $root 'tests\launcher_tests.cpp') 'launcher_tests'
 foreach ($name in 'options', 'settings', 'page_icons', 'header_art', 'game_process', 'game_files', 'game_profile', 'crypto_win', 'resolution') {
     Compile $clangxx $flags20 (Join-Path $root "launcher\$name.cpp") $name
 }
@@ -73,7 +73,7 @@ foreach ($test in @(@{ Name = 'window_fit_tests'; Extra = @() }, @{ Name = 'path
     $testObjects.Add($object)
     foreach ($name in $test.Extra) {
         $extra = Join-Path $temp ($name + '.o')
-        & $clangxx $target @flags20 @include "-DSOS_PORT_VERSION=`"$version`"" '-c' (Join-Path $root "launcher\$name.cpp") '-o' $extra
+        & $clangxx $target @flags20 @include (Get-StringDefine 'SOS_PORT_VERSION' $version) '-c' (Join-Path $root "launcher\$name.cpp") '-o' $extra
         if ($LASTEXITCODE -ne 0) { throw "could not compile $name" }
         $testObjects.Add($extra)
     }

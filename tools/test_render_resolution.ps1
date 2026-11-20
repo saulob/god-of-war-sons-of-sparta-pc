@@ -33,7 +33,7 @@ foreach ($name in 'settings', 'platform') {
 
 $sources = @('tests\render_resolution_tests.cpp', 'launcher\resolution.cpp', 'launcher\game_profile.cpp') |
     ForEach-Object { Join-Path $root $_ }
-& $clangxx $target '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$root_text`"" @include @($sources) @($trg) `
+& $clangxx $target '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_SOURCE_DIR' $root_text) @include @($sources) @($trg) `
     '-lshell32' '-lole32' '-lcomdlg32' '-lwinhttp' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the render resolution test' }
 

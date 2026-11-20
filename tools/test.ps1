@@ -1,57 +1,245 @@
-# One command for the headless checks of the controller and title input path: the pad the game reads (against the baseline
-# commit) and the controller kind it publishes, the title's input path and the patch combinations on the real 1.00 and 1.01 code,
-# the controller prompts (Automatic, PlayStation, Xbox, the hook), the Settings dialog glyphs, the Xbox left-stick glyphs on the game's resources.assets and
-# their cache, the exact path alias, Skip Intro, the texture cache ownership checks (one headless Vulkan compute device), the frame rate
-# model, and git diff --check. No game, launcher, window or audio device is started.
-[CmdletBinding()]
-param()
+<#
+.SYNOPSIS
+  The one headless validation command: build parity of CUSA57767 1.00 and 1.01, the pad and title input path, the controller
+  prompts and Settings dialog glyphs, Skip Intro and AvPlayer, the texture cache and tiled ownership checks, the frame rate
+  model, the progress reporter and git whitespace. No game, launcher, window or audio device is started.
+.DESCRIPTION
+  Every group runs even after one fails; the exit code is non-zero when any failed. Nothing is built by this script: the
+  groups compile their own small test programs in a temporary folder, as before.
 
-$ErrorActionPreference = 'Stop'
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+  While a group runs, a progress block (percentage, bar, completed groups, elapsed time, ETA, check count so far, previous
+  group) is printed at its start and refreshed on a timer: one carriage-return line with a | / - \ spinner every 500 ms in a
+  terminal, a RUNNING text line every 15 s when output is redirected. A timing table and the slowest groups follow the last
+  group. The check count is the number the group's own output reports; no total is invented.
+
+  Each group is BUILD-SPECIFIC or SHARED HOST. A build-specific group must report both supported builds (the versions of
+  scripts\game_profiles.py, listed by scripts\build_parity_check.py --builds) in its output and must not skip a part for one
+  of them; the first group checks every build-specific table against that inventory and the prepared builds. To cover a new
+  build-specific feature: register it in scripts\build_parity_check.py, then add its test as a 'build' group here.
+.PARAMETER TimeoutSeconds
+  Fails a group that runs longer than this.
+.PARAMETER Detail
+  Shows the whole output of passing groups, not only its last line.
+.EXAMPLE
+  .\tools\test.ps1
+#>
+[CmdletBinding()]
+param([int]$TimeoutSeconds = 900, [switch]$Detail)
+
+. (Join-Path $PSScriptRoot '_common.ps1')
+. (Join-Path $PSScriptRoot '_progress.ps1')
+$root = $script:RepoRoot
 $shell = (Get-Process -Id $PID).Path
+$script:GroupChecks = [long]0
+$script:SupportedBuilds = $null
+
+function Result([string]$State, [string]$Reason = '') { [pscustomobject]@{ State = $State; Reason = $Reason } }
+
+function ConvertTo-ArgumentString([string[]]$Arguments) {
+    ($Arguments | ForEach-Object { if ($_ -match '[\s"]' -or $_ -eq '') { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' } else { $_ } }) -join ' '
+}
+
+function Stop-ProcessTree($Process) {
+    try { if (-not $Process.HasExited) { & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null } } catch { $null = $_ }
+}
+
+# Runs a program with stdout and stderr merged into Lines. While it runs, the group's progress is refreshed on a timer,
+# and "@@sos-progress" lines from instrumented suites feed the check count; those lines are not part of Lines.
+function Invoke-Native([string]$File, [string[]]$Arguments = @(), [string]$WorkingDirectory = $root) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $File
+    $info.Arguments = ConvertTo-ArgumentString $Arguments
+    $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $info.CreateNoWindow = $true
+    $info.WorkingDirectory = $WorkingDirectory
+    $info.EnvironmentVariables['SOS_TEST_PROGRESS'] = '1'
+    $lines = New-Object System.Collections.Generic.List[string]
+    try { $process = [System.Diagnostics.Process]::Start($info) }
+    catch { return [pscustomobject]@{ Lines = @("could not start ${File}: $($_.Exception.Message)"); Code = -1 } }
+    $started = $script:Clock.Elapsed.TotalSeconds
+    $timedOut = $false
+    try {
+        $readers = @($process.StandardOutput, $process.StandardError)
+        $pending = @($readers[0].ReadLineAsync(), $readers[1].ReadLineAsync())
+        while ($pending[0] -or $pending[1]) {
+            $active = @($pending | Where-Object { $_ })
+            $index = [System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$active, 500)
+            if ($index -ge 0) {
+                $slot = [Array]::IndexOf($pending, $active[$index])
+                $line = $pending[$slot].Result
+                if ($null -eq $line) { $pending[$slot] = $null }
+                else {
+                    $pending[$slot] = $readers[$slot].ReadLineAsync()
+                    $child = ConvertFrom-ChildProgress $line
+                    if ($child) { $null = Set-ProgressChecks $script:Progress $script:Clock.Elapsed.TotalSeconds $child.Checks $child.Expected $child.Estimate }
+                    else {
+                        $lines.Add($line)
+                        $found = Get-LineCheckCount $line
+                        if ($found -gt 0) {
+                            $script:GroupChecks += $found
+                            $null = Set-ProgressChecks $script:Progress $script:Clock.Elapsed.TotalSeconds $script:GroupChecks
+                        }
+                    }
+                }
+            }
+            $null = Update-Progress $script:Progress $script:Clock.Elapsed.TotalSeconds
+            if ($script:Clock.Elapsed.TotalSeconds - $started -gt $TimeoutSeconds) { $timedOut = $true; Stop-ProcessTree $process; break }
+        }
+        $process.WaitForExit()
+        if ($timedOut) { $lines.Add("TIMEOUT: stopped after $TimeoutSeconds s"); return [pscustomobject]@{ Lines = $lines.ToArray(); Code = 124 } }
+        return [pscustomobject]@{ Lines = $lines.ToArray(); Code = $process.ExitCode }
+    } finally {
+        Stop-ProcessTree $process
+        $process.Dispose()
+    }
+}
+
+function Get-SupportedBuilds {
+    if ($null -eq $script:SupportedBuilds) {
+        $python = Get-Python
+        $script:SupportedBuilds = @()
+        if ($python) {
+            $listing = Invoke-Native $python.Exe (@($python.Args) + @('-I', (Join-Path $root 'scripts\build_parity_check.py'), '--builds'))
+            if ($listing.Code -eq 0) { $script:SupportedBuilds = @($listing.Lines | Where-Object { $_ -match '^CUSA\d+-\d+\.\d+$' }) }
+        }
+    }
+    return $script:SupportedBuilds
+}
+
+# A build-specific group counts only when it reported every supported build and skipped none of them.
+function Test-BuildCoverage($Lines) {
+    $builds = @(Get-SupportedBuilds)
+    if ($builds.Count -eq 0) { return 'the supported builds could not be listed (scripts\build_parity_check.py --builds needs Python)' }
+    $text = $Lines -join "`n"
+    foreach ($build in $builds) {
+        $title, $version = $build -split '-', 2
+        if ($text -notmatch ('{0}[- ]{1}' -f [regex]::Escape($title), [regex]::Escape($version))) { return "the output never names ${title} ${version}: a supported build was not validated" }
+    }
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*\[skip\]' -and $line -match 'CUSA\d+') { return "a part was skipped for a supported build: $($line.Trim())" }
+    }
+    return $null
+}
+
+# The outcome of a finished group: exit code, failure lines under exit code 0, and the build coverage of build groups.
+function Get-GroupResult($Run, [string]$Scope, [string]$Label) {
+    $lines = @($Run.Lines)
+    $problem = $null
+    if ($Run.Code -ne 0) { $problem = "$Label exited with $($Run.Code)" }
+    elseif (@($lines | Where-Object { $_ -match '^\s*(\[fail\s*\]|FAIL|FAILED)(\s|:|$)' }).Count) { $problem = "$Label exited with 0 but reported a failure" }
+    elseif ($Scope -eq 'build') { $problem = Test-BuildCoverage $lines }
+    if ($problem) {
+        $lines | ForEach-Object { Write-Host "    $_" }
+        return Result 'FAIL' $problem
+    }
+    if ($Detail) { $lines | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+    else { $lines | Where-Object { $_.Trim() } | Select-Object -Last 1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+    return Result 'PASS'
+}
+
+function Invoke-Helper([string]$Script, [string]$Scope) {
+    $run = Invoke-Native $shell @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Script))
+    Get-GroupResult $run $Scope $Script
+}
+
+function Invoke-PythonCheck([string[]]$Arguments, [string]$Scope) {
+    $python = Get-Python
+    if (-not $python) { return Result 'FAIL' 'Python 3 was not found (tools\setup.ps1)' }
+    $run = Invoke-Native $python.Exe (@($python.Args) + @('-I') + $Arguments)
+    Get-GroupResult $run $Scope $Arguments[0]
+}
+
+function Invoke-GitWhitespace {
+    $problems = New-Object System.Collections.Generic.List[string]
+    foreach ($arguments in @('diff', '--check'), @('diff', '--cached', '--check')) {
+        $run = Invoke-Native 'git' (@('-C', $root) + $arguments)
+        if ($run.Code -ne 0) { $problems.Add("git $($arguments -join ' ') reported problems:"); $run.Lines | ForEach-Object { $problems.Add("  $_") } }
+    }
+    $untracked = Invoke-Native 'git' @('-C', $root, 'ls-files', '--others', '--exclude-standard')
+    $textual = '.c', '.h', '.cpp', '.inc', '.py', '.ps1', '.sh', '.js', '.md', '.txt', '.json', '.cmake', '.toml', '.yml'
+    $new = 0
+    foreach ($relative in @($untracked.Lines | Where-Object { $_ })) {
+        if ($textual -notcontains [IO.Path]::GetExtension($relative).ToLowerInvariant()) { continue }
+        $path = Join-Path $root $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $new++
+        $number = 0
+        foreach ($line in [IO.File]::ReadAllLines($path)) {
+            $number++
+            if ($line -match '[ \t]$') { $problems.Add("${relative}:${number}: trailing whitespace (new file)") }
+            elseif ($line -match '^(<<<<<<<|>>>>>>>) ') { $problems.Add("${relative}:${number}: conflict marker (new file)") }
+        }
+    }
+    if ($problems.Count) {
+        $problems | Select-Object -First 40 | ForEach-Object { Write-Host "    $_" }
+        return Result 'FAIL' 'whitespace errors or conflict markers'
+    }
+    Write-Host "    clean, plus $new new text files" -ForegroundColor DarkGray
+    return Result 'PASS'
+}
+
+$parity = Join-Path $root 'scripts\build_parity_check.py'
 
 $steps = @(
-    @{ Name = 'Pad delivery: buttons, Back as Touchpad (not on DualShock 4/DualSense), Map action in the game code, sticks, press/hold/release, 30-240 Hz, baseline commit'; Script = 'test_pad_input.ps1' },
-    @{ Name = 'Title input path and patch combinations on the real game code'; Script = 'test_title_patches.ps1' },
-    @{ Name = 'Controller prompts (Automatic hook, PlayStation, Xbox patch)'; Script = 'test_controller_prompts.ps1' },
-    @{ Name = 'Settings dialog glyphs (Xbox A/B in the confirmation dialogs, restoration, hook on the real code)'; Script = 'test_prompt_dialog.ps1' },
-    @{ Name = 'Controller icons (Xbox left-stick glyphs, prepared copies, cache)'; Script = 'test_controller_icons.ps1' },
-    @{ Name = 'Guest file paths (exact path alias for the prepared icons)'; Script = 'test_file_paths.ps1' },
-    @{ Name = 'Skip Intro (patch flow, title stub, player)'; Script = 'test_skip_intro.ps1' },
-    @{ Name = 'Texture cache address reuse (linear/tiled layouts, depth never aliases color), write-back before fences, boundary pages'; Script = 'test_image_reuse.ps1' },
-    @{ Name = 'Tiled CPU/GPU ownership on the real TileImage/DetileImage shaders (headless Vulkan compute, no window)'; Script = 'test_tiled_ownership.ps1' },
-    @{ Name = 'Frame rate model'; Script = 'test_frame_model.ps1' }
+    @{ Name = 'build-parity'; Scope = 'build'; Title = 'Build parity: every build-specific table (identity, Skip Intro sites, Xbox prompt sites and hook, dialog glyph sites, resolution sites) covers CUSA57767 1.00 and 1.01 and nothing else, the builds agree where they must, the prepared eboots and boot images are the supported builds, and the AvPlayer caller (InitEx, 6 video buffers, auto start off, file callbacks, SetAvSyncMode None) is equivalent in both'; Block = { Invoke-PythonCheck @($parity) 'build' } },
+    @{ Name = 'build-parity-selftest'; Scope = 'host'; Title = 'Build parity gate self-test: it fails for a build missing from a table, an unknown build, a changed patch byte, fingerprint or layout, a test that names one build, and each AvPlayer setup change (mutated copies of the data, nothing written)'; Block = { Invoke-PythonCheck @($parity, '--self-test') 'host' } },
+    @{ Name = 'pad-input'; Scope = 'build'; Title = 'Pad delivery: buttons, Back as Touchpad (not on DualShock 4/DualSense), Map action in the game code, sticks, press/hold/release, 30-240 Hz, baseline commit'; Block = { Invoke-Helper 'test_pad_input.ps1' 'build' } },
+    @{ Name = 'title-patches'; Scope = 'build'; Title = 'Title input path and patch combinations on the real game code'; Block = { Invoke-Helper 'test_title_patches.ps1' 'build' } },
+    @{ Name = 'controller-prompts'; Scope = 'build'; Title = 'Controller prompts (Automatic hook, PlayStation, Xbox patch)'; Block = { Invoke-Helper 'test_controller_prompts.ps1' 'build' } },
+    @{ Name = 'settings-dialog'; Scope = 'build'; Title = 'Settings dialog glyphs (Xbox A/B in the confirmation dialogs, restoration, hook on the real code)'; Block = { Invoke-Helper 'test_prompt_dialog.ps1' 'build' } },
+    @{ Name = 'controller-icons'; Scope = 'host'; Title = 'Controller icons (Xbox left-stick glyphs, prepared copies, cache; the base game''s resources.assets serves both builds)'; Block = { Invoke-Helper 'test_controller_icons.ps1' 'host' } },
+    @{ Name = 'guest-file-paths'; Scope = 'host'; Title = 'Guest file paths (exact path alias for the prepared icons)'; Block = { Invoke-Helper 'test_file_paths.ps1' 'host' } },
+    @{ Name = 'skip-intro'; Scope = 'build'; Title = 'Skip Intro (patch flow, title stub, player) and the AvPlayer API tests'; Block = { Invoke-Helper 'test_skip_intro.ps1' 'build' } },
+    @{ Name = 'image-reuse'; Scope = 'host'; Title = 'Texture cache address reuse (linear/tiled layouts, depth never aliases color), write-back before fences, boundary pages'; Block = { Invoke-Helper 'test_image_reuse.ps1' 'host' } },
+    @{ Name = 'tiled-ownership'; Scope = 'host'; Title = 'Tiled CPU/GPU ownership on the real TileImage/DetileImage shaders (headless Vulkan compute, no window)'; Block = { Invoke-Helper 'test_tiled_ownership.ps1' 'host' } },
+    @{ Name = 'frame-rate'; Scope = 'build'; Title = 'Frame rate model'; Block = { Invoke-Helper 'test_frame_model.ps1' 'build' } },
+    @{ Name = 'progress-reporter'; Scope = 'host'; Title = 'Test progress: percentage, bar, durations, ETA, check counts, previous group, timing summary, redirected output and a synthetic long group (synthetic time, no sleeping)'; Block = { Invoke-Helper 'test_progress.ps1' 'host' } },
+    @{ Name = 'git-whitespace'; Scope = 'host'; Title = 'git diff --check (staged, unstaged and new files)'; Block = { Invoke-GitWhitespace } }
 )
 
-$results = [ordered]@{}
-foreach ($step in $steps) {
-    Write-Host "==> $($step.Name)" -ForegroundColor Cyan
-    & $shell -NoProfile -File (Join-Path $PSScriptRoot $step.Script)
-    $results[$step.Name] = $LASTEXITCODE -eq 0
+$environment = [ordered]@{ SDL_VIDEODRIVER = 'dummy'; SDL_AUDIODRIVER = 'dummy' }
+$savedEnvironment = @{}
+foreach ($name in $environment.Keys) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
+
+$script:Clock = [System.Diagnostics.Stopwatch]::StartNew()
+$interactive = -not [Console]::IsOutputRedirected -and $Host.Name -eq 'ConsoleHost'
+$script:Progress = New-ProgressReporter @($steps | ForEach-Object { $_.Name }) 0 $interactive {
+    param([string]$Text, [bool]$NoNewline)
+    if ($NoNewline) { Write-Host $Text -NoNewline } else { Write-Host $Text }
 }
 
-Write-Host '==> Game builds' -ForegroundColor Cyan
-foreach ($build in @(@{ Key = 'CUSA57767-1.00'; Folders = @('CUSA57767-1.00', 'v1.00') }, @{ Key = 'CUSA57767-1.01'; Folders = @('CUSA57767-1.01', 'v1.01') })) {
-    $image = $build.Folders | ForEach-Object { Join-Path $root "build\image\$_\boot.bin" } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ($image) { Write-Host "  [ok]   $($build.Key): boot image read by the checks above" }
-    else { Write-Host "  [warn] $($build.Key): no boot image, its real game code was not checked" -ForegroundColor Yellow }
-}
-
-Write-Host '==> git diff --check' -ForegroundColor Cyan
-Push-Location $root
-git diff --check
-$whitespace = $LASTEXITCODE -eq 0
-git diff --cached --check
-$whitespace = $whitespace -and $LASTEXITCODE -eq 0
-Pop-Location
-$results['git diff --check'] = $whitespace
-
-Write-Host ''
 $failed = 0
-foreach ($name in $results.Keys) {
-    if ($results[$name]) { Write-Host "  [ok]   $name" -ForegroundColor Green }
-    else { Write-Host "  [FAIL] $name" -ForegroundColor Red; ++$failed }
+$finishedRun = $false
+try {
+    foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name, $environment[$name]) }
+    foreach ($step in $steps) {
+        $script:GroupChecks = [long]0
+        Start-ProgressGroup $script:Progress $step.Name $script:Clock.Elapsed.TotalSeconds
+        Write-Step ('[{0}] {1}' -f $(if ($step.Scope -eq 'build') { 'builds' } else { 'host' }), $step.Title)
+        try { $result = & $step.Block }
+        catch { $result = Result 'FAIL' "the group could not run: $($_.Exception.Message)" }
+        Clear-ProgressLine $script:Progress
+        switch ($result.State) {
+            'PASS' { Write-Host '    PASS' -ForegroundColor Green }
+            'FAIL' { $failed++; Write-Host "    FAIL: $($result.Reason)" -ForegroundColor Red }
+            default { Write-Host "    SKIPPED: $($result.Reason)" -ForegroundColor Yellow }
+        }
+        $final = if ($script:GroupChecks -gt 0) { $script:GroupChecks } else { $null }
+        Complete-ProgressGroup $script:Progress $(if ($result.State -in 'PASS', 'FAIL') { $result.State } else { 'SKIPPED' }) $script:Clock.Elapsed.TotalSeconds $final
+    }
+    $finishedRun = $true
+} finally {
+    foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name]) }
+    Clear-ProgressLine $script:Progress
+    Write-Host ''
+    Format-TimingSummary $script:Progress $script:Clock.Elapsed.TotalSeconds | ForEach-Object { Write-Host $_ }
+    if (-not $finishedRun) { Write-Host 'Run interrupted before the last group finished.' -ForegroundColor Yellow }
 }
-if ($failed) { Write-Host "$failed of $($results.Count) checks failed" -ForegroundColor Red; exit 1 }
-Write-Host "all $($results.Count) checks passed" -ForegroundColor Green
+Write-Host ''
+Write-Host "Failed: $failed"
+if ($failed) { exit 1 }
 exit 0

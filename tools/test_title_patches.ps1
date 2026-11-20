@@ -27,7 +27,7 @@ foreach ($unit in @(@{ Source = (Join-Path $launcher 'controller_prompts.c'); In
 }
 $exe = Join-Path $temp 'title_patch_matrix_tests.exe'
 $rootText = $root.Replace('\', '/')
-& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$rootText`"" `
+& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_SOURCE_DIR' $rootText) `
     '-I' $launcher '-I' $src '-I' (Join-Path $root 'gpu\shim') (Join-Path $root 'tests\title_patch_matrix_tests.cpp') (Join-Path $launcher 'game_profile.cpp') @objects '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the title patch matrix test' }
 & $exe

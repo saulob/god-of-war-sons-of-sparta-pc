@@ -22,7 +22,7 @@ $object = Join-Path $temp 'sos_skip_intro.o'
 if ($LASTEXITCODE -ne 0) { throw 'could not compile sos_skip_intro.c' }
 $exe = Join-Path $temp 'skip_intro_tests.exe'
 $root_text = $root.Replace('\', '/')
-& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$root_text`"" `
+& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_SOURCE_DIR' $root_text) `
     '-I' (Join-Path $root 'launcher') '-I' $src (Join-Path $root 'tests\skip_intro_tests.cpp') (Join-Path $root 'launcher\game_profile.cpp') $object '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the Skip Intro test' }
 & $exe

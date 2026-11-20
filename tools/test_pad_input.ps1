@@ -25,7 +25,7 @@ $test = Join-Path $PSScriptRoot 'pad_input_tests.c'
 
 function Build-Pad([string]$Source, [string]$Output, [string[]]$Define = @()) {
     & $clang '--target=x86_64-w64-mingw32' '-std=gnu11' '-Wall' '-Wextra' '-Werror' '-O1' '-D_WIN32_WINNT=0x0A00' '-I' (Join-Path $root 'src') '-I' $PSScriptRoot `
-        "-DPAD_SOURCE=`"$($Source.Replace('\', '/'))`"" @Define $test '-lpthread' '-o' $Output
+        (Get-StringDefine 'PAD_SOURCE' $Source.Replace('\', '/')) @Define $test '-lpthread' '-o' $Output
     if ($LASTEXITCODE -ne 0) { throw "could not compile the pad test for $Source" }
 }
 

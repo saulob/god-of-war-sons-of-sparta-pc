@@ -125,6 +125,15 @@ function Invoke-Native([string]$File, [string[]]$Arguments = @()) {
     finally { $ErrorActionPreference = $previous }
 }
 
+# A -D define whose value is a C string, in the form the compiler receives it. Windows PowerShell 5.1 and the legacy
+# argument mode drop embedded quotes unless they are escaped; PowerShell 7.3 and later escape them itself.
+function Get-StringDefine([string]$Name, [string]$Value) {
+    $mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue
+    $escape = $PSVersionTable.PSVersion -lt [version]'7.3' -or "$mode" -eq 'Legacy'
+    $quote = if ($escape) { '\"' } else { '"' }
+    return "-D$Name=$quote$Value$quote"
+}
+
 function Get-VenvPython {
     $path = Join-Path $script:RepoRoot '.venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $path) { return $path }

@@ -25,7 +25,7 @@ $keys = Join-Path $temp 'dcp_keys.o'
 if ($LASTEXITCODE -ne 0) { throw 'could not compile dcp_keys.c' }
 
 $exe = Join-Path $temp 'test_renderer_paths.exe'
-& (Join-Path $tc.Bin 'clang++.exe') $target '-std=c++23' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$rootText`"" @include `
+& (Join-Path $tc.Bin 'clang++.exe') $target '-std=c++23' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_SOURCE_DIR' $rootText) @include `
     (Join-Path $root 'tests\renderer_paths_tests.cpp') (Join-Path $root 'gpu\shim\dcp_settings.cpp') $keys `
     '-L' (Join-Path $prefix 'lib') '-lSDL3' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the runtime settings test' }

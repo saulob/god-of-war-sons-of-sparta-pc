@@ -19,7 +19,7 @@ $env:PATH = "$($tc.Bin);$env:PATH"
 $launcher = Join-Path $root 'launcher'
 $exe = Join-Path $temp 'test_controller_icons.exe'
 $rootText = $root.Replace('\', '/')
-& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O2' "-DSOS_SOURCE_DIR=`"$rootText`"" '-I' $launcher `
+& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O2' (Get-StringDefine 'SOS_SOURCE_DIR' $rootText) '-I' $launcher `
     (Join-Path $root 'tests\controller_icons_tests.cpp') (Join-Path $launcher 'controller_icons.cpp') '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the controller icons test' }
 & $exe

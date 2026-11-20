@@ -26,7 +26,7 @@ foreach ($unit in @(@{ Source = (Join-Path $launcher 'controller_prompts.c'); In
 }
 $exe = Join-Path $temp 'test_controller_prompts.exe'
 $rootText = $root.Replace('\', '/')
-& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$rootText`"" '-I' $launcher '-I' $src `
+& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_SOURCE_DIR' $rootText) '-I' $launcher '-I' $src `
     (Join-Path $root 'tests\controller_prompts_tests.cpp') @objects '-L' (Join-Path (Split-Path $tc.Bin) 'lib') '-lZydis' '-lZycore' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the controller prompts test' }
 

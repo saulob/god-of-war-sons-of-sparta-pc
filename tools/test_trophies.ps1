@@ -24,7 +24,7 @@ $sources = @(
 ) + @('trophy_data', 'trophy_key', 'trophy_pack', 'trophy_runtime', 'trophy_service', 'trophy_store', 'trophy_view', 'trp_archive' |
     ForEach-Object { "src\trophies\$_.cpp" })
 $trophySources = (Join-Path $root 'src\trophies').Replace('\', '/')
-& $clang '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_TROPHY_SOURCE_DIR=`"$trophySources`"" `
+& $clang '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' (Get-StringDefine 'SOS_TROPHY_SOURCE_DIR' $trophySources) `
     '-I' (Join-Path $root 'launcher') '-I' (Join-Path $root 'src') '-I' (Join-Path $root 'gpu\shim') `
     @($sources | ForEach-Object { Join-Path $root $_ }) '-lbcrypt' '-lpng' '-lz' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the trophy test' }
