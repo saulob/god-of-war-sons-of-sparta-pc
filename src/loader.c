@@ -21,6 +21,7 @@
 #include "skip_intro.h"
 #include "sos_skip_intro.h"
 #include "controller_prompts.h"
+#include "prompt_dialog.h"
 #include "trophies/trophy_runtime.h"
 #include "sos_image_format.h"
 #include "isa_emulate.h"
@@ -789,7 +790,7 @@ int main(int argc, char **argv) {
     }
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
-    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES);
+    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
@@ -1032,6 +1033,17 @@ int main(int argc, char **argv) {
             printf("Controller prompts: Automatic requested but unavailable: %s; the game's own prompts are kept\n", hook_message);
     } else if (prompt_style != SOS_PROMPTS_XBOX) {
         printf("Controller prompts: %s\n", sos_prompt_style_label(prompt_style));
+    }
+    if (prompt_style != SOS_PROMPTS_PLAYSTATION && prompt_key[0]) {
+        char dialog_message[200];
+        if (sos_prompt_dialog_install(image, size, prompt_key,
+                                      image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES,
+                                      SOS_PROMPT_DIALOG_STUB_BYTES, dialog_message, sizeof(dialog_message))) {
+            sos_prompt_dialog_arm(prompt_style, image, prompt_key);
+            printf("Controller prompts: %s\n", dialog_message);
+        } else {
+            printf("Controller prompts: Settings dialogs keep the PlayStation glyphs: %s\n", dialog_message);
+        }
     }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);

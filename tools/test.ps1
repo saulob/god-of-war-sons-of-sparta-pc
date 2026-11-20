@@ -1,6 +1,6 @@
 # One command for the headless checks of the controller and title input path: the pad the game reads (against the baseline
 # commit) and the controller kind it publishes, the title's input path and the patch combinations on the real 1.00 and 1.01 code,
-# the controller prompts (Automatic, PlayStation, Xbox, the hook), the Xbox left-stick glyphs on the game's resources.assets and
+# the controller prompts (Automatic, PlayStation, Xbox, the hook), the Settings dialog glyphs, the Xbox left-stick glyphs on the game's resources.assets and
 # their cache, the exact path alias, Skip Intro, the frame rate model, and git diff --check. No game, launcher, window or audio
 # device is started.
 [CmdletBinding()]
@@ -14,6 +14,7 @@ $steps = @(
     @{ Name = 'Pad delivery: buttons, sticks, press/hold/release, reads per frame, 30-240 Hz, baseline commit'; Script = 'test_pad_input.ps1' },
     @{ Name = 'Title input path and patch combinations on the real game code'; Script = 'test_title_patches.ps1' },
     @{ Name = 'Controller prompts (Automatic hook, PlayStation, Xbox patch)'; Script = 'test_controller_prompts.ps1' },
+    @{ Name = 'Settings dialog glyphs (Xbox A/B in the confirmation dialogs, restoration, hook on the real code)'; Script = 'test_prompt_dialog.ps1' },
     @{ Name = 'Controller icons (Xbox left-stick glyphs, prepared copies, cache)'; Script = 'test_controller_icons.ps1' },
     @{ Name = 'Guest file paths (exact path alias for the prepared icons)'; Script = 'test_file_paths.ps1' },
     @{ Name = 'Skip Intro (patch flow, title stub, player)'; Script = 'test_skip_intro.ps1' },
