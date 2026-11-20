@@ -1,0 +1,1042 @@
+{
+ "b0xyllnVY-I#libSceGnmDriver": {
+  "symbol": "sceGnmAddEqEvent",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "b08AgtPlHPg#libSceGnmDriver": {
+  "symbol": "sceGnmAreSubmitsAllowed",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "ihxrbsoSKWc#libSceGnmDriver": {
+  "symbol": "sceGnmBeginWorkload",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "ffrNQOshows#libSceGnmDriver": {
+  "symbol": "sceGnmComputeWaitOnAddress",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "EJapNl2+pgU#libSceGnmDriver": {
+  "symbol": "sceGnmComputeWaitSemaphore",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "5udAm+6boVg#libSceGnmDriver": {
+  "symbol": "sceGnmCreateWorkloadStream",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "qpGITzPE+Zc#libSceGnmDriver": {
+  "symbol": "sceGnmDebugHardwareStatus",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "PVT+fuoS9gU#libSceGnmDriver": {
+  "symbol": "sceGnmDeleteEqEvent",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "UtObDRQiGbs#libSceGnmDriver": {
+  "symbol": "sceGnmDestroyWorkloadStream",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "bX5IbRvECXk#libSceGnmDriver": {
+  "symbol": "sceGnmDingDong",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "byXlqupd8cE#libSceGnmDriver": {
+  "symbol": "sceGnmDingDongForWorkload",
+  "class": "forwarded",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "HHo1BAljZO8#libSceGnmDriver": {
+  "symbol": "sceGnmDisableMipStatsReport",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "0BzLGljcwBo#libSceGnmDriver": {
+  "symbol": "sceGnmDispatchDirect",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "Z43vKp5k7r0#libSceGnmDriver": {
+  "symbol": "sceGnmDispatchIndirect",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "wED4ZXCFJT0#libSceGnmDriver": {
+  "symbol": "sceGnmDispatchIndirectOnMec",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "nF6bFRUBRAU#libSceGnmDriver": {
+  "symbol": "sceGnmDispatchInitDefaultHardwareState",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "HlTPoZ-oY7Y#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndex",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "GGsn7jMTxw4#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndexAuto",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "ED9-Fjr8Ta4#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndexIndirect",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "thbPcG7E7qk#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndexIndirectCountMulti",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "jHdPvIzlpKc#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndexMultiInstanced",
+  "class": "stubbed-failure",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "oYM+YzfCm2Y#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndexOffset",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "4v+otIIdjqg#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndirect",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "cUCo8OvArrw#libSceGnmDriver": {
+  "symbol": "sceGnmDrawIndirectCountMulti",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "yb2cRhagD1I#libSceGnmDriver": {
+  "symbol": "sceGnmDrawInitDefaultHardwareState350",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "im2ZuItabu4#libSceGnmDriver": {
+  "symbol": "sceGnmDrawInitToDefaultContextState400",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "stDSYW2SBVM#libSceGnmDriver": {
+  "symbol": "sceGnmDrawOpaqueAuto",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "TLV4mswiZ4A#libSceGnmDriver": {
+  "symbol": "sceGnmDriverCaptureInProgress",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "R6z1xM3pW-w#libSceGnmDriver": {
+  "symbol": "sceGnmDriverTraceInProgress",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "d88anrgNoKY#libSceGnmDriver": {
+  "symbol": "sceGnmDriverTriggerCapture",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "Fa3x75OOLRA#libSceGnmDriver": {
+  "symbol": "sceGnmEndWorkload",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "4Mv9OXypBG8#libSceGnmDriver": {
+  "symbol": "sceGnmFindResourcesPublic",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "iBt3Oe00Kvc#libSceGnmDriver": {
+  "symbol": "sceGnmFlushGarlic",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "UoYY0DWMC0U#libSceGnmDriver": {
+  "symbol": "sceGnmGetEqEventType",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "H7-fgvEutM0#libSceGnmDriver": {
+  "symbol": "sceGnmGetEqTimeStamp",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "oL4hGI1PMpw#libSceGnmDriver": {
+  "symbol": "sceGnmGetGpuBlockStatus",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "Fwvh++m9IQI#libSceGnmDriver": {
+  "symbol": "sceGnmGetGpuCoreClockFrequency",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": false
+  }
+ },
+ "tZCSL5ulnB4#libSceGnmDriver": {
+  "symbol": "sceGnmGetGpuInfoStatus",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "iFirFzgYsvw#libSceGnmDriver": {
+  "symbol": "sceGnmGetLastWaitedAddress",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "KnldROUkWJY#libSceGnmDriver": {
+  "symbol": "sceGnmGetNumTcaUnits",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "FFVZcCu3zWU#libSceGnmDriver": {
+  "symbol": "sceGnmGetOffChipTessellationBufferSize",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "QJjPjlmPAL0#libSceGnmDriver": {
+  "symbol": "sceGnmGetOwnerName",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "dewXw5roLs0#libSceGnmDriver": {
+  "symbol": "sceGnmGetPhysicalCounterFromVirtualized",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "fzJdEihTFV4#libSceGnmDriver": {
+  "symbol": "sceGnmGetProtectionFaultTimeStamp",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "4PKnYXOhcx4#libSceGnmDriver": {
+  "symbol": "sceGnmGetResourceBaseAddressAndSizeInBytes",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "O0S96YnD04U#libSceGnmDriver": {
+  "symbol": "sceGnmGetResourceName",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "UBv7FkVfzcQ#libSceGnmDriver": {
+  "symbol": "sceGnmGetResourceShaderGuid",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "bdqdvIkLPIU#libSceGnmDriver": {
+  "symbol": "sceGnmGetResourceType",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "UoBuWAhKk7U#libSceGnmDriver": {
+  "symbol": "sceGnmGetResourceUserData",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "nEyFbYUloIM#libSceGnmDriver": {
+  "symbol": "sceGnmGetShaderProgramBaseAddress",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "k7iGTvDQPLQ#libSceGnmDriver": {
+  "symbol": "sceGnmGetShaderStatus",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "ln33zjBrfjk#libSceGnmDriver": {
+  "symbol": "sceGnmGetTheTessellationFactorRingBufferBaseAddress",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "NfvOrNzy6sk#libSceGnmDriver": {
+  "symbol": "sceGnmInsertDingDongMarker",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "7qZVNgEu+SY#libSceGnmDriver": {
+  "symbol": "sceGnmInsertPopMarker",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "aPIZJTXC+cU#libSceGnmDriver": {
+  "symbol": "sceGnmInsertPushColorMarker",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "W1Etj-jlW7Y#libSceGnmDriver": {
+  "symbol": "sceGnmInsertPushMarker",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "aj3L-iaFmyk#libSceGnmDriver": {
+  "symbol": "sceGnmInsertSetColorMarker",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "jiItzS6+22g#libSceGnmDriver": {
+  "symbol": "sceGnmInsertSetMarker",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "1qXLHIpROPE#libSceGnmDriver": {
+  "symbol": "sceGnmInsertWaitFlipDone",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "jg33rEKLfVs#libSceGnmDriver": {
+  "symbol": "sceGnmIsUserPaEnabled",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "26PM5Mzl8zc#libSceGnmDriver": {
+  "symbol": "sceGnmLogicalCuIndexToPhysicalCuIndex",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "RU74kek-N0c#libSceGnmDriver": {
+  "symbol": "sceGnmLogicalCuMaskToPhysicalCuMask",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "Kl0Z3LH07QI#libSceGnmDriver": {
+  "symbol": "sceGnmLogicalTcaUnitToPhysical",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "29oKvKXzEZo#libSceGnmDriver": {
+  "symbol": "sceGnmMapComputeQueue",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "A+uGq+3KFtQ#libSceGnmDriver": {
+  "symbol": "sceGnmMapComputeQueueWithPriority",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "6IMbpR7nTzA#libSceGnmDriver": {
+  "symbol": "sceGnmQueryResourceRegistrationUserMemoryRequirements",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "9Mv61HaMhfA#libSceGnmDriver": {
+  "symbol": "sceGnmRegisterGdsResource",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "ZFqKFl23aMc#libSceGnmDriver": {
+  "symbol": "sceGnmRegisterOwner",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "nvEwfYAImTs#libSceGnmDriver": {
+  "symbol": "sceGnmRegisterResource",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "gObODli-OH8#libSceGnmDriver": {
+  "symbol": "sceGnmRequestFlipAndSubmitDone",
+  "class": "forwarded",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "6YRHhh5mHCs#libSceGnmDriver": {
+  "symbol": "sceGnmRequestFlipAndSubmitDoneForWorkload",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "f85orjx7qts#libSceGnmDriver": {
+  "symbol": "sceGnmRequestMipStatsReportAndReset",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "MYRtYhojKdA#libSceGnmDriver": {
+  "symbol": "sceGnmResetVgtControl",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "Kx-h-nWQJ8A#libSceGnmDriver": {
+  "symbol": "sceGnmSetCsShaderWithModifier",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "X9Omw9dwv5M#libSceGnmDriver": {
+  "symbol": "sceGnmSetEmbeddedPsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "+AFvOEXrKJk#libSceGnmDriver": {
+  "symbol": "sceGnmSetEmbeddedVsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "FUHG8sQ3R58#libSceGnmDriver": {
+  "symbol": "sceGnmSetEsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "jtkqXpAOY6w#libSceGnmDriver": {
+  "symbol": "sceGnmSetGsRingSizes",
+  "class": "implemented",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "UJwNuMBcUAk#libSceGnmDriver": {
+  "symbol": "sceGnmSetGsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "VJNjFtqiF5w#libSceGnmDriver": {
+  "symbol": "sceGnmSetHsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "vckdzbQ46SI#libSceGnmDriver": {
+  "symbol": "sceGnmSetLsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "5uFKckiJYRM#libSceGnmDriver": {
+  "symbol": "sceGnmSetPsShader350",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "q-qhDxP67Hg#libSceGnmDriver": {
+  "symbol": "sceGnmSetResourceRegistrationUserMemory",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "K3BKBBYKUSE#libSceGnmDriver": {
+  "symbol": "sceGnmSetResourceUserData",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "cFCp0NX8wf0#libSceGnmDriver": {
+  "symbol": "sceGnmSetVgtControl",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "gAhCn6UiU4Y#libSceGnmDriver": {
+  "symbol": "sceGnmSetVsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "XiyzNZ9J4nQ#libSceGnmDriver": {
+  "symbol": "sceGnmSetWaveLimitMultipliers",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "+xuDhxlWRPg#libSceGnmDriver": {
+  "symbol": "sceGnmSetupMipStatsReport",
+  "class": "stubbed-success",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "xbxNatawohc#libSceGnmDriver": {
+  "symbol": "sceGnmSubmitAndFlipCommandBuffers",
+  "class": "forwarded",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "Ga6r7H6Y0RI#libSceGnmDriver": {
+  "symbol": "sceGnmSubmitAndFlipCommandBuffersForWorkload",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "zwY0YV91TTI#libSceGnmDriver": {
+  "symbol": "sceGnmSubmitCommandBuffers",
+  "class": "forwarded",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "jRcI8VcgTz4#libSceGnmDriver": {
+  "symbol": "sceGnmSubmitCommandBuffersForWorkload",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "yvZ73uQUqrk#libSceGnmDriver": {
+  "symbol": "sceGnmSubmitDone",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "ArSg-TGinhk#libSceGnmDriver": {
+  "symbol": "sceGnmUnmapComputeQueue",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "yhFCnaz5daw#libSceGnmDriver": {
+  "symbol": "sceGnmUnregisterAllResourcesForOwner",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "fhKwCVVj9nk#libSceGnmDriver": {
+  "symbol": "sceGnmUnregisterOwnerAndResources",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "k8EXkhIP+lM#libSceGnmDriver": {
+  "symbol": "sceGnmUnregisterResource",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "nLM2i2+65hA#libSceGnmDriver": {
+  "symbol": "sceGnmUpdateGsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "GNlx+y7xPdE#libSceGnmDriver": {
+  "symbol": "sceGnmUpdateHsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "mLVL7N7BVBg#libSceGnmDriver": {
+  "symbol": "sceGnmUpdatePsShader350",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "V31V01UiScY#libSceGnmDriver": {
+  "symbol": "sceGnmUpdateVsShader",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "SXw4dZEkgpA#libSceGnmDriver": {
+  "symbol": "sceGnmValidateDisableDiagnostics",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "BgM3t3LvcNk#libSceGnmDriver": {
+  "symbol": "sceGnmValidateDisableDiagnostics2",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "qGP74T5OWJc#libSceGnmDriver": {
+  "symbol": "sceGnmValidateDispatchCommandBuffers",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "hsZPf1lON7E#libSceGnmDriver": {
+  "symbol": "sceGnmValidateDrawCommandBuffers",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "RX7XCNSaL6I#libSceGnmDriver": {
+  "symbol": "sceGnmValidateGetDiagnosticInfo",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "5SHGNwLXBV4#libSceGnmDriver": {
+  "symbol": "sceGnmValidateGetDiagnostics",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "HzMN7ANqYEc#libSceGnmDriver": {
+  "symbol": "sceGnmValidateGetVersion",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "rTIV11nMQuM#libSceGnmDriver": {
+  "symbol": "sceGnmValidateOnSubmitEnabled",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "MBMa6EFu4Ko#libSceGnmDriver": {
+  "symbol": "sceGnmValidateResetState",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "Q7t4VEYLafI#libSceGnmDriver": {
+  "symbol": "sceGnmValidationRegisterMemoryCheckCallback",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "u9YKpRRHe-M#libSceGnmDriver": {
+  "symbol": "sceRazorCaptureImmediate",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "f33OrruQYbM#libSceGnmDriver": {
+  "symbol": "sceRazorIsLoaded",
+  "class": "intentional-no-op",
+  "called": {
+   "1.00": false,
+   "1.01": false
+  }
+ },
+ "HXzjK9yI30k#libSceVideoOut": {
+  "symbol": "sceVideoOutAddFlipEvent",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "ktP9j1fN-zE#libSceVideoOut": {
+  "symbol": "sceVideoOutConfigureOptionsInitialize_",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "N1bEoJ4SRw4#libSceVideoOut": {
+  "symbol": "sceVideoOutConfigureOutputMode_",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "-Ozn0F1AFRg#libSceVideoOut": {
+  "symbol": "sceVideoOutDeleteFlipEvent",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "kGVLc3htQE8#libSceVideoOut": {
+  "symbol": "sceVideoOutGetDeviceCapabilityInfo_",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "rWUTcKdkUzQ#libSceVideoOut": {
+  "symbol": "sceVideoOutGetEventData",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "SbU3dwp80lQ#libSceVideoOut": {
+  "symbol": "sceVideoOutGetFlipStatus",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "6kPnj51T62Y#libSceVideoOut": {
+  "symbol": "sceVideoOutGetResolutionStatus",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "1FZBKy8HeNU#libSceVideoOut": {
+  "symbol": "sceVideoOutGetVblankStatus",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "zgXifHT9ErY#libSceVideoOut": {
+  "symbol": "sceVideoOutIsFlipPending",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "pjkDsgxli6c#libSceVideoOut": {
+  "symbol": "sceVideoOutModeSetAny_",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "Up36PTk687E#libSceVideoOut": {
+  "symbol": "sceVideoOutOpen",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "w3BY+tAEiQY#libSceVideoOut": {
+  "symbol": "sceVideoOutRegisterBuffers",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "i6-sR91Wt-4#libSceVideoOut": {
+  "symbol": "sceVideoOutSetBufferAttribute",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "CBiu4mCE1DA#libSceVideoOut": {
+  "symbol": "sceVideoOutSetFlipRate",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "U46NwOiJpys#libSceVideoOut": {
+  "symbol": "sceVideoOutSubmitFlip",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ },
+ "N5KDtkIjjJ4#libSceVideoOut": {
+  "symbol": "sceVideoOutUnregisterBuffers",
+  "class": "implemented",
+  "called": {
+   "1.00": true,
+   "1.01": true
+  }
+ }
+}

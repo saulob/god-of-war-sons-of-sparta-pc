@@ -231,6 +231,7 @@ COVERAGE = [
     ("tests/prompt_dialog_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
     ("scripts/skip_intro_check.py", "names"), ("scripts/title_input_check.py", "names"), ("scripts/map_input_check.py", "names"),
     ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"),
+    ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
 ]
 
 
@@ -256,6 +257,8 @@ def check_coverage(gate, builds, sources):
             gate.check(False, f"{path} is missing")
         elif mode == "inventory":
             gate.check("SupportedBuilds()" in text, f"{path} no longer iterates the supported builds")
+        elif mode == "profiles":
+            gate.check("PROFILES" in text or "build_parity_check.py" in text, f"{path} no longer iterates the supported builds")
         else:
             missing = [v for v in builds if not re.search(r"(?<![\d.])" + re.escape(v) + r"(?![\d.])", text)]
             gate.check(not missing, f"{path} never names CUSA57767 {', '.join(missing)}")
@@ -415,6 +418,7 @@ def self_test():
     expect_failure("a dialog layout offset changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?0x20, 0x20, 0x30, )0x168", r"\g<1>0x169", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))
     expect_failure("a 1.01 fingerprint changed in the build header", mutate=lambda s: s.update({"src/game_build.h": s["src/game_build.h"].replace("aafe8a2a", "bbbb8a2a")}))
     expect_failure("1.01 missing from the image tables", mutate=lambda s: s.update({"il2cpp:IMAGE_FOLDERS": {k: v for k, v in s["il2cpp:IMAGE_FOLDERS"].items() if k != "1.01"}}))
+    expect_failure("a graphics check that stops iterating the supported builds", mutate=lambda s: s.update({"cov:scripts/graphics_import_check.py": s["cov:scripts/graphics_import_check.py"].replace("PROFILES", "X")}))
     expect_failure("a test that names only 1.00", mutate=lambda s: s.update({"cov:tests/skip_intro_tests.cpp": s["cov:tests/skip_intro_tests.cpp"].replace("1.01", "x")}))
     expect_failure("the resolution table of 1.01 differs", mutate=lambda s: s.update({"launcher/game_profile.cpp": re.sub(r'(\.version = "1\.01".*?\.resolution_sites = )kResolutionSites', r"\1kOtherSites", s["launcher/game_profile.cpp"], count=1, flags=re.S)}))
 
