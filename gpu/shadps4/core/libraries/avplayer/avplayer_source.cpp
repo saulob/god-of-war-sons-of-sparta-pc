@@ -233,7 +233,7 @@ void AvPlayerSource::SetLooping(bool is_looping) {
 }
 
 std::optional<bool> AvPlayerSource::HasFrames(u32 num_frames) {
-    return m_video_packets.Size() > num_frames || m_is_eof;
+    return m_video_packets.Size() > num_frames || m_demux_ended;
 }
 
 bool AvPlayerSource::Start() {
@@ -301,8 +301,13 @@ bool AvPlayerSource::StartLocked() {
         }
     }
     m_demuxer_thread.Run([this](std::stop_token stop) { this->DemuxerThread(stop); });
-    m_video_decoder_thread.Run([this](std::stop_token stop) { this->VideoDecoderThread(stop); });
-    m_audio_decoder_thread.Run([this](std::stop_token stop) { this->AudioDecoderThread(stop); });
+    // A decoder without a codec context would drain a null context at the end of the file.
+    if (m_video_stream_index) {
+        m_video_decoder_thread.Run([this](std::stop_token stop) { this->VideoDecoderThread(stop); });
+    }
+    if (m_audio_stream_index) {
+        m_audio_decoder_thread.Run([this](std::stop_token stop) { this->AudioDecoderThread(stop); });
+    }
     m_start_time = std::chrono::high_resolution_clock::now();
     return true;
 }
@@ -324,6 +329,7 @@ bool AvPlayerSource::Stop() {
     m_pause_duration = {};
 
     m_is_paused = false;
+    m_demux_ended = false;
     m_is_eof = false;
 
     return true;
@@ -613,7 +619,7 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
     if (!natural_eof) {
         return;
     }
-    m_is_eof = true;
+    m_demux_ended = true;
 
     m_video_packets_cv.Notify();
     m_audio_packets_cv.Notify();
@@ -624,6 +630,7 @@ void AvPlayerSource::DemuxerThread(std::stop_token stop) {
 
     m_video_decoder_thread.Join();
     m_audio_decoder_thread.Join();
+    m_is_eof = true;
     m_state.OnEOF();
 
     LOG_INFO(Lib_AvPlayer, "Demuxer Thread exited normally");
@@ -771,7 +778,7 @@ void AvPlayerSource::VideoDecoderThread(std::stop_token stop) {
     bool flushed = false;
     while (!stop.stop_requested()) {
         if (m_video_packets.Size() == 0) {
-            if (m_is_eof) {
+            if (m_demux_ended) {
                 // The decoder holds delayed frames until it is told that no more packets come.
                 if (!flushed) {
                     flushed = true;
@@ -782,7 +789,7 @@ void AvPlayerSource::VideoDecoderThread(std::stop_token stop) {
                 }
                 break;
             }
-            m_video_packets_cv.Wait(stop, [this] { return m_video_packets.Size() != 0 || m_is_eof; });
+            m_video_packets_cv.Wait(stop, [this] { return m_video_packets.Size() != 0 || m_demux_ended; });
             continue;
         }
         const auto packet = m_video_packets.Pop();
@@ -911,7 +918,7 @@ void AvPlayerSource::AudioDecoderThread(std::stop_token stop) {
     bool flushed = false;
     while (!stop.stop_requested()) {
         if (m_audio_packets.Size() == 0) {
-            if (m_is_eof) {
+            if (m_demux_ended) {
                 if (!flushed) {
                     flushed = true;
                     res = avcodec_send_packet(m_audio_codec_context.get(), nullptr);
@@ -921,7 +928,7 @@ void AvPlayerSource::AudioDecoderThread(std::stop_token stop) {
                 }
                 break;
             }
-            m_audio_packets_cv.Wait(stop, [this] { return m_audio_packets.Size() != 0 || m_is_eof; });
+            m_audio_packets_cv.Wait(stop, [this] { return m_audio_packets.Size() != 0 || m_demux_ended; });
             continue;
         }
         const auto packet = m_audio_packets.Pop();

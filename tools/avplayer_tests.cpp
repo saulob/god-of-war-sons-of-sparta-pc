@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -40,7 +41,36 @@ void SymbolsResolver::AddSymbol(const char* nid, const char*, const char*, Symbo
 }
 } // namespace Core::Loader
 
-void Core::MemoryManager::InvalidateMemory(VAddr, u64) {}
+// PrepareVideoFrame calls this on the video decoder thread once a frame is in its guest buffer, before it is queued:
+// the decode-ahead tests count decoded frames here and can hold the decoder back from a given frame on.
+static std::atomic<int> g_decoded{0};
+static std::mutex g_gate_mutex;
+static std::condition_variable g_gate_cv;
+static int g_gate_from = INT32_MAX;
+static std::atomic<int> g_gate_blocked{0};
+static std::atomic<VAddr> g_held_buffer{0};
+static std::atomic<int> g_held_buffer_writes{0};
+
+void Core::MemoryManager::InvalidateMemory(VAddr address, u64) {
+    const int decoded = ++g_decoded;
+    if (address == g_held_buffer) {
+        ++g_held_buffer_writes;
+    }
+    std::unique_lock lock(g_gate_mutex);
+    if (decoded >= g_gate_from) {
+        ++g_gate_blocked;
+        g_gate_cv.wait(lock, [decoded] { return decoded < g_gate_from; });
+        --g_gate_blocked;
+    }
+}
+
+static void gate_from(int decoded) {
+    {
+        std::lock_guard lock(g_gate_mutex);
+        g_gate_from = decoded;
+    }
+    g_gate_cv.notify_all();
+}
 
 extern "C" FILE* sos_stderr_stream(void) {
     return __acrt_iob_func(2);
@@ -189,6 +219,16 @@ static void* PS4_SYSV_ABI Alloc(void*, u32 align, u32 size) {
 static void PS4_SYSV_ABI Free(void*, void* memory) {
     _aligned_free(memory);
 }
+static std::atomic<int> g_textures, g_live_textures;
+static void* PS4_SYSV_ABI AllocTexture(void* opaque, u32 align, u32 size) {
+    ++g_textures;
+    ++g_live_textures;
+    return Alloc(opaque, align, size);
+}
+static void PS4_SYSV_ABI FreeTexture(void* opaque, void* memory) {
+    --g_live_textures;
+    Free(opaque, memory);
+}
 
 // The game's request wait: an expected event or warning code, a counter and a semaphore. The callback signals a
 // matching code; a signal that arrives before the wait is kept in the counter.
@@ -232,7 +272,7 @@ struct Player {
     AvPlayerHandle handle = nullptr;
     std::atomic<int> ready{0}, play{0}, stop{0}, pause{0}, warnings{0}, events{0};
     std::atomic<int> reentrant_errors{0};
-    std::atomic<bool> close_in_ready{false}, start_in_ready{true}, touch_every_event{false};
+    std::atomic<bool> close_in_ready{false}, close_in_stop{false}, start_in_ready{true}, touch_every_event{false};
     std::atomic<s32> close_result{-1};
     std::atomic<s32> jump_warning{0};
     std::atomic<int> jump_count{0};
@@ -280,6 +320,9 @@ static void PS4_SYSV_ABI OnEvent(void* opaque, AvPlayerEvents event, s32, void* 
         ++p->play;
         break;
     case AvPlayerEvents::StateStop:
+        if (p->close_in_stop) {
+            p->close_result = p->api->close(p->handle);
+        }
         ++p->stop;
         break;
     case AvPlayerEvents::StatePause:
@@ -300,7 +343,7 @@ static void PS4_SYSV_ABI OnEvent(void* opaque, AvPlayerEvents event, s32, void* 
 static AvPlayerInitDataEx make_init(Player* p, bool event_callback = true) {
     AvPlayerInitDataEx data{};
     data.this_size = sizeof(data);
-    data.memory_replacement = {p, &Alloc, &Free, &Alloc, &Free};
+    data.memory_replacement = {p, &Alloc, &Free, &AllocTexture, &FreeTexture};
     data.event_replacement = {p, event_callback ? &OnEvent : nullptr};
     data.num_output_video_framebuffers = 6;
     data.auto_start = false;
@@ -897,6 +940,226 @@ static void test_close_variants(Api& a, int baseline) {
     check(threads_settle(baseline), "no worker thread survives the races");
 }
 
+// The intro's player as the game creates it in 1.00 and 1.01: InitEx with 6 output video buffers, then
+// SetAvSyncMode(None), so the game decides itself which frames are late. video.mp4 has exactly 30 frames.
+static constexpr s32 GameVideoBuffers = 6;
+static constexpr size_t ClipFrames = 30;
+
+static bool open_video(Api& a, Player& p, s32 buffers) {
+    p.api = &a;
+    auto init = make_init(&p);
+    init.num_output_video_framebuffers = buffers;
+    if (a.init_ex(&init, &p.handle) != ORBIS_OK || a.sync_mode(p.handle, AvPlayerAvSyncMode::None) != ORBIS_OK) {
+        return false;
+    }
+    return add_clip(a, p, "/app0/video.mp4") && wait_until([&] { return p.play > 0; });
+}
+
+static bool next_frame(Api& a, Player& p, AvPlayerFrameInfoEx& frame) {
+    return wait_until([&] { return a.video_ex(p.handle, &frame); }, 5s);
+}
+
+// Frames decoded so far, once the decoder has stopped for lack of a free buffer.
+static int settle_decoded() {
+    using clock = std::chrono::steady_clock;
+    int last = g_decoded;
+    auto quiet = clock::now();
+    const auto end = quiet + 5s;
+    while (clock::now() < end && clock::now() - quiet < 300ms) {
+        std::this_thread::sleep_for(5ms);
+        if (const int now = g_decoded; now != last) {
+            last = now;
+            quiet = clock::now();
+        }
+    }
+    return last;
+}
+
+static void drain_video(Api& a, Player& p, std::vector<u64>& timestamps) {
+    const auto end = std::chrono::steady_clock::now() + 20s;
+    while (a.is_active(p.handle) && std::chrono::steady_clock::now() < end) {
+        AvPlayerFrameInfoEx frame{};
+        if (a.video_ex(p.handle, &frame)) {
+            timestamps.push_back(frame.timestamp);
+        } else {
+            std::this_thread::sleep_for(1ms);
+        }
+    }
+}
+
+// Every frame of the clip exactly once, in presentation order.
+static bool whole_clip(const std::vector<u64>& timestamps) {
+    for (size_t i = 1; i < timestamps.size(); ++i) {
+        if (timestamps[i] <= timestamps[i - 1]) {
+            return false;
+        }
+    }
+    return timestamps.size() == ClipFrames && timestamps.front() < 100;
+}
+
+// 15 fps: consecutive frames are 66-67 ms apart.
+static bool follows(const AvPlayerFrameInfoEx& next, u64 previous) {
+    return next.timestamp > previous && next.timestamp - previous < 100;
+}
+
+template <class... Args>
+static void checkf(bool ok, const char* format, Args... args) {
+    char what[256];
+    std::snprintf(what, sizeof(what), format, args...);
+    check(ok, what);
+}
+
+static void test_decode_ahead(Api& a, int baseline) {
+    std::puts("decode-ahead: output buffers, frames decoded while the game holds one");
+    for (const s32 buffers : {2, 3, 4, GameVideoBuffers}) {
+        Player p;
+        const int textures = g_textures, live = g_live_textures, decoded = g_decoded;
+        AvPlayerFrameInfoEx held{};
+        const bool got = open_video(a, p, buffers) && next_frame(a, p, held);
+        g_held_buffer = reinterpret_cast<VAddr>(held.p_data);
+        g_held_buffer_writes = 0;
+        const int ahead = settle_decoded() - decoded - 1;
+        checkf(got && g_textures - textures == buffers, "%d requested: %d guest video buffers", buffers, buffers);
+        checkf(ahead == buffers - 1, "%d requested: %d frames decoded ahead of the held one (got %d)", buffers, buffers - 1, ahead);
+        std::this_thread::sleep_for(200ms);
+        checkf(g_held_buffer_writes == 0 && a.is_active(p.handle) && p.stop == 0,
+               "%d requested: the held buffer is never decoded into, the player stays active", buffers);
+        g_held_buffer = 0;
+        std::vector<u64> timestamps{held.timestamp};
+        drain_video(a, p, timestamps);
+        checkf(whole_clip(timestamps) && g_decoded - decoded == int(ClipFrames),
+               "%d requested: after the release all 30 frames are decoded and delivered once, in order (got %zu)", buffers,
+               timestamps.size());
+        checkf(wait_until([&] { return p.stop == 1; }, 5s), "%d requested: one Stop event after the last frame", buffers);
+        checkf(a.close(p.handle) == ORBIS_OK && g_live_textures == live, "%d requested: Close returns every video buffer", buffers);
+    }
+    check(threads_settle(baseline), "no worker thread survives");
+}
+
+// With the decoder held back, the frames after a dropped late one can only come from what was decoded ahead.
+static void test_late_frame_drop(Api& a, int baseline) {
+    std::puts("decode-ahead: SyncModeNone, the game drops late frames and takes the next one at once");
+    for (const s32 buffers : {3, 4, GameVideoBuffers}) {
+        Player p;
+        AvPlayerFrameInfoEx held{};
+        const bool got = open_video(a, p, buffers) && next_frame(a, p, held);
+        settle_decoded();
+        gate_from(0);
+        std::vector<u64> timestamps{held.timestamp};
+        bool immediate = got;
+        for (s32 i = 0; i < buffers - 1 && immediate; ++i) {
+            AvPlayerFrameInfoEx frame{};
+            immediate = a.video_ex(p.handle, &frame) && follows(frame, timestamps.back());
+            timestamps.push_back(frame.timestamp);
+        }
+        checkf(immediate, "%d requested: %d late frames dropped, the next one is ready without waiting for the decoder", buffers,
+               buffers - 2);
+        gate_from(INT32_MAX);
+        drain_video(a, p, timestamps);
+        checkf(whole_clip(timestamps), "%d requested: only the dropped frames go unshown, all 30 are delivered once", buffers);
+        a.close(p.handle);
+    }
+    check(threads_settle(baseline), "no worker thread survives");
+}
+
+// The clip is demuxed to its end at once; its frames are decoded only as buffers come back.
+static void test_eof_with_held_frame(Api& a, int baseline) {
+    std::puts("decode-ahead: end of file with a held frame, queued frames and the last frame still in the decoder");
+    Player p;
+    p.close_in_stop = true;
+    const int decoded = g_decoded, live = g_live_textures;
+    AvPlayerFrameInfoEx held{};
+    check(open_video(a, p, GameVideoBuffers) && next_frame(a, p, held), "the first frame is held");
+    check(settle_decoded() - decoded == GameVideoBuffers, "5 more frames are queued behind it");
+    std::this_thread::sleep_for(300ms);
+    check(a.is_active(p.handle) && p.stop == 0, "a demuxed end of file is not reported while frames are held or queued");
+
+    gate_from(decoded + int(ClipFrames));
+    std::vector<u64> timestamps{held.timestamp};
+    wait_until([&] {
+        AvPlayerFrameInfoEx frame{};
+        if (a.video_ex(p.handle, &frame)) {
+            timestamps.push_back(frame.timestamp);
+            return false;
+        }
+        return g_gate_blocked == 1;
+    });
+    check(timestamps.size() == ClipFrames - 1 && g_gate_blocked == 1, "29 frames delivered while the decoder holds the last one");
+    check(a.is_active(p.handle) && p.stop == 0, "the player stays active while the decoder still holds a frame");
+    gate_from(INT32_MAX);
+    drain_video(a, p, timestamps);
+    check(whole_clip(timestamps), "the last frame follows: all 30 delivered once, in order");
+    check(wait_until([&] { return p.stop == 1; }, 5s) && p.close_result == ORBIS_OK,
+          "one Stop event after the last frame, and Close from its callback succeeds");
+    check(threads_settle(baseline) && g_live_textures == live, "no worker thread or video buffer survives");
+}
+
+static void test_pause_jump_with_queue(Api& a, int baseline) {
+    std::puts("decode-ahead: Pause, Resume and JumpToTime with frames queued");
+    Player p;
+    AvPlayerFrameInfoEx held{};
+    open_video(a, p, GameVideoBuffers);
+    next_frame(a, p, held);
+    const int filled = settle_decoded();
+    const int textures = g_textures;
+    check(a.pause(p.handle) == ORBIS_OK && wait_until([&] { return p.pause == 1; }, 3s), "Pause with 5 frames queued");
+    std::this_thread::sleep_for(300ms);
+    AvPlayerFrameInfoEx none{};
+    check(!a.video_ex(p.handle, &none) && g_decoded == filled, "while paused nothing is delivered and nothing more decoded");
+    check(a.resume(p.handle) == ORBIS_OK, "Resume succeeds");
+    AvPlayerFrameInfoEx frame{};
+    check(next_frame(a, p, frame) && follows(frame, held.timestamp), "the first frame after Resume is the one after the held frame");
+    std::vector<u64> timestamps{held.timestamp, frame.timestamp};
+
+    settle_decoded();
+    check(a.jump(p.handle, 0) == ORBIS_OK && p.jump_count == 1, "JumpToTime while playing completes");
+    check(next_frame(a, p, frame) && follows(frame, timestamps.back()),
+          "the next frame continues the queue: the jump does not seek, no earlier frame comes back");
+    timestamps.push_back(frame.timestamp);
+    settle_decoded();
+    p.wait.arm(s32(AvPlayerEvents::StatePause));
+    check(a.pause(p.handle) == ORBIS_OK && p.wait.wait(3s), "the game's sequence: Pause and its event");
+    check(a.jump(p.handle, 0) == ORBIS_OK && p.jump_count == 2, "JumpToTime while paused completes and resumes");
+    check(next_frame(a, p, frame) && follows(frame, timestamps.back()) && a.resume(p.handle) == ORBIS_OK,
+          "the queue continues after the paused jump, the game's Resume succeeds");
+    timestamps.push_back(frame.timestamp);
+    check(g_textures == textures, "no buffer is allocated by Pause, Resume or JumpToTime");
+    drain_video(a, p, timestamps);
+    check(whole_clip(timestamps), "all 30 frames delivered once, in order, across Pause, Resume and both jumps");
+    a.close(p.handle);
+    check(threads_settle(baseline), "no worker thread survives");
+}
+
+static void test_stop_close_with_queue(Api& a, int baseline) {
+    std::puts("decode-ahead: Stop and Close with frames held and queued, the decoder waiting for a buffer");
+    const int live = g_live_textures;
+    {
+        Player p;
+        AvPlayerFrameInfoEx held{};
+        open_video(a, p, GameVideoBuffers);
+        next_frame(a, p, held);
+        settle_decoded();
+        check(a.stop(p.handle) == ORBIS_OK && g_live_textures == live, "Stop returns the held and the queued buffers");
+        const int decoded = g_decoded;
+        AvPlayerFrameInfoEx frame{};
+        check(a.start(p.handle) == ORBIS_OK && next_frame(a, p, frame) && frame.timestamp < 100,
+              "Start again begins at the first frame, no queued frame survives Stop");
+        check(settle_decoded() - decoded == GameVideoBuffers, "and decodes ahead again");
+        check(a.close(p.handle) == ORBIS_OK && g_live_textures == live, "Close with frames queued returns every buffer");
+    }
+    {
+        Player p;
+        AvPlayerFrameInfoEx held{};
+        open_video(a, p, 2);
+        next_frame(a, p, held);
+        settle_decoded();
+        const auto start = std::chrono::steady_clock::now();
+        check(a.close(p.handle) == ORBIS_OK && std::chrono::steady_clock::now() - start < 2s && g_live_textures == live,
+              "Close while the decoder waits for the held buffer returns at once");
+    }
+    check(threads_settle(baseline), "no worker thread survives");
+}
+
 struct Drained {
     int frames = 0;
     bool audio_silent = true;
@@ -952,6 +1215,11 @@ int main() {
         test_looping(a, baseline);
         test_file_replacement(a, baseline);
         test_close_variants(a, baseline);
+        test_decode_ahead(a, baseline);
+        test_late_frame_drop(a, baseline);
+        test_eof_with_held_frame(a, baseline);
+        test_pause_jump_with_queue(a, baseline);
+        test_stop_close_with_queue(a, baseline);
     } else {
         std::puts("media tests skipped: AVPLAYER_TEST_MEDIA is not set");
     }

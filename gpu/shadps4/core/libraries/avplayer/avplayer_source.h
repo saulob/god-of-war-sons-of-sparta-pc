@@ -214,6 +214,8 @@ private:
 
     std::atomic_bool m_is_looping = false;
     std::atomic_bool m_is_paused = false;
+    // The demuxer has read the whole file; the end is reported once the decoders have drained too.
+    std::atomic_bool m_demux_ended = false;
     std::atomic_bool m_is_eof = false;
 
     std::unique_ptr<IDataStreamer> m_up_data_streamer;

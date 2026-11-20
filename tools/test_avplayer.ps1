@@ -42,7 +42,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $prefix 'lib\pkgconfig\libavformat.p
     if (Test-Path -LiteralPath $generator) {
         & $generator -hide_banner -loglevel error -y -f lavfi -i 'testsrc=size=128x96:rate=15' -f lavfi -i 'sine=frequency=440:sample_rate=48000' `
             -t 2 -c:v libx264 -pix_fmt yuv420p -g 15 -c:a aac -ac 1 -shortest (Join-Path $media 'tiny.mp4')
-        if ($LASTEXITCODE -eq 0) { $env:AVPLAYER_TEST_MEDIA = $media }
+        $clip = $LASTEXITCODE -eq 0
+        # Video only, exactly 30 frames with B-frames, so the decoder holds frames back until it is drained.
+        & $generator -hide_banner -loglevel error -y -f lavfi -i 'testsrc=size=128x96:rate=15' -frames:v 30 -c:v libx264 `
+            -pix_fmt yuv420p -g 15 -bf 2 (Join-Path $media 'video.mp4')
+        if ($clip -and $LASTEXITCODE -eq 0) { $env:AVPLAYER_TEST_MEDIA = $media }
     }
     if (-not $env:AVPLAYER_TEST_MEDIA) { Write-Host '  [warn] no ffmpeg.exe to generate the test clip: only the media-free API tests run' }
 
