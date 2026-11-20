@@ -28,8 +28,9 @@ namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
 
-Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
-    : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
+Scheduler::Scheduler(const Instance& instance, bool threaded_recording,
+                     Common::DeviceLost::Timeline timeline)
+    : instance{instance}, work_semaphore{instance, timeline}, command_pool{instance, &work_semaphore} {
     if (threaded_recording) {
         record_chunk = AcquireChunk();
         recorder_thread = std::jthread([this](std::stop_token stop) { RecorderThread(stop); });
@@ -505,10 +506,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     ImGui::Core::TextureManager::Submit();
     const s32 submit_result = Common::DeviceLost::CallWhileHealthy(
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueueSubmit, "submit",
-        signal_value, [&] { return instance.GetGraphicsQueue().submit(submit_info, info.fence); });
+        signal_value, work_semaphore.GetTimeline(),
+        [&] { return instance.GetGraphicsQueue().submit(submit_info, info.fence); });
     ASSERT_MSG(submit_result == Common::DeviceLost::Success, "Queue submit failed: {}",
                vk::to_string(vk::Result(submit_result)));
-    Common::DeviceLost::Global().NoteSubmitted(signal_value);
+    Common::DeviceLost::Global().NoteSubmitted(work_semaphore.GetTimeline(), signal_value);
 
     work_semaphore.Refresh();
     AllocateWorkerCommandBuffers();

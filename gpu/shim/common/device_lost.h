@@ -21,6 +21,11 @@ inline constexpr u64 WaitSliceNanoseconds = 100'000'000;
 
 enum class Phase : u32 { Healthy, Lost, Reported };
 
+// Each timeline semaphore counts its own ticks: a tick only means something with its timeline.
+enum class Timeline : u32 { Draw, Present, Flip, SparseBind, Count };
+inline constexpr u32 TimelineCount = u32(Timeline::Count);
+const char* TimelineName(Timeline timeline) noexcept;
+
 enum class Operation : u32 {
     QueueSubmit,
     QueueBindSparse,
@@ -65,12 +70,19 @@ const char* FaultAddressTypeName(u32 type) noexcept;
 // Driver text without line breaks or control characters, always terminated.
 void CopyDriverText(char* out, size_t size, const char* text, size_t text_size) noexcept;
 
+struct TimelineState {
+    u64 submitted = 0;
+    u64 completed = 0;
+};
+
 struct RootCause {
     Operation operation{};
     char site[32]{};
     s32 result = 0;
     u64 tick = 0;
+    Timeline timeline = Timeline::Draw;
     u64 last_submitted_tick = 0;
+    TimelineState timelines[TimelineCount]{};
     u32 thread_id = 0;
     bool simulated = false;
 };
@@ -96,10 +108,10 @@ public:
     }
 
     // True when this call became the owner of the root cause; a second fault is a consequence and changes nothing.
-    bool Report(Operation operation, const char* site, s32 result, u64 tick);
-    void OnResult(Operation operation, const char* site, s32 result, u64 tick) {
+    bool Report(Operation operation, const char* site, s32 result, u64 tick, Timeline timeline = Timeline::Draw);
+    void OnResult(Operation operation, const char* site, s32 result, u64 tick, Timeline timeline = Timeline::Draw) {
         if (result == DeviceLostResult) {
-            Report(operation, site, result, tick);
+            Report(operation, site, result, tick, timeline);
         }
     }
     // A thread that found the device already lost.
@@ -112,8 +124,15 @@ public:
         return fault_claimed.load(std::memory_order_acquire) ? 1u : 0u;
     }
 
-    void NoteSubmitted(u64 tick) noexcept {
-        last_submitted_tick.store(tick, std::memory_order_relaxed);
+    void NoteSubmitted(Timeline timeline, u64 tick) noexcept {
+        submitted_ticks[u32(timeline)].store(tick, std::memory_order_relaxed);
+    }
+    void NoteCompleted(Timeline timeline, u64 tick) noexcept {
+        completed_ticks[u32(timeline)].store(tick, std::memory_order_relaxed);
+    }
+    [[nodiscard]] TimelineState State(Timeline timeline) const noexcept {
+        return {submitted_ticks[u32(timeline)].load(std::memory_order_relaxed),
+                completed_ticks[u32(timeline)].load(std::memory_order_relaxed)};
     }
 
     // SOS_SIMULATE_DEVICE_LOST: the `calls`th call of `operation` reports a loss without reaching Vulkan.
@@ -139,6 +158,9 @@ public:
     [[nodiscard]] const char* RootLine() const noexcept {
         return root_line;
     }
+    [[nodiscard]] const char* TimelineLine() const noexcept {
+        return timeline_line;
+    }
     [[nodiscard]] const char* Summary() const noexcept {
         return summary;
     }
@@ -158,6 +180,7 @@ private:
     void QueryFaultOnce();
     void PrintFault();
     void BuildRootLine();
+    void BuildTimelineLine();
     void BuildSummary();
 
     Hooks hooks;
@@ -168,13 +191,15 @@ private:
     std::atomic<bool> shutdown_issued{};
     std::atomic<u32> shutdown_requests{};
     std::atomic<u32> secondary_reports{};
-    std::atomic<u64> last_submitted_tick{};
+    std::atomic<u64> submitted_ticks[TimelineCount]{};
+    std::atomic<u64> completed_ticks[TimelineCount]{};
     std::atomic<u32> simulated_operation{u32(Operation::Count)};
     std::atomic<u64> simulated_calls{};
     std::atomic<bool> simulated_hit{};
     RootCause root{};
     FaultInfo fault{};
     char root_line[320]{};
+    char timeline_line[288]{};
     char summary[1024]{};
 };
 
@@ -193,19 +218,21 @@ void ArmSimulationFromEnvironment();
 
 // A Vulkan call that must not reach a lost device; a loss it returns is reported first.
 template <typename Call>
-s32 CallWhileHealthy(Monitor& monitor, Operation operation, const char* site, u64 tick, Call&& call) {
+s32 CallWhileHealthy(Monitor& monitor, Operation operation, const char* site, u64 tick, Timeline timeline,
+                     Call&& call) {
     if (monitor.IsLost()) {
         monitor.Observe(OperationName(operation));
         return DeviceLostResult;
     }
     const s32 result = monitor.Simulate(operation) ? DeviceLostResult : static_cast<s32>(call());
-    monitor.OnResult(operation, site, result, tick);
+    monitor.OnResult(operation, site, result, tick, timeline);
     return result;
 }
 
 // A wait made of bounded slices, so a loss seen by another thread ends it within one slice.
 template <typename WaitOnce>
-s32 WaitWhileHealthy(Monitor& monitor, Operation operation, const char* site, u64 tick, WaitOnce&& wait_once) {
+s32 WaitWhileHealthy(Monitor& monitor, Operation operation, const char* site, u64 tick, Timeline timeline,
+                     WaitOnce&& wait_once) {
     bool first = true;
     for (;;) {
         if (monitor.IsLost()) {
@@ -215,7 +242,7 @@ s32 WaitWhileHealthy(Monitor& monitor, Operation operation, const char* site, u6
         const bool simulated = std::exchange(first, false) && monitor.Simulate(operation);
         const s32 result = simulated ? DeviceLostResult : static_cast<s32>(wait_once());
         if (result != Timeout) {
-            monitor.OnResult(operation, site, result, tick);
+            monitor.OnResult(operation, site, result, tick, timeline);
             return result;
         }
     }

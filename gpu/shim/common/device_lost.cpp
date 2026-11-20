@@ -99,6 +99,22 @@ const char* OperationName(Operation operation) noexcept {
     return "unknown Vulkan operation";
 }
 
+const char* TimelineName(Timeline timeline) noexcept {
+    switch (timeline) {
+    case Timeline::Draw:
+        return "draw";
+    case Timeline::Present:
+        return "present";
+    case Timeline::Flip:
+        return "flip";
+    case Timeline::SparseBind:
+        return "sparse bind";
+    case Timeline::Count:
+        break;
+    }
+    return "unknown";
+}
+
 const char* ResultName(s32 result) noexcept {
     return result == DeviceLostResult ? "VK_ERROR_DEVICE_LOST" : "unexpected result";
 }
@@ -144,12 +160,29 @@ void Monitor::Print(const char* line) {
 
 void Monitor::BuildRootLine() {
     Appender text{root_line, sizeof(root_line)};
-    text.Add("GPU device lost: first detected in %s (site %s), VkResult %s (%d), thread %u, tick %llu, last submitted "
-             "tick %llu",
-             OperationName(root.operation), root.site, ResultName(root.result), root.result, root.thread_id,
-             (unsigned long long)root.tick, (unsigned long long)root.last_submitted_tick);
+    text.Add("GPU device lost: first detected in %s (site %s), VkResult %s (%d), thread %u", OperationName(root.operation),
+             root.site, ResultName(root.result), root.result, root.thread_id);
+    if (root.tick) {
+        text.Add(", %s tick %llu", TimelineName(root.timeline), (unsigned long long)root.tick);
+    }
+    text.Add(", last submitted %s tick %llu", TimelineName(root.timeline), (unsigned long long)root.last_submitted_tick);
     if (root.simulated) {
         text.Add(" [simulated by SOS_SIMULATE_DEVICE_LOST, diagnostic only]");
+    }
+}
+
+void Monitor::BuildTimelineLine() {
+    Appender text{timeline_line, sizeof(timeline_line)};
+    text.Add("GPU timelines:");
+    const char* separator = " ";
+    for (u32 i = 0; i < TimelineCount; ++i) {
+        const TimelineState& state = root.timelines[i];
+        if (i != u32(Timeline::Draw) && state.submitted == 0 && state.completed == 0) {
+            continue;
+        }
+        text.Add("%s%s submitted %llu completed %llu", separator, TimelineName(Timeline(i)),
+                 (unsigned long long)state.submitted, (unsigned long long)state.completed);
+        separator = "; ";
     }
 }
 
@@ -213,7 +246,7 @@ void Monitor::QueryFaultOnce() {
 
 void Monitor::BuildSummary() {
     Appender text{summary, sizeof(summary)};
-    text.Add("%s", root_line);
+    text.Add("%s; %s", root_line, timeline_line);
     switch (fault.status) {
     case FaultStatus::NotQueried:
         text.Add("; device fault not queried");
@@ -241,7 +274,7 @@ void Monitor::BuildSummary() {
     }
 }
 
-bool Monitor::Report(Operation operation, const char* site, s32 result, u64 tick) {
+bool Monitor::Report(Operation operation, const char* site, s32 result, u64 tick, Timeline timeline) {
     Phase expected = Phase::Healthy;
     if (!phase.compare_exchange_strong(expected, Phase::Lost, std::memory_order_acq_rel)) {
         Observe(OperationName(operation));
@@ -252,11 +285,17 @@ bool Monitor::Report(Operation operation, const char* site, s32 result, u64 tick
     CopyBounded(root.site, sizeof(root.site), site);
     root.result = result;
     root.tick = tick;
-    root.last_submitted_tick = last_submitted_tick.load(std::memory_order_relaxed);
+    root.timeline = timeline;
+    for (u32 i = 0; i < TimelineCount; ++i) {
+        root.timelines[i] = State(Timeline(i));
+    }
+    root.last_submitted_tick = root.timelines[u32(timeline)].submitted;
     root.thread_id = CurrentThreadId();
     root.simulated = simulated_hit.load(std::memory_order_relaxed);
     BuildRootLine();
+    BuildTimelineLine();
     Print(root_line);
+    Print(timeline_line);
     QueryFaultOnce();
     BuildSummary();
     phase.store(Phase::Reported, std::memory_order_release);

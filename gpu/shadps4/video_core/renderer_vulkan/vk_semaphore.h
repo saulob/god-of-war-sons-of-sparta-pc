@@ -17,6 +17,10 @@ class Instance;
 class Scheduler;
 
 struct TimelineTicks {
+    constexpr TimelineTicks() = default;
+    constexpr explicit TimelineTicks(Common::DeviceLost::Timeline timeline_) : timeline{timeline_} {}
+
+    Common::DeviceLost::Timeline timeline{Common::DeviceLost::Timeline::Draw};
     std::atomic<u64> gpu_tick{0};     ///< Current known GPU tick.
     std::atomic<u64> current_tick{1}; ///< Current logical tick.
 };
@@ -32,7 +36,7 @@ bool RefreshKnownTick(TimelineTicks& ticks, Common::DeviceLost::Monitor& monitor
     do {
         known = ticks.gpu_tick.load(std::memory_order_acquire);
         const s32 result =
-            CallWhileHealthy(monitor, Operation::GetSemaphoreCounterValue, "semread", known,
+            CallWhileHealthy(monitor, Operation::GetSemaphoreCounterValue, "semread", known, ticks.timeline,
                              [&] { return read_counter(counter); });
         if (result != Success) {
             fail("semread", result, known);
@@ -43,6 +47,7 @@ bool RefreshKnownTick(TimelineTicks& ticks, Common::DeviceLost::Monitor& monitor
         }
     } while (!ticks.gpu_tick.compare_exchange_weak(known, counter, std::memory_order_release,
                                                    std::memory_order_relaxed));
+    monitor.NoteCompleted(ticks.timeline, counter);
     return true;
 }
 
@@ -58,7 +63,7 @@ void WaitForTick(TimelineTicks& ticks, Common::DeviceLost::Monitor& monitor, u64
         ticks.gpu_tick.load(std::memory_order_acquire) >= tick) {
         return;
     }
-    const s32 result = WaitWhileHealthy(monitor, Operation::WaitSemaphores, "semwait", tick, wait_once);
+    const s32 result = WaitWhileHealthy(monitor, Operation::WaitSemaphores, "semwait", tick, ticks.timeline, wait_once);
     if (result != Success) {
         fail("semwait", result, tick);
         return;
@@ -68,11 +73,16 @@ void WaitForTick(TimelineTicks& ticks, Common::DeviceLost::Monitor& monitor, u64
 
 class Semaphore {
 public:
-    explicit Semaphore(const Instance& instance_);
+    explicit Semaphore(const Instance& instance_,
+                       Common::DeviceLost::Timeline timeline = Common::DeviceLost::Timeline::Draw);
     ~Semaphore();
 
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return ticks.current_tick.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] Common::DeviceLost::Timeline GetTimeline() const noexcept {
+        return ticks.timeline;
     }
 
     [[nodiscard]] u64 KnownGpuTick() const noexcept {

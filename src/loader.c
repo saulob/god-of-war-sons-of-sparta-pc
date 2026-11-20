@@ -28,6 +28,7 @@
 #ifdef _WIN32
 #include "crash_guard.h"
 #endif
+#include "sos_posix_signals.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
 #error God of War Sons of Sparta PC requires x86-64 GCC or Clang (including MinGW).
 #endif
@@ -537,6 +538,9 @@ static ImportClass classify_import(const char *name, const char *symbol, int lin
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifndef _WIN32
+    sos_ignore_sigpipe();
+#endif
 #ifdef _WIN32
     { SYSTEM_INFO system_info; GetSystemInfo(&system_info); page_size = system_info.dwPageSize; }
 #else

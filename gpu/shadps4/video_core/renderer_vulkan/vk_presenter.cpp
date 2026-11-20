@@ -116,7 +116,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     : window{window_}, liverpool{liverpool_},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled()},
-      draw_scheduler{instance, true}, present_scheduler{instance}, flip_scheduler{instance},
+      draw_scheduler{instance, true},
+      present_scheduler{instance, false, Common::DeviceLost::Timeline::Present},
+      flip_scheduler{instance, false, Common::DeviceLost::Timeline::Flip},
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
@@ -271,7 +273,8 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
 void Presenter::WaitFrameFence(Frame* frame, const char* site) {
     const vk::Device device = instance.GetDevice();
     const s32 result = Common::DeviceLost::WaitWhileHealthy(
-        Common::DeviceLost::Global(), Common::DeviceLost::Operation::WaitForFences, site, 0, [&] {
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::WaitForFences, site, 0,
+        Common::DeviceLost::Timeline::Present, [&] {
             return device.waitForFences(frame->present_done, false,
                                         Common::DeviceLost::WaitSliceNanoseconds);
         });

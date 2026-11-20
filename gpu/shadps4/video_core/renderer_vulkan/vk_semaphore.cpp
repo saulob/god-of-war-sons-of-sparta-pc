@@ -10,7 +10,8 @@ namespace Vulkan {
 
 constexpr u64 WAIT_SLICE = Common::DeviceLost::WaitSliceNanoseconds;
 
-Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
+Semaphore::Semaphore(const Instance& instance_, Common::DeviceLost::Timeline timeline)
+    : instance{instance_}, ticks{timeline} {
     const vk::StructureChain semaphore_chain = {
         vk::SemaphoreCreateInfo{},
         vk::SemaphoreTypeCreateInfo{
@@ -28,7 +29,8 @@ Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
 Semaphore::~Semaphore() = default;
 
 void Semaphore::Fail(const char* site, s32 result, u64 tick) const {
-    UNREACHABLE_MSG("Timeline semaphore {} failed at tick {}: {}", site, tick,
+    UNREACHABLE_MSG("Timeline semaphore {} failed at {} tick {}: {}", site,
+                    Common::DeviceLost::TimelineName(ticks.timeline), tick,
                     vk::to_string(vk::Result(result)));
 }
 

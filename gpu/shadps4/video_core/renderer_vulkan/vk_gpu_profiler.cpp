@@ -77,7 +77,8 @@ void GpuProfiler::Collect(u32 which) {
     std::vector<u64> stamps(count);
     // Four frames on this is complete unless the GPU lags that far: then wait for it.
     const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
-        Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueryPoolResults, "query", 0, [&] {
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueryPoolResults, "query", 0,
+        Common::DeviceLost::Timeline::Draw, [&] {
             return device.getQueryPoolResults(
                 *pool, which * SliceQueries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
                 vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);

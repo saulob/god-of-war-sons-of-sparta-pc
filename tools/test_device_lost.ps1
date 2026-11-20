@@ -50,8 +50,17 @@ try {
         @{ Name = 'another Vulkan error counts as a device loss'; File = 'header'; Old = 'if (result == DeviceLostResult) {'; New = 'if (result != Success) {' },
         @{ Name = 'a timeout ends a wait'; File = 'header'; Old = 'if (result != Timeout) {'; New = 'if (true) {' },
         @{ Name = 'the worker stop predicate ignores the loss'; File = 'header'; Old = 'return stop.stop_requested() || monitor.IsLost();'; New = 'return stop.stop_requested();' },
-        @{ Name = 'a semaphore read after the loss reaches the driver'; File = 'semaphore'; Old = "CallWhileHealthy(monitor, Operation::GetSemaphoreCounterValue, `"semread`", known,`n                             [&] { return read_counter(counter); });"; New = "static_cast<s32>(read_counter(counter));" },
-        @{ Name = 'a semaphore wait after the loss blocks'; File = 'semaphore'; Old = 'WaitWhileHealthy(monitor, Operation::WaitSemaphores, "semwait", tick, wait_once);'; New = 'static_cast<s32>(wait_once());' }
+        @{ Name = 'a semaphore read after the loss reaches the driver'; File = 'semaphore'; Old = "CallWhileHealthy(monitor, Operation::GetSemaphoreCounterValue, `"semread`", known, ticks.timeline,`n                             [&] { return read_counter(counter); });"; New = "static_cast<s32>(read_counter(counter));" },
+        @{ Name = 'a semaphore wait after the loss blocks'; File = 'semaphore'; Old = 'WaitWhileHealthy(monitor, Operation::WaitSemaphores, "semwait", tick, ticks.timeline, wait_once);'; New = 'static_cast<s32>(wait_once());' }
+        ,
+        @{ Name = 'all timelines share one submitted tick'; File = 'header'; Old = 'submitted_ticks[u32(timeline)].store(tick, std::memory_order_relaxed);'; New = 'submitted_ticks[0].store(tick, std::memory_order_relaxed);' },
+        @{ Name = 'all timelines share one completed tick'; File = 'header'; Old = 'completed_ticks[u32(timeline)].store(tick, std::memory_order_relaxed);'; New = 'completed_ticks[0].store(tick, std::memory_order_relaxed);' },
+        @{ Name = 'a present completion is recorded as draw'; File = 'semaphore'; Old = 'monitor.NoteCompleted(ticks.timeline, counter);'; New = 'monitor.NoteCompleted(Common::DeviceLost::Timeline::Draw, counter);' },
+        @{ Name = 'a sparse bind wait is recorded as draw'; File = 'semaphore'; Old = '"semwait", tick, ticks.timeline, wait_once);'; New = '"semwait", tick, Common::DeviceLost::Timeline::Draw, wait_once);' },
+        @{ Name = 'the last submitted tick of the root comes from the draw timeline'; File = 'monitor'; Old = 'root.timelines[u32(timeline)].submitted;'; New = 'root.timelines[u32(Timeline::Draw)].submitted;' },
+        @{ Name = 'the root report omits the timeline of its tick'; File = 'monitor'; Old = 'text.Add(", %s tick %llu", TimelineName(root.timeline), (unsigned long long)root.tick);'; New = 'text.Add(", tick %llu", (unsigned long long)root.tick);' },
+        @{ Name = 'the root cause forgets its timeline'; File = 'monitor'; Old = 'root.timeline = timeline;'; New = 'root.timeline = Timeline::Draw;' },
+        @{ Name = 'the per-timeline state is not part of the report'; File = 'monitor'; Old = '    Print(timeline_line);'; New = '' }
     )
     $detected = 0
     foreach ($mutation in $mutations) {

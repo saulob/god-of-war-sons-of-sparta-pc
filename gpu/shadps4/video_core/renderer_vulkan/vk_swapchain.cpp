@@ -27,7 +27,7 @@ static void WaitDeviceIdle(const Instance& instance, const char* why) {
     std::scoped_lock lock{Scheduler::submit_mutex};
     const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::DeviceWaitIdle, "idle", 0,
-        [&] { return instance.GetDevice().waitIdle(); }));
+        Common::DeviceLost::Timeline::Draw, [&] { return instance.GetDevice().waitIdle(); }));
     if (result != vk::Result::eSuccess) {
         LOG_WARNING(Render_Vulkan, "Failed to wait for the device to become idle {}: {}", why,
                     vk::to_string(result));
@@ -145,7 +145,8 @@ void Swapchain::SetHDR(bool hdr) {
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
     const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
-        Common::DeviceLost::Global(), Common::DeviceLost::Operation::AcquireNextImage, "acquire", 0, [&] {
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::AcquireNextImage, "acquire", 0,
+        Common::DeviceLost::Timeline::Present, [&] {
             return device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
                                               image_acquired[frame_index], VK_NULL_HANDLE,
                                               &image_index);
@@ -174,7 +175,7 @@ bool Swapchain::Present() {
 
     const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueuePresent, "present", 0,
-        [&] { return instance.GetPresentQueue().presentKHR(present_info); }));
+        Common::DeviceLost::Timeline::Present, [&] { return instance.GetPresentQueue().presentKHR(present_info); }));
     ReportResult(true, result);
     const DcpPresent::SwapResult kind = PresentResult(result);
     ASSERT_MSG(kind != DcpPresent::SwapResult::Failure, "Swapchain presentation failed: {}",
