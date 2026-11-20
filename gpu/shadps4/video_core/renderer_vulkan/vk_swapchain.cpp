@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "common/assert.h"
+#include "common/device_lost.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "dcp_present.h"
@@ -24,7 +25,10 @@ namespace Vulkan {
 // submitting while the window changes size (F11, display mode, VSync).
 static void WaitDeviceIdle(const Instance& instance, const char* why) {
     std::scoped_lock lock{Scheduler::submit_mutex};
-    if (const auto result = instance.GetDevice().waitIdle(); result != vk::Result::eSuccess) {
+    const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::DeviceWaitIdle, "idle", 0,
+        [&] { return instance.GetDevice().waitIdle(); }));
+    if (result != vk::Result::eSuccess) {
         LOG_WARNING(Render_Vulkan, "Failed to wait for the device to become idle {}: {}", why,
                     vk::to_string(result));
     }
@@ -95,6 +99,7 @@ void Swapchain::Create(u32 width_, u32 height_) {
     };
 
     auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
+    ReportIfDeviceLost(swapchain_result);
     ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
                vk::to_string(swapchain_result));
     swapchain = chain;
@@ -139,9 +144,12 @@ void Swapchain::SetHDR(bool hdr) {
 
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
-    vk::Result result =
-        device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
-                                   image_acquired[frame_index], VK_NULL_HANDLE, &image_index);
+    const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::AcquireNextImage, "acquire", 0, [&] {
+            return device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
+                                              image_acquired[frame_index], VK_NULL_HANDLE,
+                                              &image_index);
+        }));
 
     ReportResult(false, result);
     const DcpPresent::SwapResult kind = AcquireResult(result);
@@ -164,7 +172,9 @@ bool Swapchain::Present() {
         .pImageIndices = &image_index,
     };
 
-    auto result = instance.GetPresentQueue().presentKHR(present_info);
+    const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueuePresent, "present", 0,
+        [&] { return instance.GetPresentQueue().presentKHR(present_info); }));
     ReportResult(true, result);
     const DcpPresent::SwapResult kind = PresentResult(result);
     ASSERT_MSG(kind != DcpPresent::SwapResult::Failure, "Swapchain presentation failed: {}",

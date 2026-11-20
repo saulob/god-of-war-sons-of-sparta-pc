@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/debug.h"
+#include "common/device_lost.h"
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
@@ -9,6 +10,7 @@
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
+#include "video_core/allocation_fallback.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -206,7 +208,7 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
                  vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled,
     };
 
-    const VmaAllocationCreateInfo alloc_info = {
+    VmaAllocationCreateInfo alloc_info = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         .requiredFlags = 0,
@@ -218,12 +220,30 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     VkImage unsafe_image{};
     VkImageCreateInfo unsafe_image_info = static_cast<VkImageCreateInfo>(image_info);
 
-    VkResult result = vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
-                                     &unsafe_image, &frame->allocation, nullptr);
-    if (result != VK_SUCCESS) [[unlikely]] {
+    // A full card keeps the frame over budget, then in system memory, like every other image.
+    constexpr std::array<u32, 3> stages{0, 1, 2};
+    const auto allocation = VideoCore::AllocateWithFallback(stages, [&](u32 stage) {
+        if (stage >= 1) {
+            alloc_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        }
+        if (stage == 2) {
+            alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        }
+        return vk::Result{vmaCreateImage(instance.GetAllocator(), &unsafe_image_info, &alloc_info,
+                                         &unsafe_image, &frame->allocation, nullptr)};
+    });
+    if (allocation.result != vk::Result::eSuccess) [[unlikely]] {
+        Common::DeviceLost::Global().OnResult(Common::DeviceLost::Operation::Checked, "frame image",
+                                              s32(allocation.result), 0);
         LOG_CRITICAL(Render_Vulkan, "Failed allocating texture with error {}",
-                     vk::to_string(vk::Result{result}));
+                     vk::to_string(allocation.result));
         UNREACHABLE();
+    }
+    if (VideoCore::RecordFallback(VideoCore::Telemetry(), VideoCore::AllocationCategory::FrameImage,
+                                  u64(width) * height * 4, 0, allocation,
+                                  [](u32 stage) { return stage == 1; })) {
+        LOG_WARNING(Render_Vulkan, "Frame image {}x{} allocated {}", width, height,
+                    allocation.candidate == 1 ? "over the memory budget" : "in system memory");
     }
     frame->image = vk::Image{unsafe_image};
     SetObjectName(device, frame->image, "Frame image #{}", frame->id);
@@ -248,6 +268,19 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     frame->is_hdr = swapchain.GetHDR();
 }
 
+void Presenter::WaitFrameFence(Frame* frame, const char* site) {
+    const vk::Device device = instance.GetDevice();
+    const s32 result = Common::DeviceLost::WaitWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::WaitForFences, site, 0, [&] {
+            return device.waitForFences(frame->present_done, false,
+                                        Common::DeviceLost::WaitSliceNanoseconds);
+        });
+    if (result != Common::DeviceLost::Success) {
+        UNREACHABLE_MSG("Frame fence wait failed ({}): {}", site,
+                        vk::to_string(vk::Result(result)));
+    }
+}
+
 Frame* Presenter::PrepareLastFrame() {
     // dcp: the last frame is already back in the free queue. It is taken out while it is shown again, or the GPU
     // thread could draw into it or recreate it (a window size change) under the present thread. When the GPU
@@ -264,22 +297,7 @@ Frame* Presenter::PrepareLastFrame() {
         NoteFreeQueue(frame, 'L');
     }
 
-    while (true) {
-        vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
-                                                               std::numeric_limits<u64>::max());
-        if (result == vk::Result::eSuccess) {
-            break;
-        }
-        if (result == vk::Result::eTimeout) {
-            continue;
-        }
-        if (result == vk::Result::eErrorDeviceLost) {
-            instance.ReportDeviceFault();
-        }
-        ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
-                   "Device lost during waiting for a frame");
-        UNREACHABLE_MSG("Frame fence wait failed: {}", vk::to_string(result));
-    }
+    WaitFrameFence(frame, "frmfence");
 
     auto& scheduler = flip_scheduler;
     scheduler.EndRendering();
@@ -909,29 +927,10 @@ Frame* Presenter::GetRenderFrame() {
         CheckFreeQueueFrame(frame, "GetRenderFrame");
     }
 
-    const vk::Device device = instance.GetDevice();
-    vk::Result result{};
-
-    const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
-        return result;
-    };
-
     // Wait for the presentation to be finished so all frame resources are free
     {
         DcpStartupWatch::WaitScope fence_wait{DcpStartupWatch::FrameFence};
-        while (wait() != vk::Result::eSuccess) {
-            if (result == vk::Result::eErrorDeviceLost) {
-                instance.ReportDeviceFault();
-            }
-            ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
-                       "Device lost during waiting for a frame");
-            // Retry if the waiting times out
-            if (result == vk::Result::eTimeout) {
-                continue;
-            }
-            UNREACHABLE_MSG("Present fence wait failed: {}", vk::to_string(result));
-        }
+        WaitFrameFence(frame, "prsfence");
     }
 
     const u64 expected_size = expected_frame_size.load(std::memory_order_relaxed);

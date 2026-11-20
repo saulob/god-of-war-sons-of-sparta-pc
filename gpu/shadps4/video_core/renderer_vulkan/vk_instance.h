@@ -351,8 +351,10 @@ public:
         return vk11_props.subgroupSize;
     }
 
-    /// Logs heap budgets and the driver's fault report (VK_EXT_device_fault) after device loss.
-    void ReportDeviceFault() const;
+    /// The driver's fault report (VK_EXT_device_fault), bounded, with the heap budgets; called once by the
+    /// device-lost monitor.
+    void QueryDeviceFault(Common::DeviceLost::FaultInfo& info) const;
+    void DescribeHeaps(char* out, size_t size) const;
 
     u32 MaxGeometryOutputVertices() const {
         return properties.limits.maxGeometryOutputVertices;

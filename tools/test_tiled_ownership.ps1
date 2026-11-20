@@ -9,7 +9,10 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-$build = Join-Path $root 'build\cmake\clang64'
+# The library must be the current production one: test.ps1 builds it once (gpu-production-link); a run on its own builds it here.
+. (Join-Path $PSScriptRoot '_gpu_build.ps1')
+if ($env:SOS_GPU_PRODUCTION_CURRENT -ne '1' -and -not (Invoke-GpuProductionBuild @('dcpgpu'))) { exit 1 }
+$build = $script:GpuBuildDir
 $library = Join-Path $build 'gpu\libdcpgpu.a'
 $shaders = Join-Path $build 'gpu\include\video_core\host_shaders\tiling_micro_32_comp.h'
 if (-not (Test-Path -LiteralPath $library) -or -not (Test-Path -LiteralPath $shaders)) {

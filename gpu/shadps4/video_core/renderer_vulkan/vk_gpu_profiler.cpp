@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "common/device_lost.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -75,9 +76,12 @@ void GpuProfiler::Collect(u32 which) {
     const u32 count = used[which];
     std::vector<u64> stamps(count);
     // Four frames on this is complete unless the GPU lags that far: then wait for it.
-    const auto result = device.getQueryPoolResults(
-        *pool, which * SliceQueries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
-        vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+    const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueryPoolResults, "query", 0, [&] {
+            return device.getQueryPoolResults(
+                *pool, which * SliceQueries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
+                vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+        }));
     if (result != vk::Result::eSuccess) {
         return;
     }

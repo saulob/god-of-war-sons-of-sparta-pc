@@ -13,7 +13,9 @@
 #include "dcp_copy_pool.h"
 #include "dcp_toggles.h"
 #include "common/alignment.h"
+#include "common/device_lost.h"
 #include "core/memory.h"
+#include "video_core/allocation_fallback.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -94,6 +96,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
                        reqs.memoryTypeBits)
             .value();
+    backing_memory_types = FallbackMemoryTypes(instance.GetMemoryProperties(), reqs.memoryTypeBits,
+                                               arena_memory_type_index);
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * num_arena_pages) * sizeof(vk::DeviceAddress);
@@ -381,12 +385,28 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
-    const vk::MemoryAllocateInfo alloc_info = {
+    vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
-        .memoryTypeIndex = arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    vk::DeviceMemory device_memory{};
+    const FallbackAllocation allocation = AllocateWithFallback(backing_memory_types, [&](u32 type) {
+        alloc_info.memoryTypeIndex = type;
+        const auto [result, memory] = instance.GetDevice().allocateMemory(alloc_info);
+        device_memory = memory;
+        return result;
+    });
+    Vulkan::Check(allocation.result);
+    const auto& memory_types = instance.GetMemoryProperties();
+    if (RecordFallback(Telemetry(), AllocationCategory::SparseBacking, alloc_info.allocationSize,
+                       arena_memory_type_index, allocation, [&](u32 type) {
+                           return bool(memory_types.memoryTypes[type].propertyFlags &
+                                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+                       })) {
+        LOG_WARNING(Render_Vulkan,
+                    "Buffer arena backing of {} KiB placed in memory type {} instead of {}: device memory is full",
+                    alloc_info.allocationSize >> 10, allocation.candidate, arena_memory_type_index);
+    }
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
@@ -636,9 +656,11 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     };
 
     info.AddWait(signal_sema, signal_tick);
-    auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
-    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Sparse bind failed: {}",
-               vk::to_string(submit_result));
+    const s32 submit_result = Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueueBindSparse, "sparse",
+        signal_tick, [&] { return instance.GetGraphicsQueue().bindSparse(sparse_info); });
+    ASSERT_MSG(submit_result == Common::DeviceLost::Success, "Sparse bind failed: {}",
+               vk::to_string(vk::Result(submit_result)));
 
     pending_binds.clear();
 }

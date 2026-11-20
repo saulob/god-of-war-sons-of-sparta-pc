@@ -132,6 +132,19 @@ else()
     target_link_libraries(sons_of_sparta PRIVATE sos_launcher dcpgpu sos_atrac9 SDL3::SDL3 Freetype::Freetype Threads::Threads ${CMAKE_DL_LIBS} m)
 endif()
 
+# Links every object of dcpgpu with the loader's runtime, so undefined and duplicate symbols show although a static library
+# hides them (tools/test.ps1). Not part of the default build.
+set(SOS_SMOKE_PLATFORM_SOURCES ${SOS_PLATFORM_SOURCES})
+list(FILTER SOS_SMOKE_PLATFORM_SOURCES EXCLUDE REGEX "[.]rc$")
+add_executable(dcpgpu_link_smoke EXCLUDE_FROM_ALL src/gpu_link_smoke.cpp ${SOS_RUNTIME_SOURCES} ${SOS_SMOKE_PLATFORM_SOURCES})
+target_include_directories(dcpgpu_link_smoke PRIVATE src launcher ${CMAKE_BINARY_DIR}/generated)
+if (WIN32)
+    target_compile_definitions(dcpgpu_link_smoke PRIVATE _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000007)
+    target_link_libraries(dcpgpu_link_smoke PRIVATE sos_launcher_core "$<LINK_LIBRARY:WHOLE_ARCHIVE,dcpgpu>" sos_keys sos_atrac9 SDL3::SDL3 Freetype::Freetype onecore bcrypt ws2_32 -pthread)
+else()
+    target_link_libraries(dcpgpu_link_smoke PRIVATE sos_launcher_core "$<LINK_LIBRARY:WHOLE_ARCHIVE,dcpgpu>" sos_keys sos_atrac9 SDL3::SDL3 Freetype::Freetype Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
 # The launcher reads its images next to the executable; each copy is a build output, so an image-only change syncs.
 set(SOS_LAUNCHER_ASSET_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/launcher")
 set(SOS_LAUNCHER_ASSET_COPIES)

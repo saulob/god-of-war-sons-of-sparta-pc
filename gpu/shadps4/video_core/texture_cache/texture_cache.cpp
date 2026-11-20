@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_wait_diagnostics.h"
 #include "video_core/texture_cache/aliasing.h"
 #include "video_core/texture_cache/host_compatibility.h"
+#include "video_core/texture_cache/sampler_gc.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
 
@@ -1283,10 +1284,12 @@ vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
     const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base,
                                                         is_depth, extra_lod_bias);
     if (new_sampler) {
-        samplers.at(hash).lru_id = sampler_lru_cache.Insert(hash, gc_tick);
+        it.value().lru_id = sampler_lru_cache.Insert(hash, gc_tick);
     } else {
         sampler_lru_cache.Touch(it->second.lru_id, gc_tick);
     }
+    // The draw being recorded goes out with this tick; the GC keeps the sampler until the GPU passes it.
+    it.value().last_use_tick = scheduler.CurrentTick();
 
     return it->second.Handle();
 }
@@ -1729,38 +1732,21 @@ void TextureCache::GarbageCollectSamplers() {
         return;
     }
     std::scoped_lock lock{samplers_mutex};
-    bool pressured = false;
-    bool aggresive = false;
-    u64 ticks_to_destroy = 0;
-    size_t num_deletions = 0;
-
-    const auto configure = [&](bool allow_aggressive) {
-        pressured = total_used_samplers >= pressure_gc_samplers;
-        aggresive = allow_aggressive && total_used_samplers >= critical_gc_samplers;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
-        ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
-        num_deletions = aggresive ? 40 : pressured ? 20 : 10;
-    };
-    const auto clean_up = [&](u64 hash) {
-        if (num_deletions == 0) {
-            return true;
-        }
-        --num_deletions;
-        const size_t lru_id = samplers.at(hash).lru_id;
-        samplers.erase(hash);
-        sampler_lru_cache.Free(lru_id);
-        return false;
-    };
-
-    // Try to remove anything old enough and not high priority.
-    configure(false);
-    sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-
-    if (total_used_samplers >= critical_gc_samplers) {
-        // If we are still over the critical limit, run an aggressive GC
-        configure(true);
-        sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
-    }
+    // The tick is read once: the GC never waits for the GPU.
+    scheduler.GetWorkSemaphore()->Refresh();
+    const u64 completed_tick = scheduler.GetWorkSemaphore()->KnownGpuTick();
+    CollectSamplers(
+        sampler_lru_cache, gc_tick, {pressure_gc_samplers, critical_gc_samplers},
+        [this] { return samplers.size(); },
+        [&](u64 hash) {
+            return SamplerInUseByGpu(samplers.at(hash).last_use_tick, completed_tick);
+        },
+        [this](u64 hash) {
+            const size_t lru_id = samplers.at(hash).lru_id;
+            samplers.erase(hash);
+            sampler_lru_cache.Free(lru_id);
+        });
+    total_used_samplers = samplers.size();
 }
 
 void TextureCache::RunGarbageCollector() {

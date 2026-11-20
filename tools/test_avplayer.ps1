@@ -53,7 +53,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $prefix 'lib\pkgconfig\libavformat.p
     $apiExe = Join-Path $temp 'avplayer_tests.exe'
     $sources = @(Get-ChildItem -LiteralPath (Join-Path $gpu 'shadps4\core\libraries\avplayer') -Filter '*.cpp' | ForEach-Object FullName) + @(
         (Join-Path $gpu 'shadps4\core\libraries\videodec\video_utils.cpp'),
-        (Join-Path $gpu 'shim\common\logging\log.cpp'), (Join-Path $gpu 'shim\common\assert.cpp'),
+        (Join-Path $gpu 'shim\common\logging\log.cpp'), (Join-Path $gpu 'shim\common\assert.cpp'), (Join-Path $gpu 'shim\common\device_lost.cpp'),
         (Join-Path $gpu 'shadps4\common\thread.cpp'), (Join-Path $gpu 'shadps4\common\error.cpp'), (Join-Path $gpu 'shadps4\common\string_util.cpp'))
     Invoke-Compile ($common + @('-O1', '-w', '-D_WIN32_WINNT=0x0A00', '-DNOMINMAX', '-DWIN32_LEAN_AND_MEAN', '-DBOOST_ASIO_STANDALONE', '-DNDEBUG',
         '-include', (Join-Path $gpu 'shim\dcp_win_compat.h'),
@@ -67,6 +67,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $prefix 'lib\pkgconfig\libavformat.p
     if ($LASTEXITCODE -ne 0) { $result = 1 }
 }
 Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host 'Decoded NV12 frame copy'
+& (Join-Path $PSScriptRoot 'test_video_frame.ps1')
+if ($LASTEXITCODE -ne 0) { $result = 1 }
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if ($python) {

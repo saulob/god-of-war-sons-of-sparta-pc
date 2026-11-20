@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <boost/container/static_vector.hpp>
@@ -10,11 +12,13 @@
 
 #include "common/assert.h"
 #include "common/debug.h"
+#include "common/device_lost.h"
 #include "common/types.h"
 #include "imgui/renderer/imgui_core.h"
 #include "dcp_graphics.h"
 #include "dcp_settings.h"
 #include "sdl_window.h"
+#include "video_core/allocation_fallback.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -119,47 +123,96 @@ bool IsDeviceUsable(vk::PhysicalDevice physical) {
     return robustness2.robustBufferAccess2 && robustness2.robustImageAccess2 && robustness2.nullDescriptor;
 }
 
-void Instance::ReportDeviceFault() const {
+namespace {
+
+std::atomic<const Instance*> fault_instance{};
+
+void QueryFaultOfRegisteredInstance(Common::DeviceLost::FaultInfo& info) {
+    if (const Instance* instance = fault_instance.load(std::memory_order_acquire)) {
+        instance->QueryDeviceFault(info);
+    }
+}
+
+void RegisterFaultQuery(const Instance* instance) {
+    fault_instance.store(instance, std::memory_order_release);
+    Common::DeviceLost::Global().SetFaultQuery(&QueryFaultOfRegisteredInstance);
+    Common::DeviceLost::ArmSimulationFromEnvironment();
+}
+
+void UnregisterFaultQuery(const Instance* instance) {
+    const Instance* expected = instance;
+    fault_instance.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+}
+
+} // namespace
+
+void Instance::DescribeHeaps(char* out, size_t size) const {
+    char heaps[128]{};
+    char fallbacks[96]{};
     if (supports_memory_budget) {
         vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
         vk::PhysicalDeviceMemoryProperties2 props{.pNext = &budget};
         physical_device.getMemoryProperties2(&props);
-        for (u32 heap = 0; heap < props.memoryProperties.memoryHeapCount; ++heap) {
-            LOG_CRITICAL(Render_Vulkan, "Heap {}: {} MiB used of {} MiB budget, size {} MiB", heap,
-                         budget.heapUsage[heap] >> 20, budget.heapBudget[heap] >> 20,
-                         props.memoryProperties.memoryHeaps[heap].size >> 20);
+        size_t used = 0;
+        for (u32 heap = 0; heap < props.memoryProperties.memoryHeapCount && used + 1 < sizeof(heaps);
+             ++heap) {
+            const int written = std::snprintf(heaps + used, sizeof(heaps) - used, "%sheap %u %llu/%llu MiB",
+                                              heap ? ", " : "GPU memory: ", heap,
+                                              (unsigned long long)(budget.heapUsage[heap] >> 20),
+                                              (unsigned long long)(budget.heapBudget[heap] >> 20));
+            used = written > 0 ? std::min(sizeof(heaps) - 1, used + size_t(written)) : used;
         }
     }
+    VideoCore::Telemetry().Describe(fallbacks, sizeof(fallbacks));
+    std::snprintf(out, size, "%s%s%s", heaps, heaps[0] && fallbacks[0] ? "; " : "", fallbacks);
+}
+
+void Instance::QueryDeviceFault(Common::DeviceLost::FaultInfo& info) const {
+    using namespace Common::DeviceLost;
+    DescribeHeaps(info.heaps, sizeof(info.heaps));
     if (!device_fault) {
-        LOG_CRITICAL(Render_Vulkan, "Device fault report unavailable (no VK_EXT_device_fault)");
+        info.status = FaultStatus::Unsupported;
         return;
     }
     vk::DeviceFaultCountsEXT counts{};
-    if (device->getFaultInfoEXT(&counts, nullptr) != vk::Result::eSuccess) {
+    if (const vk::Result result = device->getFaultInfoEXT(&counts, nullptr);
+        result != vk::Result::eSuccess) {
+        info.status = FaultStatus::Failed;
+        info.result = s32(result);
         return;
     }
-    std::vector<vk::DeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
-    std::vector<vk::DeviceFaultVendorInfoEXT> vendor_infos(counts.vendorInfoCount);
+    info.address_count = counts.addressInfoCount;
+    info.vendor_count = counts.vendorInfoCount;
+    info.vendor_binary_size = counts.vendorBinarySize;
+    std::array<vk::DeviceFaultAddressInfoEXT, MaxFaultAddresses> addresses{};
+    std::array<vk::DeviceFaultVendorInfoEXT, MaxVendorFaults> vendor_infos{};
+    counts.addressInfoCount = std::min<u32>(counts.addressInfoCount, MaxFaultAddresses);
+    counts.vendorInfoCount = std::min<u32>(counts.vendorInfoCount, MaxVendorFaults);
     counts.vendorBinarySize = 0;
-    vk::DeviceFaultInfoEXT info{
+    vk::DeviceFaultInfoEXT fault{
         .pAddressInfos = addresses.data(),
         .pVendorInfos = vendor_infos.data(),
     };
-    const vk::Result result = device->getFaultInfoEXT(&counts, &info);
+    const vk::Result result = device->getFaultInfoEXT(&counts, &fault);
     if (result != vk::Result::eSuccess && result != vk::Result::eIncomplete) {
+        info.status = FaultStatus::Failed;
+        info.result = s32(result);
         return;
     }
-    LOG_CRITICAL(Render_Vulkan, "Device fault: {}", info.description.data());
-    for (u32 i = 0; i < counts.addressInfoCount; ++i) {
-        const auto& address = addresses[i];
-        LOG_CRITICAL(Render_Vulkan, "{} at {:#x} (precision {:#x})",
-                     vk::to_string(address.addressType), address.reportedAddress,
-                     address.addressPrecision);
+    info.status = FaultStatus::Captured;
+    info.result = s32(result);
+    CopyDriverText(info.description, sizeof(info.description), fault.description.data(),
+                   fault.description.size());
+    for (u32 i = 0; i < std::min<u32>(counts.addressInfoCount, MaxFaultAddresses); ++i) {
+        info.addresses[i] = {u32(addresses[i].addressType), addresses[i].reportedAddress,
+                             addresses[i].addressPrecision};
     }
-    for (u32 i = 0; i < counts.vendorInfoCount; ++i) {
-        const auto& vendor = vendor_infos[i];
-        LOG_CRITICAL(Render_Vulkan, "Vendor fault {:#x} data {:#x}: {}", vendor.vendorFaultCode,
-                     vendor.vendorFaultData, vendor.description.data());
+    for (u32 i = 0; i < std::min<u32>(counts.vendorInfoCount, MaxVendorFaults); ++i) {
+        auto& vendor = info.vendors[i];
+        vendor.code = vendor_infos[i].vendorFaultCode;
+        vendor.data = vendor_infos[i].vendorFaultData;
+        CopyDriverText(vendor.description, sizeof(vendor.description),
+                       vendor_infos[i].description.data(), vendor_infos[i].description.size());
     }
 }
 
@@ -269,9 +322,11 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
+    RegisterFaultQuery(this);
 }
 
 Instance::~Instance() {
+    UnregisterFaultQuery(this);
     ImGui::Core::Shutdown(GetDevice());
     vmaDestroyAllocator(allocator);
 }

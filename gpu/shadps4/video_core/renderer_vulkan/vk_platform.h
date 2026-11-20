@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include "common/assert.h"
+#include "common/device_lost.h"
 #include "common/logging/log.h"
 #include "common/string_literal.h"
 #include "common/types.h"
@@ -53,8 +54,14 @@ void SetObjectName(vk::Device device, const HandleType& handle, const char* form
     SetObjectName(device, handle, debug_name);
 }
 
+/// A checked call that returns VK_ERROR_DEVICE_LOST is the root of the failure, not an assertion.
+inline void ReportIfDeviceLost(vk::Result r) {
+    Common::DeviceLost::Global().OnResult(Common::DeviceLost::Operation::Checked, "check", s32(r), 0);
+}
+
 template <StringLiteral msg = "">
 static void Check(vk::Result r) {
+    ReportIfDeviceLost(r);
     if constexpr (msg.len <= 1) {
         ASSERT_MSG(r == vk::Result::eSuccess, "vk::Result={}", vk::to_string(r));
     } else {
@@ -65,6 +72,7 @@ static void Check(vk::Result r) {
 
 template <StringLiteral msg = "", typename T>
 static T Check(vk::ResultValue<T> r) {
+    ReportIfDeviceLost(r.result);
     if constexpr (msg.len <= 1) {
         ASSERT_MSG(r.result == vk::Result::eSuccess, "vk::Result={}", vk::to_string(r.result));
     } else {

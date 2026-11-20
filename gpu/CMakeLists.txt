@@ -107,6 +107,7 @@ set(COMMON
     shim/common/logging/log.cpp)
 set(SHIM_SOURCES
     shim/common/assert.cpp
+    shim/common/device_lost.cpp
     shim/dcp_copy_pool_forensics.cpp
     shim/dcp_copy_pool.cpp
     shim/dcp_gpu_list.cpp

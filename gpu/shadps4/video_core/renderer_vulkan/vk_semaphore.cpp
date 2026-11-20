@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <limits>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
@@ -9,7 +8,7 @@
 
 namespace Vulkan {
 
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
+constexpr u64 WAIT_SLICE = Common::DeviceLost::WaitSliceNanoseconds;
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -28,55 +27,34 @@ Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
 
 Semaphore::~Semaphore() = default;
 
+void Semaphore::Fail(const char* site, s32 result, u64 tick) const {
+    UNREACHABLE_MSG("Timeline semaphore {} failed at tick {}: {}", site, tick,
+                    vk::to_string(vk::Result(result)));
+}
+
+vk::Result Semaphore::ReadCounter(u64& counter) const {
+    const auto [result, value] = instance.GetDevice().getSemaphoreCounterValue(*semaphore);
+    counter = value;
+    return result;
+}
+
 void Semaphore::Refresh() {
-    u64 this_tick{};
-    u64 counter{};
-    do {
-        this_tick = gpu_tick.load(std::memory_order_acquire);
-        auto [counter_result, cntr] = instance.GetDevice().getSemaphoreCounterValue(*semaphore);
-        ASSERT_MSG(counter_result == vk::Result::eSuccess,
-                   "Failed to get master semaphore value: {}", vk::to_string(counter_result));
-        counter = cntr;
-        if (counter < this_tick) {
-            return;
-        }
-    } while (!gpu_tick.compare_exchange_weak(this_tick, counter, std::memory_order_release,
-                                             std::memory_order_relaxed));
+    RefreshKnownTick(
+        ticks, Common::DeviceLost::Global(), [this](u64& counter) { return ReadCounter(counter); },
+        [this](const char* site, s32 result, u64 tick) { Fail(site, result, tick); });
 }
 
 void Semaphore::Wait(u64 tick) {
-    // No need to wait if the GPU is ahead of the tick
-    if (IsFree(tick)) {
-        return;
-    }
-    // Update the GPU tick and try again
-    Refresh();
-    if (IsFree(tick)) {
-        return;
-    }
-
-    // If none of the above is hit, fallback to a regular wait
     const vk::SemaphoreWaitInfo wait_info = {
         .semaphoreCount = 1,
         .pSemaphores = &semaphore.get(),
         .pValues = &tick,
     };
-
-    for (;;) {
-        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
-        if (result == vk::Result::eSuccess) {
-            break;
-        }
-        if (result == vk::Result::eTimeout) {
-            continue;
-        }
-        if (result == vk::Result::eErrorDeviceLost) {
-            instance.ReportDeviceFault();
-        }
-        ASSERT_MSG(result != vk::Result::eErrorDeviceLost, "Device lost while waiting for the GPU");
-        UNREACHABLE_MSG("Timeline semaphore wait failed: {}", vk::to_string(result));
-    }
-    Refresh();
+    WaitForTick(
+        ticks, Common::DeviceLost::Global(), tick,
+        [&] { return instance.GetDevice().waitSemaphores(&wait_info, WAIT_SLICE); },
+        [this](u64& counter) { return ReadCounter(counter); },
+        [this](const char* site, s32 result, u64 failed_tick) { Fail(site, result, failed_tick); });
 }
 
 } // namespace Vulkan
