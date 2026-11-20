@@ -52,7 +52,7 @@ typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, 
 static LinkedModule modules[16];
 static uint64_t module_count;
 
-static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); exit(1); }
+static void fail(const char *message) { fprintf(stderr, "ERROR: %s\n", message); runtime_exit(1); }
 static uint64_t read64(FILE *f) {
     unsigned char b[8];
     if (fread(b, 1, 8, f) != 8) fail("truncated boot file");

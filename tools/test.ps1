@@ -2,7 +2,8 @@
 .SYNOPSIS
   The one headless validation command: build parity of CUSA57767 1.00 and 1.01, the pad and title input path, the controller
   prompts and Settings dialog glyphs, Skip Intro and AvPlayer, the graphics imports and pixel input state, the texture cache and tiled ownership checks, the frame rate
-  model, the progress reporter and git whitespace. No game, launcher, window or audio device is started.
+  model, the shutdown lifecycle, display mode and cursor policy of the host, the progress reporter and git whitespace. No game,
+  launcher, window or audio device is started.
 .DESCRIPTION
   Every group runs even after one fails; the exit code is non-zero when any failed. Nothing is built by this script: the
   groups compile their own small test programs in a temporary folder, as before.
@@ -153,6 +154,22 @@ function Invoke-PythonCheck([string[]]$Arguments, [string]$Scope) {
     Get-GroupResult $run $Scope $Arguments[0]
 }
 
+# One lifecycle area of the host (shutdown, display or cursor): an optional helper program, the source gate and the gate's
+# self-test on mutated copies, reported as one group.
+function Invoke-LifecycleArea([string]$Area, [string]$Helper = '') {
+    $python = Get-Python
+    if (-not $python) { return Result 'FAIL' 'Python 3 was not found (tools\setup.ps1)' }
+    $gate = Join-Path $root 'scripts\window_lifecycle_check.py'
+    $runs = New-Object System.Collections.Generic.List[object]
+    if ($Helper) { $runs.Add((Invoke-Native $shell @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Helper)))) }
+    $runs.Add((Invoke-Native $python.Exe (@($python.Args) + @('-I', $gate, '--area', $Area))))
+    $runs.Add((Invoke-Native $python.Exe (@($python.Args) + @('-I', $gate, '--area', $Area, '--self-test'))))
+    $code = 0
+    foreach ($run in $runs) { if ($run.Code -ne 0) { $code = $run.Code } }
+    $merged = [pscustomobject]@{ Lines = @($runs | ForEach-Object { $_.Lines }); Code = $code }
+    Get-GroupResult $merged 'host' "window_lifecycle_check.py --area $Area"
+}
+
 function Invoke-GitWhitespace {
     $problems = New-Object System.Collections.Generic.List[string]
     foreach ($arguments in @('diff', '--check'), @('diff', '--cached', '--check')) {
@@ -202,6 +219,9 @@ $steps = @(
     @{ Name = 'image-reuse'; Scope = 'host'; Title = 'Texture cache address reuse (linear/tiled layouts, depth never aliases color), write-back before fences, boundary pages'; Block = { Invoke-Helper 'test_image_reuse.ps1' 'host' } },
     @{ Name = 'tiled-ownership'; Scope = 'host'; Title = 'Tiled CPU/GPU ownership on the real TileImage/DetileImage shaders (headless Vulkan compute, no window)'; Block = { Invoke-Helper 'test_tiled_ownership.ps1' 'host' } },
     @{ Name = 'frame-rate'; Scope = 'build'; Title = 'Frame rate model'; Block = { Invoke-Helper 'test_frame_model.ps1' 'build' } },
+    @{ Name = 'shutdown-lifecycle'; Scope = 'host'; Title = 'Shutdown lifecycle: every exit path ends the process with _Exit/_exit (no exit(), no main return after the video core starts), the window is never destroyed, no thread_local needs a joining or Vulkan teardown, no library unload or D3D12 path exists, and the gate fails on mutated copies of the sources'; Block = { Invoke-LifecycleArea 'shutdown' } },
+    @{ Name = 'display-mode'; Scope = 'host'; Title = 'Display mode: Borderless is applied to the hidden window before it is shown and before the first surface and swapchain, Windowed is unchanged, F11 stays a runtime toggle, no synthetic startup key exists, and the gate fails on mutated copies of the sources'; Block = { Invoke-LifecycleArea 'display' } },
+    @{ Name = 'cursor-policy'; Scope = 'host'; Title = 'Cursor policy: 5 s idle hide in fullscreen only, motion of the game window, focus and fullscreen transitions, one SDL call per change (injected clock), the window wiring, and mutated copies of the policy and the wiring that must fail'; Block = { Invoke-LifecycleArea 'cursor' 'test_cursor_policy.ps1' } },
     @{ Name = 'progress-reporter'; Scope = 'host'; Title = 'Test progress: percentage, bar, durations, ETA, check counts, previous group, timing summary, redirected output and a synthetic long group (synthetic time, no sleeping)'; Block = { Invoke-Helper 'test_progress.ps1' 'host' } },
     @{ Name = 'git-whitespace'; Scope = 'host'; Title = 'git diff --check (staged, unstaged and new files)'; Block = { Invoke-GitWhitespace } }
 )

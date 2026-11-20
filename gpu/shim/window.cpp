@@ -270,11 +270,14 @@ void WindowSDL::ToggleBorderless() {
     DcpSettings::SaveDisplayMode();
 }
 
-// Window thread. Visible while an overlay needs the mouse or focus is away; otherwise the last
-// gameplay input device decides, in Windowed and Borderless alike.
+// Window thread. Visible while an overlay needs the mouse or focus is away; otherwise the last gameplay input device
+// decides in both modes, and in Borderless a still mouse also hides it after DcpCursor::kIdleHideMs.
 void WindowSDL::UpdateCursor() {
-    const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
-    if (const auto visible = cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured())) {
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+    const bool focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
+    const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+    if (const auto visible = cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured(), fullscreen,
+                                           SDL_GetTicks())) {
         if (*visible) {
             SDL_ShowCursor();
         } else {
@@ -413,7 +416,7 @@ bool WindowSDL::PollEvents() {
         switch (event.type) {
         case SDL_EVENT_MOUSE_MOTION:
             if (!ui) {
-                cursor.MouseMoved();
+                cursor.MouseMoved(event.motion.windowID, SDL_GetWindowID(window), SDL_GetTicks());
                 const float to_game = SDL_GetWindowPixelDensity(window) * dcp_mouse_game_scale(GetWidth(), GetHeight());
                 dcp_mouse_motion(dcp_mouse_global(), event.motion.xrel * to_game, event.motion.yrel * to_game);
             }

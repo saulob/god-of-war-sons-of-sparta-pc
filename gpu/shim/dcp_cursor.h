@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Cursor visibility from the last meaningful gameplay input device.
+// Cursor visibility from the last meaningful gameplay input device, and from mouse idle time in fullscreen.
 #pragma once
 
 #include <cstdint>
@@ -10,13 +10,17 @@ namespace DcpCursor {
 
 enum class Device { Mouse, Keyboard, Controller };
 
+inline constexpr std::uint64_t kIdleHideMs = 5000;
+
 class State {
 public:
     // gameplay: the game window is accepting input (false in the launcher).
     // overlay: a mouse-driven UI is open and needs the cursor.
     // pointer: Pointer Control is active, so the game's own pointer is the cursor and the host cursor stays hidden.
+    // fullscreen, now_ms: the cursor also hides after kIdleHideMs without mouse motion while fullscreen and focused.
     // Returns the new visibility when it changes, otherwise nullopt.
-    std::optional<bool> Update(bool gameplay, bool focused, bool overlay, bool pointer = false) {
+    std::optional<bool> Update(bool gameplay, bool focused, bool overlay, bool pointer = false, bool fullscreen = false,
+                               std::uint64_t now_ms = 0) {
         if (!gameplay) {
             device_ = Device::Mouse;
             device_before_overlay_ = Device::Mouse;
@@ -28,7 +32,12 @@ public:
             device_ = device_before_overlay_;
             overlay_ = false;
         }
-        const bool visible = !gameplay || !focused || overlay || (device_ == Device::Mouse && !pointer);
+        if (!idle_started_ || !fullscreen || !focused || overlay) {
+            last_motion_ms_ = now_ms;
+            idle_started_ = true;
+        }
+        const bool idle = now_ms > last_motion_ms_ && now_ms - last_motion_ms_ >= kIdleHideMs;
+        const bool visible = !gameplay || !focused || overlay || (device_ == Device::Mouse && !pointer && !idle);
         if (visible == visible_) {
             return std::nullopt;
         }
@@ -38,7 +47,14 @@ public:
 
     // With Mouse Controls off the mouse is not a gameplay device: it never becomes the last device.
     void SetMouseControls(bool on) { mouse_controls_ = on; }
-    void MouseMoved() { MouseActivity(); }
+    // Only motion in the game window counts, so another window's mouse never changes the game cursor.
+    void MouseMoved(std::uint32_t event_window, std::uint32_t game_window, std::uint64_t now_ms) {
+        if (event_window != game_window) {
+            return;
+        }
+        last_motion_ms_ = now_ms;
+        MouseActivity();
+    }
     void MouseButtonPressed() { MouseActivity(); }
     void MouseWheelMoved() { MouseActivity(); }
     void KeyboardActivity() { device_ = Device::Keyboard; }
@@ -59,6 +75,8 @@ private:
     Device device_before_overlay_ = Device::Mouse;
     bool overlay_ = false;
     bool visible_ = true;
+    bool idle_started_ = false;
+    std::uint64_t last_motion_ms_ = 0;
 };
 
 // A key press that counts as gameplay input: not a repeat, and not a host shortcut.
