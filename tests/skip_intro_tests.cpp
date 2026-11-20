@@ -426,17 +426,74 @@ void TestTitleStub() {
           "title stub: a stub out of reach writes nothing");
     Check(sos_skip_intro_hook_title(code + 5, stub) && code[5] == 0xe8, "title stub: the check becomes a call");
 
-    while (sos_skip_intro_claim()) {}
+    alignas(16) uint8_t menu[0x140] = {};
+    const auto link = [&](bool open, bool processing) {
+        const uint8_t* menu_pointer = menu;
+        std::memcpy(object + 0x48, &menu_pointer, sizeof(menu_pointer));
+        const int32_t state = open ? 0 : 2;
+        std::memcpy(menu + 0x88, &state, sizeof(state));
+        menu[0x130] = processing ? 1 : 0;
+    };
+    const auto arm = [&] {
+        object[0x6c] = 0;
+        sos_skip_intro_arm();
+    };
+    const auto settle = [&] {
+        for (unsigned i = 1; i < SOS_SKIP_INTRO_MIN_TICKS; ++i) tick(object);
+    };
+
+    link(true, false);
+    for (unsigned i = 0; i < SOS_SKIP_INTRO_MIN_TICKS; ++i) tick(object);
     object[0x6c] = 0;
     Check(tick(object) == 0 && object[0x6c] == 0, "title stub: not armed, the original test runs");
     object[0x6c] = 1;
     Check(tick(object) == 1 && object[0x6c] == 1, "title stub: not armed, a queued switch still counts");
+
+    arm();
+    Check(tick(object) == 0 && tick(object) == 0 && object[0x6c] == 0, "title stub: armed, the first ticks of the intro do not switch");
+    Check(tick(object) == 1 && object[0x6c] == 1, "title stub: armed, ready: the switch is queued and taken");
     object[0x6c] = 0;
-    sos_skip_intro_arm();
-    Check(tick(object) == 1 && object[0x6c] == 1, "title stub: armed, the first test queues the switch and takes it");
-    object[0x6c] = 0;
-    Check(tick(object) == 0 && object[0x6c] == 0, "title stub: the second test runs the original");
+    Check(tick(object) == 0 && object[0x6c] == 0, "title stub: the next test runs the original");
     Check(tick(object) == 0 && tick(object) == 0, "title stub: it never claims again until armed");
+
+    arm();
+    link(false, false);
+    settle();
+    Check(tick(object) == 0 && tick(object) == 0 && object[0x6c] == 0, "title stub: a closed main menu waits");
+    link(true, true);
+    Check(tick(object) == 0 && object[0x6c] == 0, "title stub: the main menu processing the load button waits");
+    std::memset(object + 0x48, 0, sizeof(uint8_t*));
+    Check(tick(object) == 0 && object[0x6c] == 0, "title stub: no main menu waits");
+    link(true, false);
+    Check(tick(object) == 1 && object[0x6c] == 1, "title stub: the claim is granted as soon as the menu is ready");
+    object[0x6c] = 0;
+    Check(tick(object) == 0, "title stub: and only once");
+
+    arm();
+    link(true, false);
+    uint64_t kept[4] = {0x1111111111111111ull, 0x2222222222222222ull, 0x3333333333333333ull, 0x4444444444444444ull};
+    settle();
+    uint64_t after[4] = {};
+    asm volatile(
+        "mov %[a], %%rdi\n\t"
+        "mov %[b], %%rsi\n\t"
+        "mov %[c], %%rcx\n\t"
+        "mov %[d], %%rdx\n\t"
+        "mov %[obj], %%r14\n\t"
+        "push %%rbp\n\t"
+        "mov %%rsp, %%rbp\n\t"
+        "and $-16, %%rsp\n\t"
+        "call *%[stub]\n\t"
+        "mov %%rbp, %%rsp\n\t"
+        "pop %%rbp\n\t"
+        "mov %%rdi, %[oa]\n\t"
+        "mov %%rsi, %[ob]\n\t"
+        "mov %%rcx, %[oc]\n\t"
+        "mov %%rdx, %[od]"
+        : [oa] "=m"(after[0]), [ob] "=m"(after[1]), [oc] "=m"(after[2]), [od] "=m"(after[3])
+        : [a] "m"(kept[0]), [b] "m"(kept[1]), [c] "m"(kept[2]), [d] "m"(kept[3]), [obj] "r"(object), [stub] "r"(stub)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r14", "r8", "r9", "r10", "r11", "memory", "cc");
+    Check(object[0x6c] == 1 && std::equal(kept, kept + 4, after), "title stub: rdi, rsi, rcx and rdx come back as they went in");
     VirtualFree(block, 0, MEM_RELEASE);
 }
 #else

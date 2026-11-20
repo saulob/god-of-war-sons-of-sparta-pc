@@ -667,8 +667,32 @@ int main(int argc, char **argv) {
     load_module_names(boot);
     sos_log_settings_summary(settings_file, paths.image_dir);
 
+    static SosControllerIcons controller_icons;
+    {
+        SosGameBuild icons_build;
+        int icons_supported = 0;
+        if (sos_game_build(paths.image_dir, &icons_build)) {
+            char icons_key[64];
+            snprintf(icons_key, sizeof(icons_key), "%s-%s", icons_build.title_id, icons_build.version);
+            icons_supported = sos_controller_prompts_supported(icons_key);
+        }
+        if (!check_imports && !cpu_only)
+            sos_prepare_controller_icons(app0, paths.image_dir, sos_controller_prompts_from_file(settings_file), icons_supported,
+                                         &controller_icons);
+        for (const char *line = controller_icons.report; *line;) {
+            const char *end = strchr(line, '\n');
+            const int length = end ? (int)(end - line) : (int)strlen(line);
+            if (length) printf("Controller icons: %.*s\n", length, line);
+            line += length + (end ? 1 : 0);
+        }
+    }
+
     {
         if (app0) runtime_file_configure(app0, user_dir);
+        if (controller_icons.assets[0] && controller_icons.streamed[0] &&
+            runtime_file_alias("/app0/Media/resources.assets", controller_icons.assets) == 0 &&
+            runtime_file_alias("/app0/Media/resources.assets.resS", controller_icons.streamed) == 0)
+            puts("Controller icons: prepared copies in use");
         runtime_savedata_configure("CUSA57767");
         trophy_runtime_configure(app0, user_dir);
         runtime_pad_set_settings(settings_file);
@@ -765,7 +789,7 @@ int main(int argc, char **argv) {
     }
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
-    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES);
+    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
@@ -804,26 +828,26 @@ int main(int argc, char **argv) {
         printf("Display: render resolution %dx%d (%s), aspect ratio %s\n", render_target.width, render_target.height,
                sos_resolutions[resolution_choice].key, sos_aspect_ratios[aspect_choice].name);
     }
+    const int prompt_style = sos_controller_prompts_from_file(settings_file);
+    char prompt_key[64] = "";
     {
         SosGameBuild game_build;
-        const int style = sos_controller_prompts_from_file(settings_file);
         const int known_build = sos_game_build(paths.image_dir, &game_build);
-        char key[64];
         if (known_build) {
-            snprintf(key, sizeof(key), "%s-%s", game_build.title_id, game_build.version);
+            snprintf(prompt_key, sizeof(prompt_key), "%s-%s", game_build.title_id, game_build.version);
             uint64_t offsets[16];
             uint8_t lengths[16];
-            const size_t values = sos_controller_prompts_value_ranges(image, size, key, offsets, lengths, 16);
+            const size_t values = sos_controller_prompts_value_ranges(image, size, prompt_key, offsets, lengths, 16);
             for (size_t i = 0; i < values; ++i) runtime_redzone_add_volatile(offsets[i], lengths[i]);
         }
-        if (style == SOS_PROMPTS_XBOX && known_build) {
+        if (prompt_style == SOS_PROMPTS_XBOX && known_build) {
             char message[200];
-            sos_controller_prompts_apply(image, size, key, style, message, sizeof(message));
+            sos_controller_prompts_apply(image, size, prompt_key, prompt_style, message, sizeof(message));
             printf("Controller prompts: %s\n", message);
-        } else if (style == SOS_PROMPTS_XBOX) {
+        } else if (prompt_style == SOS_PROMPTS_XBOX) {
             printf("Controller prompts: Xbox requested but unavailable: not a supported game build\n");
-        } else {
-            printf("Controller prompts: %s\n", sos_prompt_style_label(style));
+        } else if (prompt_style == SOS_PROMPTS_AUTOMATIC && !known_build) {
+            printf("Controller prompts: Automatic requested but unavailable: not a supported game build\n");
         }
     }
     if (runtime_memory_prepare()) fail("guest memory unavailable");
@@ -997,6 +1021,17 @@ int main(int argc, char **argv) {
             sos_skip_intro_apply(image, size, skip_key, image + round_page(size), stub_area, skip_message, sizeof(skip_message));
             printf("Skip Intro: %s\n", skip_message);
         }
+    }
+    if (prompt_style == SOS_PROMPTS_AUTOMATIC && prompt_key[0]) {
+        char hook_message[200];
+        sos_prompt_hook_arm(prompt_style, prompt_key);
+        if (sos_prompt_hook_install(image, size, prompt_key, image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES,
+                                    SOS_PROMPT_HOOK_STUB_BYTES, hook_message, sizeof(hook_message)))
+            printf("Controller prompts: Automatic (%s)\n", hook_message);
+        else
+            printf("Controller prompts: Automatic requested but unavailable: %s; the game's own prompts are kept\n", hook_message);
+    } else if (prompt_style != SOS_PROMPTS_XBOX) {
+        printf("Controller prompts: %s\n", sos_prompt_style_label(prompt_style));
     }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);

@@ -209,6 +209,9 @@ typedef struct {
  * length gets the new patches on top of the earlier ones. -1 with nothing registered when the table is full, the path
  * already has an overlay of another length or a patch falls outside `length`. */
 int runtime_file_overlay(const char *guest, uint64_t length, const RuntimeFilePatch *patches, size_t count);
+/* The guest sees the file at `guest` (/app0/Media/resources.assets) as the host file `host`: that exact path only, before the
+ * guest starts. -1 when the table is full or a path does not fit. */
+int runtime_file_alias(const char *guest, const char *host);
 int runtime_file_translate(const char *guest, char *out, size_t size);
 int64_t runtime_file_open(const char *path, int flags, int mode);
 int64_t runtime_file_close(int fd);

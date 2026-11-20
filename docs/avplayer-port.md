@@ -103,9 +103,12 @@ await asynchronous (the flag is cleared on the main thread); the 500 ms retries 
 ## Skip Intro: the title intro
 
 `MainMenuState_Intro` has no input to answer: its `TickState` switches to the next state (PRESS START) when `QueueSwitchToNextState`
-has set the flag at `this+0x6c`, which the intro animation does at its end. With Skip Intro on, that flag test calls a stub
-(the design of Odin Sphere's `launcher/skip_intro.c`) that asks `sos_skip_intro_claim`: the first time it is granted the stub sets the flag,
-and the game's own switch runs; every later tick, and every later visit to the title, runs the original test.
+has set the flag at `this+0x6c`, which the intro animation does at its end, seconds after the state starts. With Skip Intro on,
+that flag test calls a stub (the design of Odin Sphere's `launcher/skip_intro.c`) that asks `sos_skip_intro_claim`. The claim is
+granted once, when the intro has ticked three times (its start coroutine has run) and its main menu is open and not processing the
+load button, which are the conditions `MainMenuState_WaitForInputPress.TickState` needs before it leaves its state; then the stub
+sets the same flag and the game's own switch runs. Every later tick, and every later visit to the title, runs the original test.
+`scripts/title_input_check.py` proves the offsets, the flag and the title's input path from the game code.
 
 ## FFmpeg
 

@@ -3,7 +3,7 @@
  * as booted, saves, loads the FMOD banks and the next scene; it first waits for the save system and the settings
  * defaults, which the presentation used to outlast. The waits the presentation covered are shortened to 1 ms: the save
  * system's startup delay of 10 s and the 100 ms polls of the save loading code. The title intro is skipped once through the
- * game's own transition to PRESS START. */
+ * game's own transition to PRESS START, when the intro has run a few ticks and the main menu is open and idle. */
 #ifndef SOS_SKIP_INTRO_PATCH_H
 #define SOS_SKIP_INTRO_PATCH_H
 
@@ -38,15 +38,18 @@ const SosSkipIntroSite *sos_skip_intro_site(const char *build);
 int sos_skip_intro_verify(const uint8_t *image, uint64_t size, const SosSkipIntroSite *site, const char **why);
 
 #define SOS_SKIP_INTRO_STUB_BYTES 64
+#define SOS_SKIP_INTRO_MIN_TICKS 3
 
 /* Points the title intro's queued-switch test at a stub in `stubs` that calls sos_skip_intro_claim; the stub sets the
  * game's own switch flag at `check` (cmp byte [r14+0x6c],0) when the claim is granted. 0 and nothing written when the
  * check is another or the stub is out of reach. */
 int sos_skip_intro_hook_title(uint8_t *check, uint8_t *stubs);
 
-/* 1 the first time after sos_skip_intro_arm, then 0. Called by the stub (System V). */
+/* 1 the first time after sos_skip_intro_arm that the intro state (the stub passes its TickState's `this`) has ticked
+ * SOS_SKIP_INTRO_MIN_TICKS times and its main menu is open and not processing the load button; else 0. Called by the stub
+ * (System V). */
 void sos_skip_intro_arm(void);
-__attribute__((sysv_abi)) int sos_skip_intro_claim(void);
+__attribute__((sysv_abi)) int sos_skip_intro_claim(const uint8_t *state);
 
 /* Verifies, then writes the patch and arms the title claim. Writes nothing and returns 0, saying why, when the build or its
  * code is not the verified one. `stubs` has SOS_SKIP_INTRO_STUB_BYTES within a 32-bit jump of the image. */

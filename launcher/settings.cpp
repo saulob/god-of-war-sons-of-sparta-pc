@@ -245,7 +245,7 @@ std::string SettingsSummary(const LauncherSettings& settings, const GameBuild* b
          OnOff(settings.GetBool(kShowFpsTitleKey, false)) + ", render resolution in title " +
          OnOff(settings.GetBool(kShowResolutionTitleKey, false)));
 
-    int prompts = SOS_PROMPTS_PLAYSTATION;
+    int prompts = SOS_PROMPTS_AUTOMATIC;
     sos_prompt_style_parse(settings.Get(kControllerPromptsKey, kDefaultControllerPrompts).c_str(), &prompts);
     line(std::string("Controller prompts ") + sos_prompt_style_label(prompts));
     line(std::string("Skip Intro ") + OnOff(settings.GetBool(kSkipIntroKey, false)));

@@ -7,6 +7,7 @@
 #include "runtime.h"
 #include "dcpgpu.h"
 #include "sos_keys.h"
+#include "sos_pad_kind.h"
 #include "sos_sdl_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,6 +101,21 @@ static int free_slot(void) {
     for (int i=0;i<MAX_PADS;++i) if (!slots[i].gamepad) return i;
     return -1;
 }
+static int pad_kind_of(SDL_Gamepad *g) {
+    switch (SDL_GetGamepadType(g)) {
+        case SDL_GAMEPAD_TYPE_PS5: return SOS_PAD_PLAYSTATION5;
+        case SDL_GAMEPAD_TYPE_PS4: return SOS_PAD_PLAYSTATION4;
+        case SDL_GAMEPAD_TYPE_XBOX360:
+        case SDL_GAMEPAD_TYPE_XBOXONE: return SOS_PAD_XBOX;
+        default: return SOS_PAD_OTHER;
+    }
+}
+/* Tells the controller prompts which kind the first connected gamepad is; only when gamepads come or go, never per sample. */
+static void publish_pad_kind(void) {
+    int kind=SOS_PAD_NONE;
+    for (int i=0;i<MAX_PADS && kind==SOS_PAD_NONE;++i) if (slots[i].gamepad) kind=pad_kind_of(slots[i].gamepad);
+    sos_pad_kind_publish(kind);
+}
 /* Gives new gamepads, in SDL's order, the lowest slots without one; called under lock. A disconnected
  * gamepad frees its slot, but the player stays logged in, as on the PS4. */
 static void refresh_gamepads(void) {
@@ -108,12 +124,15 @@ static void refresh_gamepads(void) {
         sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
     }
     if (sdl_ready<0) return;
+    int changed=0;
     for (int i=0;i<MAX_PADS;++i) {
         if (!slots[i].gamepad || SDL_GamepadConnected(slots[i].gamepad)) continue;
         printf("Runtime: gamepad %d disconnected\n",i+1);
         SDL_CloseGamepad(slots[i].gamepad);
         slots[i].gamepad=NULL;
+        changed=1;
     }
+    if (changed) publish_pad_kind();
     static uint64_t last_scan;
     const uint64_t now=now_us();
     if (free_slot()<0 || (last_scan && now-last_scan<250000)) return;
@@ -131,8 +150,10 @@ static void refresh_gamepads(void) {
         printf("Runtime: gamepad %d connected: %s (%04x:%04x%s)\n",slot+1,SDL_GetGamepadName(g),vendor,product,
                vendor==0x28de && product==0x11ff ? ", Steam Input virtual gamepad" : "");
         runtime_user_login(slot+1);
+        changed=1;
     }
     SDL_free(ids);
+    if (changed) publish_pad_kind();
 }
 /* Button sources: a host button or key and the PS4 button it presses. The defaults below can be
  * changed per PS4 button with SOS_PAD_MAP (gamepad) and SOS_KEY_MAP (keyboard), e.g.

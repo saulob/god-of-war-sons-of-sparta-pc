@@ -16,6 +16,7 @@ namespace sos {
 
 inline constexpr char kShowLauncherKey[] = "show_launcher";
 inline constexpr char kControllerPromptsKey[] = SOS_PROMPTS_KEY;
+inline constexpr char kPromptsAutomatic[] = SOS_PROMPTS_AUTOMATIC_KEY;
 inline constexpr char kPromptsPlayStation[] = SOS_PROMPTS_PLAYSTATION_KEY;
 inline constexpr char kPromptsXbox[] = SOS_PROMPTS_XBOX_KEY;
 inline constexpr char kDefaultControllerPrompts[] = SOS_PROMPTS_DEFAULT_KEY;

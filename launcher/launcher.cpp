@@ -12,11 +12,13 @@
 #include <functional>
 #include <iterator>
 #include <map>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,6 +28,8 @@
 #include "trg/launcher.h"
 #include "trg/platform.h"
 
+#include "controller_icons.h"
+#include "controller_prompts.h"
 #include "dcp_graphics.h"
 #include "dcp_png.h"
 #include "game_files.h"
@@ -133,8 +137,8 @@ constexpr char kRenderResolutionHelp[] =
     "The resolution the game renders at. It is separate from the window size: the picture is scaled to the window. "
     "Above 1080p the game runs in its PlayStation 4 Pro mode and needs a powerful graphics card.";
 constexpr char kControllerPromptsHelp[] =
-    "PlayStation keeps the game's original symbols. Xbox shows the game's own Xbox buttons; the game ships no Xbox art "
-    "for stick directions and a few menu prompts, which may appear blank. Applies at the next game start.";
+    "Automatic shows Xbox symbols while an Xbox controller is used and PlayStation symbols otherwise. PlayStation and "
+    "Xbox always show that set. Only the symbols change, not the controls. Applies at the next game start.";
 constexpr char kFrameCounterHelp[] = "Shows the new game frames a second and the time between them in a corner of the game.";
 constexpr char kSkipIntroHelp[] = "Skips the startup logos and video; the game continues to the title screen as usual.";
 constexpr char kAntiAliasingHelp[] =
@@ -1004,7 +1008,8 @@ private:
     void PageControls(trg::Ui& ui) {
         if (build_ && sos_controller_prompts_supported(BuildKey(*build_).c_str())) {
             ui.Combo("Controller prompts", kControllerPromptsHelp, kControllerPromptsKey, kDefaultControllerPrompts,
-                     {{kPromptsPlayStation, sos_prompt_style_label(SOS_PROMPTS_PLAYSTATION)},
+                     {{kPromptsAutomatic, "Automatic (Default)"},
+                      {kPromptsPlayStation, sos_prompt_style_label(SOS_PROMPTS_PLAYSTATION)},
                       {kPromptsXbox, sos_prompt_style_label(SOS_PROMPTS_XBOX)}});
         }
         ui.Info("Controller", "Automatic: PlayStation and Xbox controllers work without setup.");
@@ -1183,6 +1188,75 @@ SosLauncherResult ExplainInWindow(const char* topic, const char* cause, const ch
     return SOS_LAUNCHER_BLOCKED;
 }
 
+// A small window with an indeterminate bar while `work` runs on another thread.
+void RunWithPreparingWindow(const std::function<void()>& work) {
+    std::atomic<bool> finished{false};
+    std::thread worker([&] {
+        work();
+        finished = true;
+    });
+    {
+        LauncherHost host;
+        HostOptions options;
+        options.title = kPortTitle;
+        options.width = 560;
+        options.height = 180;
+        options.min_width = 360;
+        options.min_height = 140;
+        if (host.Open(options)) {
+            const trg::Fonts fonts = trg::LoadSystemFonts(18.0f);
+            const trg::Theme theme = LauncherTheme();
+            const auto draw = [&] {
+                const ImGuiViewport* viewport = ImGui::GetMainViewport();
+                ImGui::SetNextWindowPos(viewport->Pos);
+                ImGui::SetNextWindowSize(viewport->Size);
+                constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, theme.bg);
+                ImGui::PushStyleColor(ImGuiCol_Text, theme.text);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fonts.size * 1.5f, fonts.size * 1.5f));
+                ImGui::Begin("##preparing", nullptr, kFlags);
+                ImGui::PushFont(fonts.bold ? fonts.bold : fonts.regular, fonts.size * 1.2f);
+                ImGui::TextUnformatted(Tr("Preparing controller button icons"));
+                ImGui::PopFont();
+                ImGui::PushFont(fonts.regular, fonts.size);
+                ImGui::TextUnformatted(Tr("This is a one-time setup."));
+                ImGui::Dummy(ImVec2(0.0f, fonts.size));
+                const ImVec2 from = ImGui::GetCursorScreenPos();
+                const float width = ImGui::GetContentRegionAvail().x, height = fonts.size * 0.6f;
+                ImDrawList* list = ImGui::GetWindowDrawList();
+                list->AddRectFilled(from, ImVec2(from.x + width, from.y + height), ImGui::ColorConvertFloat4ToU32(theme.frame), height * 0.5f);
+                const float span = width * 0.3f, travel = width - span;
+                const float phase = static_cast<float>(ImGui::GetTime() * 0.8);
+                const float lead = (phase - static_cast<float>(static_cast<int>(phase))) * 2.0f;
+                const float offset = (lead < 1.0f ? lead : 2.0f - lead) * travel;
+                list->AddRectFilled(ImVec2(from.x + offset, from.y), ImVec2(from.x + offset + span, from.y + height),
+                                    ImGui::ColorConvertFloat4ToU32(theme.accent), height * 0.5f);
+                ImGui::PopFont();
+                ImGui::End();
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(2);
+            };
+            host.BeginFrame();
+            draw();
+            host.EndFrame(theme.bg);
+            host.Show();
+            bool open = true;
+            while (!finished) {
+                if (open && !host.PumpEvents()) open = false;
+                if (!open || host.Minimized()) {
+                    SDL_Delay(30);
+                    continue;
+                }
+                host.BeginFrame();
+                draw();
+                host.EndFrame(theme.bg);
+            }
+        }
+    }
+    worker.join();
+}
+
 // Play without the launcher on screen: the same checks, explained in a window of its own.
 SosLauncherResult PlayOrExplain(const SosLauncherConfig& config, const LauncherSettings& settings) {
     char cause[320] = "", advice[320] = "";
@@ -1201,6 +1275,45 @@ SosLauncherResult PlayOrExplain(const SosLauncherConfig& config, const LauncherS
 
 } // namespace
 } // namespace sos
+
+extern "C" void sos_prepare_controller_icons(const char* app0, const char* image_dir, int prompt_style, int build_supported,
+                                             SosControllerIcons* icons) {
+    using namespace sos;
+    icons->assets[0] = icons->streamed[0] = icons->report[0] = '\0';
+    if (prompt_style == SOS_PROMPTS_PLAYSTATION || !build_supported || !app0 || !image_dir) return;
+    std::string report;
+    IconPlan plan;
+    try {
+        const std::filesystem::path media = PathFromUtf8(app0) / "Media", cache = PathFromUtf8(image_dir) / "controller_icons";
+        plan = PlanControllerIcons(media, cache);
+        report = plan.note + "\n";
+        if (plan.kind == IconPlanKind::kPrepare) {
+            std::string work;
+            RunWithPreparingWindow([&] {
+                try {
+                    plan = PrepareControllerIcons(media, cache, work);
+                } catch (const std::exception& failure) {
+                    plan = IconPlan{};
+                    work += std::string("Failed: ") + failure.what() + "\n";
+                }
+            });
+            report += work + plan.note + "\n";
+        }
+    } catch (const std::exception& failure) {
+        plan = IconPlan{};
+        report += std::string("the icons could not be prepared: ") + failure.what() + "; the game's own files are used\n";
+    }
+    if (plan.kind == IconPlanKind::kUsePrepared) {
+        const std::string assets = Utf8(plan.files.assets), streamed = Utf8(plan.files.streamed);
+        if (assets.size() < sizeof(icons->assets) && streamed.size() < sizeof(icons->streamed)) {
+            std::snprintf(icons->assets, sizeof(icons->assets), "%s", assets.c_str());
+            std::snprintf(icons->streamed, sizeof(icons->streamed), "%s", streamed.c_str());
+        } else {
+            report += "the prepared copies' paths are too long; the game's own files are used\n";
+        }
+    }
+    std::snprintf(icons->report, sizeof(icons->report), "%s", report.c_str());
+}
 
 extern "C" int sos_gpu_names(char (*names)[256], int max) { return dcp_gpu_names(names, max); }
 extern "C" int sos_check_vulkan(char* cause, size_t cause_size, char* advice, size_t advice_size) {

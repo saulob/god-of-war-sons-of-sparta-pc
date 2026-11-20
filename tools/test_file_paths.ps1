@@ -232,6 +232,65 @@ int main(int argc, char **argv) {
     unlink_("/temp0/dir/a");
     check("rmdir of an empty folder", rmdir_("/temp0/dir") == 0);
 
+    {
+        /* A launcher-prepared copy of one game file is served through an exact path alias; nothing else changes. */
+        char original[512], streamed[512], unrelated[512], prepared[512], prepared_streamed[512], aliased[512];
+        snprintf(original, sizeof(original), "%s\\Media\\resources.assets", app0);
+        snprintf(streamed, sizeof(streamed), "%s\\Media\\resources.assets.resS", app0);
+        snprintf(unrelated, sizeof(unrelated), "%s\\Media\\resources.assets.bak", app0);
+        snprintf(prepared, sizeof(prepared), "%s\\prepared.assets", argv[1]);
+        snprintf(prepared_streamed, sizeof(prepared_streamed), "%s\\prepared.resS", argv[1]);
+        put(original, "original assets");
+        put(streamed, "original streamed");
+        put(unrelated, "backup");
+        put(prepared, "prepared assets bytes");
+        put(prepared_streamed, "prepared streamed bytes!");
+        check("before an alias the game file is the package file",
+              runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0") &&
+                  strstr(aliased, "resources.assets"));
+        check("an alias needs a guest and a host path", runtime_file_alias(NULL, prepared) == -1 && runtime_file_alias("/app0/Media/resources.assets", NULL) == -1 &&
+                                                          runtime_file_alias("", prepared) == -1 && runtime_file_alias("/app0/Media/resources.assets", "") == -1);
+        check("an alias registers", runtime_file_alias("/app0/Media/resources.assets", prepared) == 0);
+        check("the aliased path resolves to the prepared copy",
+              runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared));
+        check("a relative spelling and repeated separators resolve to it too",
+              runtime_file_translate("Media/resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared) &&
+                  runtime_file_translate("/app0//Media/./resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared));
+        check("the streamed file is still the package file until it has its own alias",
+              runtime_file_translate("/app0/Media/resources.assets.resS", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("the guest reads the prepared bytes", (fd = sce_open("/app0/Media/resources.assets", G_RD, 0)) >= 3 &&
+                                                       rd((int)fd, buffer, sizeof(buffer)) == (int64_t)strlen("prepared assets bytes") &&
+                                                       !memcmp(buffer, "prepared assets bytes", strlen("prepared assets bytes")));
+        Stat aliased_stat;
+        check("fstat reports the prepared size", fstat_((int)fd, &aliased_stat) == 0 && aliased_stat.size == (int64_t)strlen("prepared assets bytes"));
+        posix_close((int)fd);
+        check("stat by path reports the prepared size",
+              sce_stat("/app0/Media/resources.assets", &aliased_stat) == 0 && aliased_stat.size == (int64_t)strlen("prepared assets bytes"));
+        check("the aliased game file is still read-only", sce_open("/app0/Media/resources.assets", G_WR, 0) < 0);
+        check("a file with the same prefix is not aliased",
+              runtime_file_translate("/app0/Media/resources.assets.bak", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0") &&
+                  strstr(aliased, "resources.assets.bak"));
+        check("a sibling file is not aliased",
+              runtime_file_translate("/app0/Media/Other.assets", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("the Media folder is not aliased",
+              runtime_file_translate("/app0/Media", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("a file below the aliased path is not aliased",
+              runtime_file_translate("/app0/Media/resources.assets/x", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("another mount is not aliased",
+              runtime_file_translate("/temp0/resources.assets", aliased, sizeof(aliased)) == 0 && strstr(aliased, "user"));
+        check("the streamed file registers its own alias", runtime_file_alias("/app0/Media/resources.assets.resS", prepared_streamed) == 0);
+        check("the streamed file resolves to its prepared copy",
+              runtime_file_translate("/app0/Media/resources.assets.resS", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared_streamed));
+        check("the first alias still holds",
+              runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared));
+        char long_host[600];
+        memset(long_host, 'a', sizeof(long_host) - 1);
+        long_host[sizeof(long_host) - 1] = 0;
+        check("a host path that does not fit is refused", runtime_file_alias("/app0/Media/long.assets", long_host) == -1);
+        check("the table has room for four aliases", runtime_file_alias("/app0/Media/z.assets", prepared) == 0 &&
+                                                          runtime_file_alias("/app0/Media/w.assets", prepared) == 0 &&
+                                                          runtime_file_alias("/app0/Media/v.assets", prepared) == -1);
+    }
     runtime_file_mount_read_only("/savedata0", user);
     check("a read-only mount refuses writes", sce_open("/savedata0/x.bin", G_WR | G_CREAT, 0644) == SCE(30));
     runtime_file_unmount("/savedata0");

@@ -166,6 +166,8 @@ static const short kTitleCheckCode[] = {
 };
 static const short kTitleEndCode[] = {0x48, 0x83, 0xc4, 0x08, 0x5b, 0x41, 0x5e, 0x41, 0x5f, 0x5d, 0xc3};
 enum { kTitleCheckAt = 8, kTitleCallAt = 3, kTitleJumpAt = 13, kTitleCheckLength = 5 };
+/* MainMenuState.mainMenu, Menu.CurrentState (State.Closed) and MainMenu.IsProcessingLoadButtonVisibility. */
+enum { kStateMainMenu = 0x48, kMenuState = 0x88, kMenuClosed = 2, kMenuProcessingLoad = 0x130 };
 
 static int title_check_matches(const uint8_t *image, uint64_t size, const SosSkipIntroSite *site) {
     const uint64_t at = site->title_check;
@@ -240,10 +242,10 @@ static void write_jump(uint8_t *image, uint64_t from, uint64_t to) {
     memcpy(image + from + 1, &rel, sizeof(rel));
 }
 
-/* push rdi,rsi,rax,rcx,rdx ; mov rax,claim ; call rax ; test eax,eax ; pop them ; je original ;
+/* push rdi,rsi,rax,rcx,rdx ; mov rdi,r14 ; mov rax,claim ; call rax ; test eax,eax ; pop them ; je original ;
  * mov byte [r14+0x6c],1 ; original: cmp byte [r14+0x6c],0 ; ret. Stands in for the check, in a frame whose rsp is 16-byte
  * aligned at the call, so the five pushes keep it aligned for the claim. */
-static const uint8_t kTitleStubHead[] = {0x57, 0x56, 0x50, 0x51, 0x52, 0x48, 0xb8};
+static const uint8_t kTitleStubHead[] = {0x57, 0x56, 0x50, 0x51, 0x52, 0x4c, 0x89, 0xf7, 0x48, 0xb8};
 static const uint8_t kTitleStubTail[] = {0xff, 0xd0, 0x85, 0xc0, 0x5a, 0x59, 0x58, 0x5e, 0x5f, 0x74, 0x05,
                                          0x41, 0xc6, 0x46, 0x6c, 0x01, 0x41, 0x80, 0x7e, 0x6c, 0x00, 0xc3};
 _Static_assert(sizeof(kTitleStubHead) + 8 + sizeof(kTitleStubTail) <= SOS_SKIP_INTRO_STUB_BYTES, "the stub fits");
@@ -267,11 +269,27 @@ int sos_skip_intro_hook_title(uint8_t *check, uint8_t *stubs) {
 }
 
 static atomic_int armed;
+static unsigned ticks;
 
-void sos_skip_intro_arm(void) { atomic_store(&armed, 1); }
+void sos_skip_intro_arm(void) {
+    ticks = 0;
+    atomic_store(&armed, 1);
+}
 
-__attribute__((sysv_abi)) int sos_skip_intro_claim(void) {
-    if (!atomic_exchange(&armed, 0)) return 0;
+/* The natural switch comes seconds after the intro starts, with its start coroutine run and the main menu open. The claim
+ * waits for the same: a few ticks, then the conditions MainMenuState_WaitForInputPress.TickState needs to leave its state. */
+static int title_ready(const uint8_t *state) {
+    if (++ticks < SOS_SKIP_INTRO_MIN_TICKS) return 0;
+    const uint8_t *menu;
+    memcpy(&menu, state + kStateMainMenu, sizeof(menu));
+    if (!menu) return 0;
+    int32_t menu_state;
+    memcpy(&menu_state, menu + kMenuState, sizeof(menu_state));
+    return menu_state != kMenuClosed && !menu[kMenuProcessingLoad];
+}
+
+__attribute__((sysv_abi)) int sos_skip_intro_claim(const uint8_t *state) {
+    if (!atomic_load(&armed) || !state || !title_ready(state) || !atomic_exchange(&armed, 0)) return 0;
     puts("Skip Intro: title intro skipped");
     return 1;
 }

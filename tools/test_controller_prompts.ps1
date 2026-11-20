@@ -1,5 +1,6 @@
-# Headless test of the Controller prompts patch: the setting, the verified sites of CUSA57767 1.00 and 1.01, the patch on a synthetic
-# image and, when the boot images are installed, the real code and the game's own data. No game, launcher or window is started.
+# Headless test of the Controller prompts: the setting and its three styles (Automatic, PlayStation, Xbox), the verified sites of
+# CUSA57767 1.00 and 1.01, the Xbox patch and the Automatic hook on a synthetic image and, when the boot images are installed, on
+# the real code and the game's own data. No game, launcher or window is started.
 [CmdletBinding()]
 param()
 
@@ -15,14 +16,18 @@ New-Item -ItemType Directory -Force -Path $temp | Out-Null
 $tc = Resolve-Toolchain 'auto'
 $env:PATH = "$($tc.Bin);$env:PATH"
 $launcher = Join-Path $root 'launcher'
-$source = (Join-Path $root 'launcher\controller_prompts.c')
-$object = Join-Path $temp 'controller_prompts.o'
-& (Join-Path $tc.Bin 'clang.exe') '--target=x86_64-w64-mingw32' '-std=c11' '-Wall' '-Wextra' '-Werror' '-O1' '-I' $launcher '-c' $source '-o' $object
-if ($LASTEXITCODE -ne 0) { throw 'could not compile controller_prompts.c' }
+$src = Join-Path $root 'src'
+$objects = @()
+foreach ($unit in @(@{ Source = (Join-Path $launcher 'controller_prompts.c'); Include = $launcher }, @{ Source = (Join-Path $src 'sos_skip_intro.c'); Include = $src })) {
+    $object = Join-Path $temp ([IO.Path]::GetFileNameWithoutExtension($unit.Source) + '.o')
+    & (Join-Path $tc.Bin 'clang.exe') '--target=x86_64-w64-mingw32' '-std=c11' '-Wall' '-Wextra' '-Werror' '-O1' '-I' $launcher '-I' $src '-c' $unit.Source '-o' $object
+    if ($LASTEXITCODE -ne 0) { throw "could not compile $($unit.Source)" }
+    $objects += $object
+}
 $exe = Join-Path $temp 'test_controller_prompts.exe'
 $rootText = $root.Replace('\', '/')
-& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$rootText`"" '-I' $launcher `
-    (Join-Path $root 'tests\controller_prompts_tests.cpp') $object '-o' $exe
+& (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=c++20' '-Wall' '-Wextra' '-Werror' '-O1' "-DSOS_SOURCE_DIR=`"$rootText`"" '-I' $launcher '-I' $src `
+    (Join-Path $root 'tests\controller_prompts_tests.cpp') @objects '-L' (Join-Path (Split-Path $tc.Bin) 'lib') '-lZydis' '-lZycore' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the controller prompts test' }
 
 & $exe

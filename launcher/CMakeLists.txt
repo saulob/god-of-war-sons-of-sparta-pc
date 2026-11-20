@@ -33,7 +33,8 @@ target_link_libraries(sos_imgui_sdl PUBLIC SDL3::SDL3)
 # Game files (check, PKG unpacking, install, boot image), the trophies (src/trophies) and the settings file: no window
 # needed (tests link only this).
 find_package(ZLIB REQUIRED)
-add_library(sos_launcher_core STATIC boot_image.cpp build_diagnostics.cpp controller_prompts.c file_browser.cpp game_files.cpp
+add_library(sos_launcher_core STATIC boot_image.cpp build_diagnostics.cpp controller_icons.cpp controller_prompts.c file_browser.cpp
+    game_files.cpp
     game_install.cpp game_process.cpp game_profile.cpp header_art.cpp options.cpp page_icons.cpp paths.cpp
     pkg_extract.cpp resolution.cpp settings.cpp trophy_content.cpp localization/ui_text.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_data.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_key.cpp

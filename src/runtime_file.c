@@ -78,6 +78,11 @@ typedef struct { uint64_t offset, size; const unsigned char *data; } OverlayPatc
 typedef struct { char guest[512]; uint64_t length; OverlayPatch *patches; size_t count; } Overlay;
 typedef struct { int used, host; Listing *dir; size_t position; char path[512]; const Overlay *overlay; int device; int flags, fdflags; } File;
 typedef struct { char guest[64]; char host[512]; int read_only; } Mount;
+/* One guest file the launcher serves from its own prepared copy; the match is the whole normalized path. */
+typedef struct { char guest[512]; char host[512]; } PathAlias;
+#define MAX_ALIASES 4
+static PathAlias path_aliases[MAX_ALIASES];
+static size_t path_alias_count;
 #define MAX_OVERLAYS 4
 static File files[MAX_FILES];
 static Mount mounts[MAX_MOUNTS];
@@ -326,6 +331,24 @@ int runtime_file_overlay(const char *guest,uint64_t length,const RuntimeFilePatc
     overlays[overlay_count++]=o;
     return 0;
 }
+/* Registered before the guest starts. The guest path is matched exactly, ignoring case, after normalization; no directory
+ * and no other file is affected. -1 with nothing registered when the table is full or a path does not fit. */
+int runtime_file_alias(const char *guest,const char *host) {
+    if (!guest || !*guest || !host || !*host) return -1;
+    char normalized[sizeof(path_aliases[0].guest)];
+    if (normalize_guest(guest,normalized,sizeof(normalized)) || strlen(host)>=sizeof(path_aliases[0].host)) return -1;
+    pthread_mutex_lock(&lock);
+    size_t at=0;
+    while (at<path_alias_count && !same_path_ignoring_case(path_aliases[at].guest,normalized)) ++at;
+    const int room=at<MAX_ALIASES;
+    if (room) {
+        snprintf(path_aliases[at].guest,sizeof(path_aliases[at].guest),"%s",normalized);
+        snprintf(path_aliases[at].host,sizeof(path_aliases[at].host),"%s",host);
+        if (at==path_alias_count) ++path_alias_count;
+    }
+    pthread_mutex_unlock(&lock);
+    return room ? 0 : -1;
+}
 /* Resolve a guest path to a host path; returns 0 or a host errno. */
 #define MAX_UNMAPPED 16
 typedef struct { char prefix[64]; unsigned count; } UnmappedPrefix;
@@ -367,6 +390,12 @@ static int translate(const char *guest,char *out,size_t size) {
     int result=normalize_guest(guest,buffer,sizeof(buffer));
     if (result) return result;
     pthread_mutex_lock(&lock);
+    for (size_t i=0;i<path_alias_count;++i) {
+        if (!same_path_ignoring_case(path_aliases[i].guest,buffer)) continue;
+        result=(size_t)snprintf(out,size,"%s",path_aliases[i].host)>=size ? ENAMETOOLONG : 0;
+        pthread_mutex_unlock(&lock);
+        return result;
+    }
     size_t best=0; const Mount *m=NULL;
     for (size_t i=0;i<mount_count;++i) {
         size_t n=strlen(mounts[i].guest);
