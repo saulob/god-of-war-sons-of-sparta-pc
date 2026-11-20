@@ -5,11 +5,13 @@
 
 #include <unordered_map>
 #include <utility>
+#include <boost/container/small_vector.hpp>
 #include <boost/container_hash/hash.hpp>
 
 #include "common/types.h"
 #include "video_core/amdgpu/tiling.h"
 #include "video_core/buffer_cache/buffer.h"
+#include "video_core/texture_cache/page_ownership.h"
 
 namespace Vulkan {
 struct Runtime;
@@ -53,6 +55,16 @@ public:
 
     std::pair<const Buffer*, u64> DetileImage(const VideoCore::Buffer* in_buffer, u64 in_offset,
                                               const ImageInfo& info);
+
+    [[nodiscard]] static bool CanMergeGuestPages(const ImageInfo& info);
+
+    [[nodiscard]] static boost::container::small_vector<vk::BufferImageCopy, 14> MipCopies(
+        const Image& image);
+
+    // Replaces the given guest byte ranges of a tiled image with the guest memory at `guest`,
+    // keeping the GPU contents of every other byte.
+    void MergeGuestPages(Image& image, const Buffer* guest, u64 guest_offset,
+                         std::span<const ByteRange> ranges);
 
 private:
     void RecordTilingDispatch(vk::Pipeline pipeline, const vk::DescriptorBufferInfo& tiled,

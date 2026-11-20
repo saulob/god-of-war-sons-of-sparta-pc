@@ -46,4 +46,8 @@ std::optional<Extent3D> GetAliasCopyExtent(const ImageInfo& src, const ImageInfo
     };
 }
 
+bool IsLayoutReuse(const ImageInfo& cached, const ImageInfo& requested) {
+    return cached.IsTiled() != requested.IsTiled();
+}
+
 } // namespace VideoCore

@@ -76,6 +76,7 @@ public:
     void CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) override;
     u32 ReadDataFromGds(u32 gsd_offset) override;
     bool InvalidateMemory(VAddr addr, u64 size, bool assume_locks = false) override;
+    bool InvalidateGuestWrite(VAddr addr, u64 size, bool assume_locks, bool write_fault);
     /// GPU thread, before a write the guest can observe (see Scheduler::WaitHostCopies).
     void WaitHostCopies() override {
         DrainDrawPipe();

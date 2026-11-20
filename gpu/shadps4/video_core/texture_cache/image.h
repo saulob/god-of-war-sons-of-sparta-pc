@@ -9,8 +9,11 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image_info.h"
 #include "video_core/texture_cache/image_view.h"
+#include "video_core/texture_cache/page_ownership.h"
 
+#include <atomic>
 #include <deque>
+#include <memory>
 #include <optional>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -35,6 +38,7 @@ enum ImageFlagBits : u32 {
     Registered = 1 << 6,  ///< True when the image is registered
     Picked = 1 << 7,      ///< Temporary flag to mark the image as picked
     Aliased = 1 << 8,     ///< dcp: another image has the same guest address (alias_states)
+    PageOwned = 1 << 9,   ///< page_owner tracks which pages the CPU wrote
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
@@ -166,6 +170,16 @@ public:
     u64 image_uid{};
     /// dcp: order of the last GPU write, to sync images sharing memory (texture_cache.h).
     u64 alias_generation{};
+    std::unique_ptr<PageOwnership> page_owner;
+    u32 gpu_write_serial{};
+    u32 head_serial{};
+    u32 tail_serial{};
+
+    void NoteGpuWrite() {
+        std::atomic_ref<u32>(gpu_write_serial).fetch_add(1, std::memory_order_relaxed);
+        const u32 bits = std::atomic_ref<u32>(reinterpret_cast<u32&>(flags)).load(std::memory_order_acquire);
+        if (bits & static_cast<u32>(ImageFlagBits::PageOwned)) page_owner->ClearDirty();
+    }
 
     ImageInfo info;
     Vulkan::Runtime* runtime;

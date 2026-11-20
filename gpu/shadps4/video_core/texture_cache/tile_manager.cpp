@@ -32,6 +32,7 @@ struct TilingInfo {
     u32 bank_swizzle;
     u32 num_slices;
     u32 num_mips;
+    u32 micro_mips;
     std::array<ImageInfo::MipInfo, 16> mips;
 };
 
@@ -235,6 +236,7 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
     params.bank_swizzle = info.bank_swizzle;
     params.num_slices = info.props.is_volume ? info.size.depth : info.resources.layers;
     params.num_mips = info.resources.levels;
+    params.micro_mips = info.micro_mips;
     for (u32 mip = 0; mip < params.num_mips; ++mip) {
         auto& mip_info = params.mips[mip];
         mip_info = info.mips_layout[mip];
@@ -277,6 +279,73 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
     return {staging.buffer, staging.offset};
 }
 
+static bool DepthPlaneIsBitExact(const ImageInfo& info) {
+    const vk::Format format = info.pixel_format;
+    return !info.props.is_volume &&
+           ((info.num_bits == 32 &&
+             (format == vk::Format::eD32Sfloat || format == vk::Format::eD32SfloatS8Uint)) ||
+            (info.num_bits == 16 && format == vk::Format::eD16Unorm));
+}
+
+bool TileManager::CanMergeGuestPages(const ImageInfo& info) {
+    return info.props.is_tiled && !info.props.is_block && info.num_samples == 1 &&
+           info.pixel_format != vk::Format::eUndefined &&
+           (info.num_bits == 8 || info.num_bits == 16 || info.num_bits == 32 ||
+            info.num_bits == 64 || info.num_bits == 128) &&
+           (!info.props.is_depth || DepthPlaneIsBitExact(info));
+}
+
+boost::container::small_vector<vk::BufferImageCopy, 14> TileManager::MipCopies(const Image& image) {
+    const ImageInfo& info = image.info;
+    boost::container::small_vector<vk::BufferImageCopy, 14> copies;
+    for (u32 mip = 0; mip < info.resources.levels; ++mip) {
+        const auto& layout = info.mips_layout[mip];
+        const u32 width = std::max(info.size.width >> mip, 1u);
+        const u32 height = std::max(info.size.height >> mip, 1u);
+        copies.push_back({
+            .bufferOffset = layout.offset,
+            .bufferRowLength = layout.pitch,
+            .bufferImageHeight = layout.height,
+            .imageSubresource{
+                .aspectMask = info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
+                                                  : vk::ImageAspectFlagBits::eColor,
+                .mipLevel = mip,
+                .baseArrayLayer = 0,
+                .layerCount = info.resources.layers,
+            },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {layout.pitch ? std::min(layout.pitch, width) : width,
+                            layout.height ? std::min(layout.height, height) : height,
+                            info.props.is_volume ? std::max(info.size.depth >> mip, 1u) : 1u},
+        });
+    }
+    return copies;
+}
+
+void TileManager::MergeGuestPages(Image& image, const Buffer* guest, u64 guest_offset,
+                                  std::span<const ByteRange> ranges) {
+    const ImageInfo& info = image.info;
+    const auto guest_layout = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
+
+    auto download_copies = MipCopies(image);
+    TileImage(image, download_copies, guest_layout.buffer, guest_layout.offset);
+
+    boost::container::small_vector<vk::BufferCopy, 16> overlay;
+    for (const ByteRange& range : ranges) {
+        const u64 from = range.begin - info.guest_address;
+        overlay.push_back({guest_offset + from, guest_layout.offset + from, range.end - range.begin});
+    }
+    runtime.CopyBuffer(guest, guest_layout.buffer, overlay);
+
+    const auto [linear, linear_offset] =
+        DetileImage(guest_layout.buffer, guest_layout.offset, info);
+    auto upload_copies = MipCopies(image);
+    for (auto& copy : upload_copies) {
+        copy.bufferOffset += linear_offset;
+    }
+    runtime.UploadImage(&image, linear, upload_copies);
+}
+
 void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buffer_copies,
                             const VideoCore::Buffer* out_buffer, u64 out_offset) {
     const auto& info = in_image.info;
@@ -292,6 +361,7 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
     params.bank_swizzle = info.bank_swizzle;
     params.num_slices = info.props.is_volume ? info.size.depth : info.resources.layers;
     params.num_mips = static_cast<u32>(buffer_copies.size());
+    params.micro_mips = info.micro_mips;
     for (u32 mip = 0; mip < params.num_mips; ++mip) {
         auto& mip_info = params.mips[mip];
         mip_info = info.mips_layout[mip];

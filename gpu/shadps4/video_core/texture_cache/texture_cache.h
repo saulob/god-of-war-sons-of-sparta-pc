@@ -112,7 +112,7 @@ public:
     }
 
     /// Invalidates any image in the logical page range.
-    void InvalidateMemory(VAddr addr, size_t size);
+    void InvalidateMemory(VAddr addr, size_t size, bool write_fault = false);
 
     /// Marks an image as dirty if it exists at the provided address.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
@@ -369,6 +369,7 @@ private:
 
     /// dcp: a recorded image-to-staging copy, written to guest memory after a GPU wait.
     struct PendingDownload {
+        ImageId image_id;
         VAddr guest_address;
         u32 size;
         Vulkan::StagingBufferRef staging;
@@ -496,6 +497,12 @@ private:
     [[nodiscard]] bool CommitAliasWriter(AliasState& state);
     void CopyAlias(ImageId src_id, ImageId dst_id, const Extent3D& extent);
     void InvalidateAlias(Image& image);
+    void WatchImage(Image& image, VAddr begin, u64 size, bool track);
+    [[nodiscard]] bool UsesPageOwnership(const Image& image) const;
+    bool RecordCpuWrite(Image& image, VAddr address, u64 size);
+    void NoteEdgeWrite(Image& image, VAddr address, u32 serial_at_untrack);
+    bool RefreshDirtyPages(Image& image);
+    void PublishDownload(const PendingDownload& download);
     // dcp: FindImage results for unchanged image registrations (guarded by `mutex`).
     struct FindImageCacheEntry {
         VAddr address = 0;
@@ -507,6 +514,7 @@ private:
         BindingType binding{};
         u32 levels = 0;
         u32 layers = 0;
+        bool tiled = false;
         u64 generation = ~0ULL;
         ImageId image_id{};
         int view_mip = -1;

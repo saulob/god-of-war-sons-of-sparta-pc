@@ -3013,6 +3013,10 @@ u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {
 }
 
 bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
+    return InvalidateGuestWrite(addr, size, assume_locks, false);
+}
+
+bool Rasterizer::InvalidateGuestWrite(VAddr addr, u64 size, bool assume_locks, bool write_fault) {
     DrainDrawPipe();
     if (!IsMapped(addr, size)) {
         // Not GPU mapped memory, can skip invalidation logic entirely.
@@ -3020,13 +3024,13 @@ bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
     }
     texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuWrite);
     buffer_cache.InvalidateMemory(addr, size, assume_locks);
-    texture_cache.InvalidateMemory(addr, size);
+    texture_cache.InvalidateMemory(addr, size, write_fault);
     return true;
 }
 
 bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
     DrainDrawPipe();
-    if (!InvalidateMemory(addr, 8, assume_locks)) {
+    if (!InvalidateGuestWrite(addr, 8, assume_locks, true)) {
         return false;
     }
     buffer_cache.ExtendWriteFault(addr);

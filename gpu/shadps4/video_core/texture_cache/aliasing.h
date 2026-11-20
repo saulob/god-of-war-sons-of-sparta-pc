@@ -14,4 +14,7 @@ struct ImageInfo;
 [[nodiscard]] std::optional<Extent3D> GetAliasCopyExtent(const ImageInfo& src,
                                                          const ImageInfo& dst);
 
+// The same guest address now holds a linear image where a tiled one was cached, or the reverse.
+[[nodiscard]] bool IsLayoutReuse(const ImageInfo& cached, const ImageInfo& requested);
+
 } // namespace VideoCore
