@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -150,9 +151,20 @@ class EqueueInternal {
 public:
     explicit EqueueInternal(OrbisKernelEqueue handle, std::string_view name)
         : m_handle(handle), m_name(name) {}
+    ~EqueueInternal();
 
     std::string_view GetName() const {
         return m_name;
+    }
+
+    void Close();
+    bool IsClosed() const {
+        std::scoped_lock lock{m_mutex};
+        return m_closed;
+    }
+    int WaiterCount() const {
+        std::scoped_lock lock{m_mutex};
+        return m_waiters;
     }
 
     bool AddEvent(EqueueEvent& event);
@@ -169,11 +181,8 @@ public:
         return !m_small_timers.empty();
     }
     bool RemoveSmallTimer(u64 id) {
-        if (HasSmallTimer()) {
-            std::scoped_lock lock{m_mutex};
-            return m_small_timers.erase(id) > 0;
-        }
-        return false;
+        std::scoped_lock lock{m_mutex};
+        return m_small_timers.erase(id) > 0;
     }
 
     int WaitForSmallTimer(OrbisKernelEvent* ev, int num, u32 micros);
@@ -183,13 +192,15 @@ public:
 private:
     OrbisKernelEqueue m_handle;
     std::string m_name;
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::vector<EqueueEvent> m_events;
     std::condition_variable m_cond;
+    int m_waiters = 0;
+    bool m_closed = false;
     std::unordered_map<u64, SmallTimer> m_small_timers;
 };
 
-EqueueInternal* GetEqueue(OrbisKernelEqueue eq);
+std::shared_ptr<EqueueInternal> AcquireEqueue(OrbisKernelEqueue eq);
 u64 PS4_SYSV_ABI sceKernelGetEventData(const OrbisKernelEvent* ev);
 
 void RegisterEventQueue(Core::Loader::SymbolsResolver* sym);

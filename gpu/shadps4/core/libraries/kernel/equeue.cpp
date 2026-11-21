@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
+#include <memory>
+#include <shared_mutex>
 #include <thread>
+#include <unordered_map>
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/assert.h"
@@ -21,30 +25,119 @@ namespace Libraries::Kernel {
 extern boost::asio::io_context io_context;
 extern void KernelSignalRequest();
 
-static std::unordered_map<s32, EqueueInternal*> kqueues;
+#ifdef DCP_EQUEUE_TEST_HOOKS
+namespace EqueueTestHooks {
+void OnQueueDestroyed(OrbisKernelEqueue handle);
+void OnBeforeTimerCallback();
+void OnTimerCallbackEnter(OrbisKernelEqueue handle);
+void OnTimerCallbackAcquired(OrbisKernelEqueue handle);
+void OnBeforePeriodicReschedule(OrbisKernelEqueue handle);
+void OnTriggerAcquired(OrbisKernelEqueue handle);
+void OnAcquireLookup(OrbisKernelEqueue handle, bool found);
+} // namespace EqueueTestHooks
+#endif
+
+namespace {
+class EqueueTable {
+public:
+    void Insert(OrbisKernelEqueue handle, std::shared_ptr<EqueueInternal> queue) {
+        std::unique_lock lock{mutex};
+        queues.emplace(handle, std::move(queue));
+    }
+
+    std::shared_ptr<EqueueInternal> Find(OrbisKernelEqueue handle) const {
+        std::shared_lock lock{mutex};
+        const auto it = queues.find(handle);
+        return it == queues.end() ? nullptr : it->second;
+    }
+
+    std::shared_ptr<EqueueInternal> Take(OrbisKernelEqueue handle) {
+        std::shared_ptr<EqueueInternal> removed;
+        {
+            std::unique_lock lock{mutex};
+            const auto it = queues.find(handle);
+            if (it == queues.end()) {
+                return nullptr;
+            }
+            removed = std::move(it->second);
+            queues.erase(it);
+        }
+        return removed;
+    }
+
+private:
+    mutable std::shared_mutex mutex;
+    std::unordered_map<OrbisKernelEqueue, std::shared_ptr<EqueueInternal>> queues;
+};
+
+// Process-lifetime registry avoids static-destruction races with vblank and IRQ threads.
+EqueueTable& kqueues = *new EqueueTable;
+} // namespace
+
 static constexpr auto HrTimerSpinlockThresholdNs = 1200000u;
 
-EqueueInternal* GetEqueue(OrbisKernelEqueue eq) {
-    if (!kqueues.contains(eq)) {
-        return nullptr;
-    }
-    return kqueues[eq];
+std::shared_ptr<EqueueInternal> AcquireEqueue(OrbisKernelEqueue eq) {
+    auto found = kqueues.Find(eq);
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    EqueueTestHooks::OnAcquireLookup(eq, found != nullptr);
+#endif
+    return found;
 }
 
 static void HrTimerCallback(OrbisKernelEqueue eq, const OrbisKernelEvent& kevent) {
-    if (kqueues.contains(eq)) {
-        kqueues[eq]->TriggerEvent(kevent.ident, OrbisKernelEvent::Filter::HrTimer, kevent.udata);
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    EqueueTestHooks::OnTimerCallbackEnter(eq);
+#endif
+    if (const auto equeue = kqueues.Find(eq)) {
+#ifdef DCP_EQUEUE_TEST_HOOKS
+        EqueueTestHooks::OnTimerCallbackAcquired(eq);
+#endif
+        equeue->TriggerEvent(kevent.ident, OrbisKernelEvent::Filter::HrTimer, kevent.udata);
     }
 }
 
 static void TimerCallback(OrbisKernelEqueue eq, const OrbisKernelEvent& kevent) {
-    if (kqueues.contains(eq) && kqueues[eq]->EventExists(kevent.ident, kevent.filter)) {
-        kqueues[eq]->TriggerEvent(kevent.ident, OrbisKernelEvent::Filter::Timer, kevent.udata);
-        if (!(kevent.flags & OrbisKernelEvent::Flags::OneShot)) {
-            // Reschedule the event for its next period.
-            kqueues[eq]->ScheduleEvent(kevent.ident, kevent.filter, TimerCallback);
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    EqueueTestHooks::OnTimerCallbackEnter(eq);
+#endif
+    const auto equeue = kqueues.Find(eq);
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    if (equeue) {
+        EqueueTestHooks::OnTimerCallbackAcquired(eq);
+    }
+#endif
+    if (equeue && equeue->EventExists(kevent.ident, kevent.filter)) {
+        if (equeue->TriggerEvent(kevent.ident, OrbisKernelEvent::Filter::Timer, kevent.udata) &&
+            !(kevent.flags & OrbisKernelEvent::Flags::OneShot)) {
+#ifdef DCP_EQUEUE_TEST_HOOKS
+            EqueueTestHooks::OnBeforePeriodicReschedule(eq);
+#endif
+            equeue->ScheduleEvent(kevent.ident, kevent.filter, TimerCallback);
         }
     }
+}
+
+EqueueInternal::~EqueueInternal() {
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    const auto destroyed_handle = m_handle;
+    m_handle = -1;
+    EqueueTestHooks::OnQueueDestroyed(destroyed_handle);
+#endif
+}
+
+void EqueueInternal::Close() {
+    std::vector<EqueueEvent> removed_events;
+    {
+        std::scoped_lock lock{m_mutex};
+        if (m_closed) {
+            return;
+        }
+        m_closed = true;
+        removed_events = std::move(m_events);
+        m_events.clear();
+        m_small_timers.clear();
+    }
+    m_cond.notify_all();
 }
 
 // Events are uniquely identified by id and filter.
@@ -55,6 +148,9 @@ bool EqueueInternal::AddEvent(EqueueEvent& event) {
 
     {
         std::scoped_lock lock{m_mutex};
+        if (m_closed) {
+            return false;
+        }
 
         // Calculate timer interval
         event.time_added = std::chrono::steady_clock::now();
@@ -120,6 +216,9 @@ bool EqueueInternal::AddEvent(EqueueEvent& event) {
 bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
                                    void (*callback)(OrbisKernelEqueue, const OrbisKernelEvent&)) {
     std::scoped_lock lock{m_mutex};
+    if (m_closed) {
+        return false;
+    }
 
     const auto& it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
         return ev.event.ident == id && ev.event.filter == filter;
@@ -140,18 +239,22 @@ bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
         it->timer->expires_at(it->timer->expiry() + event.timer_interval);
     }
 
+    // Capture handle by value so callbacks reacquire via the registry after queue deletion.
     it->timer->async_wait(
-        [this, event_data = event.event, callback](const boost::system::error_code& ec) {
+        [handle = m_handle, event_data = event.event,
+         callback](const boost::system::error_code& ec) {
             if (ec) {
                 if (ec != boost::system::errc::operation_canceled) {
                     LOG_ERROR(Kernel_Event, "Timer callback error: {}", ec.message());
                 } else {
-                    // Timer was cancelled (removed) before it triggered
                     LOG_DEBUG(Kernel_Event, "Timer cancelled");
                 }
                 return;
             }
-            callback(this->m_handle, event_data);
+#ifdef DCP_EQUEUE_TEST_HOOKS
+            EqueueTestHooks::OnBeforeTimerCallback();
+#endif
+            callback(handle, event_data);
         });
     KernelSignalRequest();
 
@@ -159,15 +262,19 @@ bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
 }
 
 bool EqueueInternal::RemoveEvent(u64 id, s16 filter) {
+    std::unique_ptr<boost::asio::steady_timer> removed_timer;
     bool has_found = false;
-    std::scoped_lock lock{m_mutex};
+    {
+        std::scoped_lock lock{m_mutex};
 
-    const auto& it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
-        return ev.event.ident == id && ev.event.filter == filter;
-    });
-    if (it != m_events.cend()) {
-        m_events.erase(it);
-        has_found = true;
+        const auto& it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
+            return ev.event.ident == id && ev.event.filter == filter;
+        });
+        if (it != m_events.cend()) {
+            removed_timer = std::move(it->timer);
+            m_events.erase(it);
+            has_found = true;
+        }
     }
     return has_found;
 }
@@ -177,6 +284,9 @@ int EqueueInternal::WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKern
         // Effectively acts as a poll; only events that have already
         // arrived at the time of this function call can be received
         std::scoped_lock lock{m_mutex};
+        if (m_closed) {
+            return -1;
+        }
         return GetTriggeredEvents(ev, num);
     }
     const auto micros = timo ? *timo : 0u;
@@ -187,29 +297,37 @@ int EqueueInternal::WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKern
     }
 
     int count = 0;
+    bool closed = false;
 
     const auto predicate = [&] {
+        if (m_closed) {
+            closed = true;
+            return true;
+        }
         count = GetTriggeredEvents(ev, num);
         return count > 0;
     };
 
+    std::unique_lock lock{m_mutex};
+    ++m_waiters;
     if (micros == 0) {
-        // Wait indefinitely for events
-        std::unique_lock lock{m_mutex};
         m_cond.wait(lock, predicate);
     } else {
-        // Wait up until the timeout value
-        std::unique_lock lock{m_mutex};
         m_cond.wait_for(lock, std::chrono::microseconds(micros), predicate);
     }
+    --m_waiters;
 
-    return count;
+    return closed ? -1 : count;
 }
 
 bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
     bool has_found = false;
+    bool wake = false;
     {
         std::scoped_lock lock{m_mutex};
+        if (m_closed) {
+            return false;
+        }
         for (auto& event : m_events) {
             if (event.event.ident == ident && event.event.filter == filter) {
                 if (filter == OrbisKernelEvent::Filter::VideoOut) {
@@ -225,8 +343,11 @@ bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
                 has_found = true;
             }
         }
+        wake = has_found && m_waiters > 0;
     }
-    m_cond.notify_one();
+    if (wake) {
+        m_cond.notify_all();
+    }
     return has_found;
 }
 
@@ -269,6 +390,9 @@ bool EqueueInternal::AddSmallTimer(EqueueEvent& ev) {
     st.interval = std::chrono::nanoseconds(ts.tv_nsec + ts.tv_sec * 1000000000);
     {
         std::scoped_lock lock{m_mutex};
+        if (m_closed) {
+            return false;
+        }
         m_small_timers[st.event.ident] = std::move(st);
     }
     return true;
@@ -285,6 +409,9 @@ int EqueueInternal::WaitForSmallTimer(OrbisKernelEvent* ev, int num, u32 micros)
         curr_clock = std::chrono::steady_clock::now();
         {
             std::scoped_lock lock{m_mutex};
+            if (m_closed) {
+                return -1;
+            }
             for (auto it = m_small_timers.begin(); it != m_small_timers.end() && count < num;) {
                 const SmallTimer& st = it->second;
 
@@ -307,6 +434,9 @@ int EqueueInternal::WaitForSmallTimer(OrbisKernelEvent* ev, int num, u32 micros)
 
 bool EqueueInternal::EventExists(u64 id, s16 filter) {
     std::scoped_lock lock{m_mutex};
+    if (m_closed) {
+        return false;
+    }
 
     const auto& it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
         return ev.event.ident == id && ev.event.filter == filter;
@@ -332,7 +462,7 @@ s32 PS4_SYSV_ABI posix_kqueue() {
     snprintf(name, sizeof(name), "kqueue%i", kqueue_handle);
 
     // Create the queue
-    kqueues[kqueue_handle] = new EqueueInternal(kqueue_handle, name);
+    kqueues.Insert(kqueue_handle, std::make_shared<EqueueInternal>(kqueue_handle, name));
     LOG_INFO(Kernel_Event, "kqueue created with name {}", name);
 
     // Return handle.
@@ -354,12 +484,11 @@ s32 PS4_SYSV_ABI posix_kevent(s32 handle, OrbisKernelEvent* changelist, u64 ncha
     LOG_INFO(Kernel_Event, "called, eq = {}, nchanges = {}, nevents = {}", handle, nchanges,
              nevents);
 
-    // Get the equeue
-    if (!kqueues.contains(handle)) {
+    const auto equeue = kqueues.Find(handle);
+    if (!equeue) {
         *__Error() = POSIX_EBADF;
         return ORBIS_FAIL;
     }
-    auto equeue = kqueues[handle];
 
     // First step is to apply all changes in changelist.
     for (u64 i = 0; i < nchanges; i++) {
@@ -376,8 +505,7 @@ s32 PS4_SYSV_ABI posix_kevent(s32 handle, OrbisKernelEvent* changelist, u64 ncha
             EqueueEvent internal_event{};
             internal_event.event = event;
             if (!equeue->AddEvent(internal_event)) {
-                // Failed to add event, return error.
-                *__Error() = POSIX_ENOMEM;
+                *__Error() = equeue->IsClosed() ? POSIX_EBADF : POSIX_ENOMEM;
                 return ORBIS_FAIL;
             }
         }
@@ -385,8 +513,7 @@ s32 PS4_SYSV_ABI posix_kevent(s32 handle, OrbisKernelEvent* changelist, u64 ncha
         if (event.flags & OrbisKernelEvent::Flags::Delete) {
             // The caller is requesting to remove an event.
             if (!equeue->RemoveEvent(event.ident, event.filter)) {
-                // Failed to remove event, return error.
-                *__Error() = POSIX_ENOENT;
+                *__Error() = equeue->IsClosed() ? POSIX_EBADF : POSIX_ENOENT;
                 return ORBIS_FAIL;
             }
         }
@@ -394,7 +521,7 @@ s32 PS4_SYSV_ABI posix_kevent(s32 handle, OrbisKernelEvent* changelist, u64 ncha
         if (event.filter == OrbisKernelEvent::Filter::User && (event.fflags & 0x1000000)) {
             // For user events, this fflags value indicates we need to trigger the event.
             if (!equeue->TriggerEvent(event.ident, OrbisKernelEvent::Filter::User, event.udata)) {
-                *__Error() = POSIX_ENOENT;
+                *__Error() = equeue->IsClosed() ? POSIX_EBADF : POSIX_ENOENT;
                 return ORBIS_FAIL;
             }
         } else if (event.fflags != 0) {
@@ -413,6 +540,10 @@ s32 PS4_SYSV_ABI posix_kevent(s32 handle, OrbisKernelEvent* changelist, u64 ncha
             count = equeue->WaitForEvents(eventlist, nevents, &micros);
         } else {
             count = equeue->WaitForEvents(eventlist, nevents, nullptr);
+        }
+        if (count < 0) {
+            *__Error() = POSIX_EBADF;
+            return ORBIS_FAIL;
         }
     }
     return count;
@@ -443,35 +574,34 @@ int PS4_SYSV_ABI sceKernelCreateEqueue(OrbisKernelEqueue* eq, const char* name) 
     OrbisKernelEqueue kqueue_handle = NextEqueueHandle();
 
     // Create the equeue
-    kqueues[kqueue_handle] = new EqueueInternal(kqueue_handle, name);
+    kqueues.Insert(kqueue_handle, std::make_shared<EqueueInternal>(kqueue_handle, name));
     *eq = kqueue_handle;
 
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelDeleteEqueue(OrbisKernelEqueue eq) {
-    if (!kqueues.contains(eq)) {
+    auto removed = kqueues.Take(eq);
+    if (!removed) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
-    delete kqueues[eq];
-    kqueues.erase(eq);
+    removed->Close();
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev, int num, int* out,
                                      OrbisKernelUseconds* timo) {
     HLE_TRACE;
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
-
-    auto& equeue = kqueues[eq];
 
     TRACE_HINT(equeue->GetName());
     LOG_TRACE(Kernel_Event, "equeue = {} num = {}", equeue->GetName(), num);
 
-    if (ev == nullptr) {
+    if (ev == nullptr || out == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
@@ -480,7 +610,13 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    *out = equeue->WaitForEvents(ev, num, timo);
+    const int count = equeue->WaitForEvents(ev, num, timo);
+    if (count < 0) {
+        *out = 0;
+        return ORBIS_KERNEL_ERROR_EBADF;
+    }
+
+    *out = count;
 
     if (*out == 0) {
         return ORBIS_KERNEL_ERROR_ETIMEDOUT;
@@ -491,7 +627,8 @@ int PS4_SYSV_ABI sceKernelWaitEqueue(OrbisKernelEqueue eq, OrbisKernelEvent* ev,
 
 s32 PS4_SYSV_ABI sceKernelAddHRTimerEvent(OrbisKernelEqueue eq, int id, OrbisKernelTimespec* ts,
                                           void* udata) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
@@ -514,35 +651,41 @@ s32 PS4_SYSV_ABI sceKernelAddHRTimerEvent(OrbisKernelEqueue eq, int id, OrbisKer
     // `HrTimerSpinlockThresholdUs`) and fall back to boost asio timers if the time to tick is
     // large. Even for large delays, we truncate a small portion to complete the wait
     // using the spinlock, prioritizing precision.
-    auto& equeue = kqueues[eq];
     if (total_ns < HrTimerSpinlockThresholdNs) {
-        return equeue->AddSmallTimer(event) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ENOMEM;
+        if (!equeue->AddSmallTimer(event)) {
+            return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOMEM;
+        }
+        return ORBIS_OK;
     }
 
     if (!equeue->AddEvent(event)) {
-        return ORBIS_KERNEL_ERROR_ENOMEM;
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOMEM;
     }
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelDeleteHRTimerEvent(OrbisKernelEqueue eq, int id) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
-    auto& equeue = kqueues[eq];
     if (equeue->HasSmallTimer()) {
-        return equeue->RemoveSmallTimer(id) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ENOENT;
-    } else {
-        return equeue->RemoveEvent(id, OrbisKernelEvent::Filter::HrTimer)
-                   ? ORBIS_OK
-                   : ORBIS_KERNEL_ERROR_ENOENT;
+        if (equeue->RemoveSmallTimer(id)) {
+            return ORBIS_OK;
+        }
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOENT;
     }
+    if (equeue->RemoveEvent(id, OrbisKernelEvent::Filter::HrTimer)) {
+        return ORBIS_OK;
+    }
+    return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOENT;
 }
 
 int PS4_SYSV_ABI sceKernelAddTimerEvent(OrbisKernelEqueue eq, int id, OrbisKernelUseconds usec,
                                         void* udata) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
@@ -554,25 +697,27 @@ int PS4_SYSV_ABI sceKernelAddTimerEvent(OrbisKernelEqueue eq, int id, OrbisKerne
     event.event.data = usec / 1000;
     event.event.udata = udata;
 
-    auto& equeue = kqueues[eq];
     if (!equeue->AddEvent(event)) {
-        return ORBIS_KERNEL_ERROR_ENOMEM;
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOMEM;
     }
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelDeleteTimerEvent(OrbisKernelEqueue eq, int id) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
-    return kqueues[eq]->RemoveEvent(id, OrbisKernelEvent::Filter::Timer)
-               ? ORBIS_OK
-               : ORBIS_KERNEL_ERROR_ENOENT;
+    if (equeue->RemoveEvent(id, OrbisKernelEvent::Filter::Timer)) {
+        return ORBIS_OK;
+    }
+    return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOENT;
 }
 
 int PS4_SYSV_ABI sceKernelAddUserEvent(OrbisKernelEqueue eq, int id) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
@@ -584,11 +729,15 @@ int PS4_SYSV_ABI sceKernelAddUserEvent(OrbisKernelEqueue eq, int id) {
     event.event.fflags = 0;
     event.event.data = 0;
 
-    return kqueues[eq]->AddEvent(event) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ENOMEM;
+    if (!equeue->AddEvent(event)) {
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOMEM;
+    }
+    return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelAddUserEventEdge(OrbisKernelEqueue eq, int id) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
@@ -600,7 +749,10 @@ int PS4_SYSV_ABI sceKernelAddUserEventEdge(OrbisKernelEqueue eq, int id) {
     event.event.fflags = 0;
     event.event.data = 0;
 
-    return kqueues[eq]->AddEvent(event) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ENOMEM;
+    if (!equeue->AddEvent(event)) {
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOMEM;
+    }
+    return ORBIS_OK;
 }
 
 void* PS4_SYSV_ABI sceKernelGetEventUserData(const OrbisKernelEvent* ev) {
@@ -613,23 +765,28 @@ u64 PS4_SYSV_ABI sceKernelGetEventId(const OrbisKernelEvent* ev) {
 }
 
 int PS4_SYSV_ABI sceKernelTriggerUserEvent(OrbisKernelEqueue eq, int id, void* udata) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
+#ifdef DCP_EQUEUE_TEST_HOOKS
+    EqueueTestHooks::OnTriggerAcquired(eq);
+#endif
 
-    if (!kqueues[eq]->TriggerEvent(id, OrbisKernelEvent::Filter::User, udata)) {
-        return ORBIS_KERNEL_ERROR_ENOENT;
+    if (!equeue->TriggerEvent(id, OrbisKernelEvent::Filter::User, udata)) {
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOENT;
     }
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelDeleteUserEvent(OrbisKernelEqueue eq, int id) {
-    if (!kqueues.contains(eq)) {
+    const auto equeue = kqueues.Find(eq);
+    if (!equeue) {
         return ORBIS_KERNEL_ERROR_EBADF;
     }
 
-    if (!kqueues[eq]->RemoveEvent(id, OrbisKernelEvent::Filter::User)) {
-        return ORBIS_KERNEL_ERROR_ENOENT;
+    if (!equeue->RemoveEvent(id, OrbisKernelEvent::Filter::User)) {
+        return equeue->IsClosed() ? ORBIS_KERNEL_ERROR_EBADF : ORBIS_KERNEL_ERROR_ENOENT;
     }
     return ORBIS_OK;
 }

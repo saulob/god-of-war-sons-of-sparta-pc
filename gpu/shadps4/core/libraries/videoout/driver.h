@@ -3,9 +3,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <functional>
+#include <vector>
 
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
@@ -62,6 +64,60 @@ struct VideoOutPort {
     void SignalVoLabel() {
         std::scoped_lock lk{vo_mutex};
         vo_cv.notify_one();
+    }
+
+    void AddFlipEvent(Kernel::OrbisKernelEqueue eq) {
+        std::scoped_lock lock{port_mutex};
+        flip_events.push_back(eq);
+    }
+
+    void RemoveFlipEvent(Kernel::OrbisKernelEqueue eq) {
+        std::scoped_lock lock{port_mutex};
+        if (const auto it = std::ranges::find(flip_events, eq); it != flip_events.end()) {
+            flip_events.erase(it);
+        }
+    }
+
+    void TriggerFlipEventsLocked(s64 flip_arg) {
+        std::erase_if(flip_events, [flip_arg](Kernel::OrbisKernelEqueue eq) {
+            const auto equeue = Kernel::AcquireEqueue(eq);
+            if (!equeue) {
+                return true;
+            }
+            equeue->TriggerEvent(
+                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
+                Kernel::OrbisKernelEvent::Filter::VideoOut,
+                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
+                                        (flip_arg << 16)));
+            return equeue->IsClosed();
+        });
+    }
+
+    void AddVblankEvent(Kernel::OrbisKernelEqueue eq) {
+        std::scoped_lock lock{vo_mutex};
+        vblank_events.push_back(eq);
+    }
+
+    void RemoveVblankEvent(Kernel::OrbisKernelEqueue eq) {
+        std::scoped_lock lock{vo_mutex};
+        if (const auto it = std::ranges::find(vblank_events, eq); it != vblank_events.end()) {
+            vblank_events.erase(it);
+        }
+    }
+
+    void TriggerVblankEventsLocked(u64 vblank_count) {
+        std::erase_if(vblank_events, [vblank_count](Kernel::OrbisKernelEqueue eq) {
+            const auto equeue = Kernel::AcquireEqueue(eq);
+            if (!equeue) {
+                return true;
+            }
+            equeue->TriggerEvent(
+                static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
+                Kernel::OrbisKernelEvent::Filter::VideoOut,
+                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
+                                        (vblank_count << 16)));
+            return equeue->IsClosed();
+        });
     }
 
     [[nodiscard]] int NumRegisteredBuffers() const {

@@ -204,22 +204,30 @@ void VideoOutDriver::Close(s32 handle) {
     }
 
     // Clear events
-    for (auto event : main_port.flip_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
+    std::vector<Kernel::OrbisKernelEqueue> flip_events;
+    {
+        std::scoped_lock port_lock{main_port.port_mutex};
+        flip_events = std::move(main_port.flip_events);
+        main_port.flip_events.clear();
+    }
+    for (auto event : flip_events) {
+        if (const auto equeue = Kernel::AcquireEqueue(event)) {
             equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
                                 Kernel::OrbisKernelEvent::Filter::VideoOut);
         }
     }
-    main_port.flip_events.clear();
-    for (auto event : main_port.vblank_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
+    std::vector<Kernel::OrbisKernelEqueue> vblank_events;
+    {
+        std::scoped_lock vo_lock{main_port.vo_mutex};
+        vblank_events = std::move(main_port.vblank_events);
+        main_port.vblank_events.clear();
+    }
+    for (auto event : vblank_events) {
+        if (const auto equeue = Kernel::AcquireEqueue(event)) {
             equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
                                 Kernel::OrbisKernelEvent::Filter::VideoOut);
         }
     }
-    main_port.vblank_events.clear();
 }
 
 VideoOutPort* VideoOutDriver::GetPort(int handle) {
@@ -625,18 +633,9 @@ void VideoOutDriver::Flip(const Request& req) {
             --flip_status.gc_queue_num;
         }
         --flip_status.flip_pending_num;
-    }
 
-    // Trigger flip events for the port.
-    for (auto event : port->flip_events) {
-        auto equeue = Kernel::GetEqueue(event);
-        if (equeue != nullptr) {
-            equeue->TriggerEvent(
-                static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
-                Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
-                                        (req.flip_arg << 16)));
-        }
+        // Trigger flip events for the port.
+        port->TriggerFlipEventsLocked(req.flip_arg);
     }
 
     // Reset prev flip label
@@ -784,18 +783,8 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             // Needs lock here as can be concurrently read by `sceVideoOutGetVblankStatus`
             std::scoped_lock lock{main_port.vo_mutex};
 
-            // Trigger flip events for the port
-            for (auto event : main_port.vblank_events) {
-                auto equeue = Kernel::GetEqueue(event);
-                if (equeue != nullptr) {
-                    equeue->TriggerEvent(
-                        static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
-                        Kernel::OrbisKernelEvent::Filter::VideoOut,
-                        reinterpret_cast<void*>(
-                            static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
-                            (vblank_status.count << 16)));
-                }
-            }
+            // Trigger vblank events for the port
+            main_port.TriggerVblankEventsLocked(vblank_status.count);
 
             // Update vblank status
             vblank_status.count++;

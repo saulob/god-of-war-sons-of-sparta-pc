@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "gnm_eq_event.h"
 #include "gnm_error.h"
 #include "gnmdriver.h"
 
@@ -118,46 +119,9 @@ static inline u32* ClearContextState(u32* cmdbuf) {
     return cmdbuf + ClearStateSequence.size();
 }
 
-static inline bool IsValidEventType(Platform::InterruptId id) {
-    return (static_cast<u32>(id) >= static_cast<u32>(Platform::InterruptId::Compute0RelMem) &&
-            static_cast<u32>(id) <= static_cast<u32>(Platform::InterruptId::Compute6RelMem)) ||
-           static_cast<u32>(id) == static_cast<u32>(Platform::InterruptId::GfxEop);
-}
-
 s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
     LOG_TRACE(Lib_GnmDriver, "called");
-
-    auto equeue = GetEqueue(eq);
-    if (!equeue) {
-        return ORBIS_KERNEL_ERROR_EBADF;
-    }
-
-    EqueueEvent kernel_event{};
-    kernel_event.event.ident = id;
-    kernel_event.event.filter = OrbisKernelEvent::Filter::GraphicsCore;
-    kernel_event.event.flags = OrbisKernelEvent::Flags::Add;
-    kernel_event.event.fflags = 0;
-    kernel_event.event.data = id;
-    kernel_event.event.udata = udata;
-
-    equeue->AddEvent(kernel_event);
-
-    Platform::IrqC::Instance()->Register(
-        static_cast<Platform::InterruptId>(id),
-        [=](Platform::InterruptId irq) {
-            ASSERT_MSG(irq == static_cast<Platform::InterruptId>(id), "An unexpected IRQ occured");
-
-            // We need to convert IRQ# to event id
-            if (!IsValidEventType(irq))
-                return;
-
-            // Event data is expected to be an event type as per sceGnmGetEqEventType.
-            equeue->TriggerEvent(static_cast<GnmEventType>(id),
-                                 OrbisKernelEvent::Filter::GraphicsCore,
-                                 reinterpret_cast<void*>(id));
-        },
-        equeue);
-    return ORBIS_OK;
+    return RegisterGnmEqEvent(eq, id, udata);
 }
 
 int PS4_SYSV_ABI sceGnmAreSubmitsAllowed() {
@@ -283,16 +247,7 @@ int PS4_SYSV_ABI sceGnmDebugHardwareStatus() {
 
 s32 PS4_SYSV_ABI sceGnmDeleteEqEvent(OrbisKernelEqueue eq, u64 id) {
     LOG_TRACE(Lib_GnmDriver, "called");
-
-    auto equeue = GetEqueue(eq);
-    if (!equeue) {
-        return ORBIS_KERNEL_ERROR_EBADF;
-    }
-
-    equeue->RemoveEvent(id, OrbisKernelEvent::Filter::GraphicsCore);
-
-    Platform::IrqC::Instance()->Unregister(static_cast<Platform::InterruptId>(id), equeue);
-    return ORBIS_OK;
+    return UnregisterGnmEqEvent(eq, id);
 }
 
 int PS4_SYSV_ABI sceGnmDestroyWorkloadStream() {
