@@ -11,6 +11,7 @@
 #include <trg/download.h>
 
 #include "updater/sha256.h"
+#include "updater/update_http.h"
 #include "updater/update_job.h"
 #include "updater/update_paths.h"
 #include "updater/update_platform.h"
@@ -26,14 +27,16 @@ struct UpdateController::CheckOutcome {
   bool up_to_date = false;
   bool available = false;
   bool no_release = false;
+  UpdateFailure failure = UpdateFailure::kNone;
+  int attempts = 0;
+};
+
+struct UpdateController::DownloadOutcome {
+  UpdateFailure failure = UpdateFailure::kNone;
+  int attempts = 0;
 };
 
 namespace {
-
-constexpr long long kMaxDownloadBytes = 1ll << 30;
-constexpr int kCheckTimeoutMs = 30000;
-constexpr int kDownloadTimeoutMs = 30 * 60 * 1000;
-constexpr long long kMaxReleaseJsonBytes = 4ll << 20;
 
 bool IsAllowedHost(const UpdateConfig& config, std::string_view url) {
   return config.url_filter ? config.url_filter(std::string(url)) : UrlHostAllowed(url, config.allowed_hosts);
@@ -45,7 +48,7 @@ bool IsAllowedDownload(const UpdateConfig& config, std::string_view url) {
 }
 
 trg::HttpOptions HttpOptionsFor(const UpdateConfig& config, const char* operation, int total_timeout_ms,
-                                long long max_bytes) {
+                                long long max_bytes, bool api_request) {
   trg::HttpOptions options;
   options.user_agent = config.user_agent;
   options.operation = operation;
@@ -61,10 +64,12 @@ trg::HttpOptions HttpOptionsFor(const UpdateConfig& config, const char* operatio
   options.receive_timeout_ms = config.receive_timeout_ms;
   options.total_timeout_ms = total_timeout_ms;
   options.max_bytes = max_bytes;
-  options.headers = {
-      {"Accept", "application/vnd.github+json"},
-      {"X-GitHub-Api-Version", "2022-11-28"},
-  };
+  if (api_request) {
+    options.headers = {
+        {"Accept", "application/vnd.github+json"},
+        {"X-GitHub-Api-Version", "2022-11-28"},
+    };
+  }
   return options;
 }
 
@@ -196,22 +201,24 @@ void UpdateController::StartCheck(bool manual) {
       if (!IsAllowedHost(config, config.releases_url)) {
         return std::string("The update address is not secure.");
       }
-      trg::HttpReport report;
       std::vector<std::string> diagnostics;
-      trg::HttpOptions options = HttpOptionsFor(config, "release metadata", kCheckTimeoutMs, kMaxReleaseJsonBytes);
-      options.report = &report;
+      trg::HttpOptions options =
+          HttpOptionsFor(config, "release metadata", kCheckTimeoutMs, kMaxReleaseJsonBytes, true);
       options.log = [&diagnostics](const std::string& text) { diagnostics.push_back(text); };
-      error = trg::HttpGet(config.releases_url, json, &task, options);
+      const TransferResult transfer =
+          FetchText("release metadata", config.releases_url, json, &task, options, config.retry);
+      outcome->failure = transfer.failure;
+      outcome->attempts = transfer.attempts;
       // GitHub answers 404 for "latest" while a repository has no published release (or is not public yet).
-      if (!error.empty() && report.status == 404) {
+      if (!transfer.ok && transfer.status == 404) {
         outcome->no_release = true;
         return std::string();
       }
       for (const std::string& line : diagnostics) {
         Log(config, line);
       }
-      if (!error.empty()) {
-        return error;
+      if (!transfer.ok) {
+        return transfer.reason;
       }
     }
 
@@ -242,7 +249,7 @@ void UpdateController::StartCheck(bool manual) {
     if (!IsAllowedDownload(config, asset->download_url)) {
       return std::string("The update package address is not secure.");
     }
-    if (asset->size == 0 || asset->size > std::uint64_t(kMaxDownloadBytes)) {
+    if (asset->size == 0 || asset->size > std::uint64_t(kMaxPackageBytes)) {
       return std::string("The update package has an invalid size.");
     }
     outcome->asset = *asset;
@@ -263,17 +270,26 @@ void UpdateController::StartCheck(bool manual) {
   if (!started) {
     task_kind_ = TaskKind::kNone;
     snapshot_.manual_check = false;
-    FailCheck("The update check could not start.", manual);
+    FailCheck("The update check could not start.", manual, UpdateFailure::kNone, 0);
   }
 }
 
 // The startup check fails quietly (offline, rate limited, assets not uploaded yet); only a requested one shows it.
-void UpdateController::FailCheck(std::string error, bool manual) {
+void UpdateController::FailCheck(std::string error, bool manual, UpdateFailure failure, int attempts) {
+  if (failure == UpdateFailure::kCancelled) {
+    snapshot_.state = UpdateState::kIdle;
+    snapshot_.failure = failure;
+    snapshot_.attempts = attempts;
+    Log(config_, "Update check cancelled");
+    return;
+  }
   if (manual) {
-    Fail(std::move(error), RetryKind::kCheck, true);
+    Fail(std::move(error), RetryKind::kCheck, true, failure, attempts);
     return;
   }
   snapshot_.state = UpdateState::kIdle;
+  snapshot_.failure = failure;
+  snapshot_.attempts = attempts;
   Log(config_, "Update check failed: " + error);
 }
 
@@ -281,10 +297,17 @@ void UpdateController::FinishCheck(trg::Task::State state, const std::string& er
   const bool manual = snapshot_.manual_check;
   snapshot_.manual_check = false;
   const std::shared_ptr<CheckOutcome> outcome = std::move(check_outcome_);
-  if (state == trg::Task::State::kFailed || state == trg::Task::State::kCancelled || !outcome) {
-    FailCheck(error.empty() ? "The update check failed." : error, manual);
+  if (state == trg::Task::State::kCancelled) {
+    FailCheck(error, manual, UpdateFailure::kCancelled, outcome ? outcome->attempts : 0);
     return;
   }
+  if (state == trg::Task::State::kFailed || !outcome) {
+    FailCheck(error.empty() ? "The update check failed." : error, manual,
+              outcome ? outcome->failure : UpdateFailure::kNone, outcome ? outcome->attempts : 0);
+    return;
+  }
+  snapshot_.failure = UpdateFailure::kNone;
+  snapshot_.attempts = outcome->attempts;
   if (outcome->no_release) {
     release_.reset();
     asset_.reset();
@@ -298,7 +321,7 @@ void UpdateController::FinishCheck(trg::Task::State state, const std::string& er
     return;
   }
   if (!outcome->release) {
-    FailCheck("The update check failed.", manual);
+    FailCheck("The update check failed.", manual, UpdateFailure::kNone, outcome->attempts);
     return;
   }
 
@@ -348,6 +371,7 @@ void UpdateController::StartDownload() {
   backup_path_ = workspace_ / "backup";
   manifest_path_ = workspace_ / "manifest.txt";
   staging_root_ = std::make_shared<std::filesystem::path>();
+  download_outcome_ = std::make_shared<DownloadOutcome>();
   worker_phase_ = 0;
   snapshot_.state = UpdateState::kDownloading;
   snapshot_.progress = 0.0f;
@@ -362,9 +386,11 @@ void UpdateController::StartDownload() {
   const std::filesystem::path staging_path = staging_path_;
   const std::filesystem::path manifest_path = manifest_path_;
   const std::shared_ptr<std::filesystem::path> staging_root = staging_root_;
+  const std::shared_ptr<DownloadOutcome> outcome = download_outcome_;
 
   const bool started = task_.Start("Downloading update...", [this, config, asset, checksum_asset, download_path,
-                                                               staging_path, manifest_path, staging_root](trg::Task& task) {
+                                                               staging_path, manifest_path, staging_root,
+                                                               outcome](trg::Task& task) {
     std::string expected;
     if (config.sha256_override && !config.sha256_override->empty()) {
       if (!IsValidSha256(*config.sha256_override)) {
@@ -375,18 +401,23 @@ void UpdateController::StartDownload() {
       expected = *digest;
     } else if (checksum_asset) {
       std::string checksum;
-      std::string error = trg::HttpGet(checksum_asset->download_url, checksum, &task,
-                                       HttpOptionsFor(config, "checksum", 20000, 64ll << 10));
-      if (!error.empty()) {
-        return error;
+      const TransferResult fetched =
+          FetchText("checksum", checksum_asset->download_url, checksum, &task,
+                    HttpOptionsFor(config, "checksum", kChecksumTimeoutMs, kMaxChecksumBytes, false), config.retry);
+      outcome->failure = fetched.failure;
+      outcome->attempts = fetched.attempts;
+      if (!fetched.ok) {
+        return fetched.reason;
       }
       if (const std::optional<std::string> checksum_digest = checksum_asset->sha256(); checksum_digest) {
         if (Sha256Hex(checksum) != *checksum_digest) {
+          outcome->failure = UpdateFailure::kChecksum;
           return std::string("The published checksum file does not match its own digest.");
         }
       }
       const std::optional<std::string> parsed = ParseSha256File(checksum);
       if (!parsed) {
+        outcome->failure = UpdateFailure::kChecksum;
         return std::string("The published checksum file is not valid.");
       }
       expected = *parsed;
@@ -394,30 +425,39 @@ void UpdateController::StartDownload() {
       return std::string("The release does not provide a trusted SHA-256 checksum.");
     }
 
-    trg::HttpOptions download_options = HttpOptionsFor(config, "update package", kDownloadTimeoutMs, kMaxDownloadBytes);
+    trg::HttpOptions download_options =
+        HttpOptionsFor(config, "update package", kDownloadTimeoutMs, kMaxPackageBytes, false);
     download_options.progress_total = static_cast<long long>(asset.size);
-    download_options.max_bytes = static_cast<long long>(asset.size) + (1ll << 20);
-    std::string error = trg::DownloadFile(task, asset.download_url, Utf8Path(download_path), download_options);
-    if (!error.empty()) {
-      return error;
+    download_options.max_bytes = static_cast<long long>(asset.size);
+    const TransferResult transfer = FetchFile("update package", asset.download_url, Utf8Path(download_path), task,
+                                              download_options, config.retry);
+    outcome->failure = transfer.failure;
+    outcome->attempts = transfer.attempts;
+    if (!transfer.ok) {
+      return transfer.reason;
     }
+    std::string error;
 
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(download_path, ec);
     if (ec || size != asset.size) {
+      outcome->failure = UpdateFailure::kContentLength;
       return std::string("The update download is incomplete.");
     }
     std::string hash_error;
     const std::string actual = Sha256FileHex(download_path, hash_error);
     if (actual.empty()) {
+      outcome->failure = UpdateFailure::kFilesystem;
       return hash_error;
     }
     if (actual != expected) {
+      outcome->failure = UpdateFailure::kChecksum;
       return std::string("The downloaded update does not match its SHA-256 checksum.");
     }
 
     worker_phase_ = 1;
     if (config.package_kind == UpdatePackageKind::kZip) {
+      outcome->failure = UpdateFailure::kFilesystem;
       ZipLimits limits;
       if (!ExtractZip(download_path, staging_path, limits, error)) {
         return error;
@@ -433,6 +473,7 @@ void UpdateController::StartDownload() {
       if (!error.empty()) {
         return error;
       }
+      outcome->failure = UpdateFailure::kNone;
       *staging_root = content_root;
       std::ofstream manifest(manifest_path, std::ios::binary | std::ios::trunc);
       if (!manifest) {
@@ -457,15 +498,31 @@ void UpdateController::StartDownload() {
 
 void UpdateController::FinishDownload(trg::Task::State state, const std::string& error) {
   snapshot_.manual_check = false;
+  const std::shared_ptr<DownloadOutcome> outcome = std::move(download_outcome_);
+  const UpdateFailure failure = outcome ? outcome->failure : UpdateFailure::kNone;
+  const int attempts = outcome ? outcome->attempts : 0;
+  if (state == trg::Task::State::kCancelled || failure == UpdateFailure::kCancelled) {
+    CleanupWorkspace();
+    snapshot_.state = UpdateState::kAvailable;
+    snapshot_.failure = UpdateFailure::kCancelled;
+    snapshot_.attempts = attempts;
+    snapshot_.progress = -1.0f;
+    snapshot_.error.clear();
+    snapshot_.retry_available = false;
+    Log(config_, "Update download cancelled");
+    return;
+  }
   if (state != trg::Task::State::kDone || !error.empty()) {
     CleanupWorkspace();
-    Fail(error.empty() ? "The update download failed." : error, RetryKind::kDownload, false);
+    Fail(error.empty() ? "The update download failed." : error, RetryKind::kDownload, false, failure, attempts);
     return;
   }
   if (config_.package_kind == UpdatePackageKind::kZip && staging_root_ && !staging_root_->empty()) {
     staging_path_ = *staging_root_;
   }
   snapshot_.state = UpdateState::kReadyToRestart;
+  snapshot_.failure = UpdateFailure::kNone;
+  snapshot_.attempts = attempts;
   snapshot_.progress = 1.0f;
   snapshot_.error.clear();
   snapshot_.retry_available = false;
@@ -581,15 +638,18 @@ void UpdateController::Poll() {
   }
 }
 
-void UpdateController::Fail(std::string error, RetryKind retry, bool check_failure) {
+void UpdateController::Fail(std::string error, RetryKind retry, bool check_failure, UpdateFailure failure,
+                            int attempts) {
   snapshot_.state = UpdateState::kFailed;
   snapshot_.manual_check = false;
+  snapshot_.failure = failure;
+  snapshot_.attempts = attempts;
   snapshot_.error = std::move(error);
   snapshot_.progress = -1.0f;
   snapshot_.retry_available = true;
   snapshot_.retry_check = check_failure;
   retry_kind_ = retry;
-  Log(config_, "Update error: " + snapshot_.error);
+  Log(config_, "Update error: " + snapshot_.error + " (" + FailureName(failure) + ")");
 }
 
 bool UpdateController::MakeWorkspace(std::string& error) {

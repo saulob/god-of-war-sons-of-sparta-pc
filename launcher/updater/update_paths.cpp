@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "release_assets.h"
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -280,8 +282,8 @@ bool IsRunningAppImage(const std::filesystem::path& appimage, const std::filesys
     return false;
   }
   const std::string name = file.filename().string();
-  constexpr std::string_view kPrefix = "SonsOfSpartaPC-v";
-  constexpr std::string_view kSuffix = "-x86_64.AppImage";
+  constexpr std::string_view kPrefix = sos::kReleaseAssetPrefix;
+  constexpr std::string_view kSuffix = sos::kLinuxPackageSuffix;
   if (name.size() <= kPrefix.size() + kSuffix.size() || !std::string_view(name).starts_with(kPrefix) ||
       !std::string_view(name).ends_with(kSuffix)) {
     return false;

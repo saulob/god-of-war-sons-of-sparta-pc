@@ -72,8 +72,8 @@ target_sources(sos_launcher_core PRIVATE ${SOS_PAGE_ICON_SOURCE})
 add_library(sos_launcher STATIC bug_report_page.cpp host.cpp launcher.cpp package_browser.cpp problem_dialog.cpp shift_key.cpp
     trophy_page.cpp update_config.cpp
     updater/github_release.cpp updater/sha256.cpp updater/third_party/miniz/miniz.c
-    updater/update_controller.cpp updater/update_job.cpp updater/update_paths.cpp updater/update_platform.cpp
-    updater/update_ui.cpp updater/update_zip.cpp updater/version.cpp)
+    updater/update_controller.cpp updater/update_http.cpp updater/update_job.cpp updater/update_paths.cpp
+    updater/update_platform.cpp updater/update_ui.cpp updater/update_zip.cpp updater/version.cpp)
 set_source_files_properties(updater/third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")
 target_include_directories(sos_launcher PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/gpu/shim)
 target_link_libraries(sos_launcher PUBLIC sos_launcher_core trg_launcher sos_imgui_sdl ${CMAKE_DL_LIBS})

@@ -2,6 +2,7 @@
 // Run: sos-update-tests
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include "updater/install_transaction.h"
 #include "updater/sha256.h"
 #include "updater/third_party/miniz/miniz.h"
+#include "release_assets.h"
 #include "updater/update_job.h"
 #include "updater/update_paths.h"
 #include "updater/update_zip.h"
@@ -492,17 +494,83 @@ void TestPackagingNames() {
   const std::string project = ReadFile(std::string(SOS_SOURCE_DIR) + "/CMakeLists.txt");
   CHECK(config.find("https://api.github.com/repos/saulob/god-of-war-sons-of-sparta-pc/releases/latest") !=
         std::string::npos);
-  CHECK(config.find("SonsOfSpartaPC-v\" + version.CoreString() + \"-windows-x64.zip") !=
-        std::string::npos);
-  CHECK(config.find("SonsOfSpartaPC-v\" + version.CoreString() + \"-windows-x64.zip.sha256") !=
-        std::string::npos);
-  CHECK(config.find("SonsOfSpartaPC-v\" + version.CoreString() + \"-x86_64.AppImage") !=
-        std::string::npos);
-  CHECK(config.find("SonsOfSpartaPC-v\" + version.CoreString() + \"-x86_64.AppImage.sha256") !=
-        std::string::npos);
+  CHECK(config.find("PackageName(version.CoreString(), kWindowsPackageSuffix)") != std::string::npos);
+  CHECK(config.find("ChecksumName(version.CoreString(), kWindowsPackageSuffix)") != std::string::npos);
+  CHECK(config.find("PackageName(version.CoreString(), kLinuxPackageSuffix)") != std::string::npos);
+  CHECK(config.find("ChecksumName(version.CoreString(), kLinuxPackageSuffix)") != std::string::npos);
+  CHECK(config.find("-windows-x64") == std::string::npos && config.find("-x86_64.AppImage") == std::string::npos);
   CHECK(config.find("trg-updater.exe") != std::string::npos);
   CHECK(config.find("sons_of_sparta.exe") != std::string::npos);
   CHECK(project.find("project(sons_of_sparta_pc VERSION") != std::string::npos);
+}
+
+std::string Lowercase(std::string text) {
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return text;
+}
+
+void TestReleaseContract() {
+  std::printf("release asset names and version source\n");
+  CHECK(sos::PackageName("1.2.3", sos::kWindowsPackageSuffix) == "SonsOfSpartaPC-v1.2.3-windows-x64.zip");
+  CHECK(sos::ChecksumName("1.2.3", sos::kWindowsPackageSuffix) == "SonsOfSpartaPC-v1.2.3-windows-x64.zip.sha256");
+  CHECK(sos::PackageName("1.2.3", sos::kLinuxPackageSuffix) == "SonsOfSpartaPC-v1.2.3-x86_64.AppImage");
+  CHECK(sos::ChecksumName("1.2.3", sos::kLinuxPackageSuffix) == "SonsOfSpartaPC-v1.2.3-x86_64.AppImage.sha256");
+
+  const std::filesystem::path root(SOS_SOURCE_DIR);
+  const std::string paths = ReadFile(root / "launcher" / "updater" / "update_paths.cpp");
+  CHECK(paths.find("SonsOfSpartaPC") == std::string::npos && paths.find("x86_64.AppImage") == std::string::npos);
+  CHECK(paths.find("sos::kReleaseAssetPrefix") != std::string::npos && paths.find("sos::kLinuxPackageSuffix") != std::string::npos);
+
+  TempDir temp;
+  const std::filesystem::path mount = temp.path / "mount";
+  const std::filesystem::path program = mount / "usr" / "bin" / "sons_of_sparta";
+  WriteFile(program, "program");
+  const std::filesystem::path published = temp.path / sos::PackageName("0.1.0", sos::kLinuxPackageSuffix);
+  WriteFile(published, "appimage");
+  CHECK(IsRunningAppImage(published, mount, program));
+  const std::filesystem::path other = temp.path / sos::PackageName("0.1.0", "-windows-x64.zip");
+  WriteFile(other, "zip");
+  CHECK(!IsRunningAppImage(other, mount, program));
+
+  const std::string cmake = ReadFile(root / "CMakeLists.txt");
+  const std::string launcher_cmake = ReadFile(root / "launcher" / "CMakeLists.txt");
+  const size_t project = cmake.find("project(sons_of_sparta_pc VERSION ");
+  CHECK(project != std::string::npos);
+  const std::string declared = project == std::string::npos ? std::string() : cmake.substr(project + 34, cmake.find(' ', project + 34) - project - 34);
+  CHECK(!declared.empty() && declared == SOS_PORT_VERSION);
+  CHECK(ParseVersion(SOS_PORT_VERSION).has_value() && ParseVersion(SOS_PORT_VERSION)->stable());
+  CHECK(launcher_cmake.find("SOS_PORT_VERSION=\"${PROJECT_VERSION}\"") != std::string::npos);
+  int definitions = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(root / "launcher")) {
+    if (entry.is_regular_file() && entry.path().extension() != ".png") {
+      const std::string text = ReadFile(entry.path());
+      const std::string define = "#define SOS_PORT_VERSION ";
+      for (size_t at = text.find(define); at != std::string::npos; at = text.find(define, at + 1)) {
+        definitions += text.compare(at + define.size(), 9, "\"unknown\"") != 0;
+      }
+    }
+  }
+  CHECK(definitions == 0);
+
+  // A release script, once there is one, has to publish the names the updater asks for.
+  int packagers = 0;
+  for (const char* folder : {"tools", "scripts", "packaging"}) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root / folder)) {
+      const std::string name = Lowercase(Utf8Path(entry.path().filename()));
+      const std::string extension = Lowercase(Utf8Path(entry.path().extension()));
+      const bool script = extension == ".ps1" || extension == ".sh" || extension == ".py" || extension == ".cmake";
+      if (!entry.is_regular_file() || !script || (name.find("package") == std::string::npos && name.find("release") == std::string::npos)) {
+        continue;
+      }
+      ++packagers;
+      const std::string text = ReadFile(entry.path());
+      CHECK(text.find(std::string(sos::kReleaseAssetPrefix)) != std::string::npos);
+      CHECK(text.find(std::string(sos::kWindowsPackageSuffix)) != std::string::npos);
+      CHECK(text.find(std::string(sos::kLinuxPackageSuffix)) != std::string::npos);
+      CHECK(text.find(std::string(sos::kChecksumSuffix)) != std::string::npos);
+    }
+  }
+  std::printf("  release scripts checked: %d\n", packagers);
 }
 
 void TestPaths() {
@@ -615,6 +683,7 @@ int main() {
   TestSameVersionReplacement();
   TestRollback();
   TestPackagingNames();
+  TestReleaseContract();
   TestPaths();
   TestRestartArguments();
   TestAppImageTarget();

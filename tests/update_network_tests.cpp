@@ -7,10 +7,12 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -18,16 +20,9 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
+#ifndef _WIN32
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <sys/stat.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -39,6 +34,7 @@
 #include "updater/update_paths.h"
 #include "updater/update_platform.h"
 #include "update_config.h"
+#include "update_test_server.h"
 
 using namespace trg::update;
 
@@ -56,156 +52,7 @@ int g_checks = 0;
     }                                                               \
   } while (0)
 
-#ifdef _WIN32
-using Socket = SOCKET;
-constexpr Socket kNoSocket = INVALID_SOCKET;
-constexpr int kNoSignal = 0;
-void CloseSocket(Socket s) { closesocket(s); }
-#else
-using Socket = int;
-constexpr Socket kNoSocket = -1;
-constexpr int kNoSignal = MSG_NOSIGNAL;
-void CloseSocket(Socket s) { close(s); }
-#endif
-
-bool Readable(Socket socket, int milliseconds) {
-  fd_set set;
-  FD_ZERO(&set);
-  FD_SET(socket, &set);
-  timeval timeout{milliseconds / 1000, (milliseconds % 1000) * 1000};
-  return select(int(socket) + 1, &set, nullptr, nullptr, &timeout) > 0;
-}
-
-struct Step {
-  enum class Kind { kBody, kStatus, kRedirect, kCutShort, kStall };
-  Kind kind = Kind::kBody;
-  int status = 200;
-  std::string body;
-  std::string location;
-};
-
-Step Body(std::string body) { return {Step::Kind::kBody, 200, std::move(body), {}}; }
-Step Status(int status) { return {Step::Kind::kStatus, status, "unavailable", {}}; }
-Step Redirect(std::string location) { return {Step::Kind::kRedirect, 302, {}, std::move(location)}; }
-Step CutShort(std::string body) { return {Step::Kind::kCutShort, 200, std::move(body), {}}; }
-Step Stall(std::string body) { return {Step::Kind::kStall, 200, std::move(body), {}}; }
-
-// Serves one connection at a time. A path's steps answer its requests in order; the last one repeats.
-class Server {
- public:
-  Server() {
-#ifdef _WIN32
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
-#endif
-    listener_ = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address));
-    listen(listener_, 8);
-    socklen_t length = sizeof(address);
-    getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length);
-    port_ = ntohs(address.sin_port);
-    thread_ = std::thread([this] { Run(); });
-  }
-  ~Server() {
-    stop_ = true;
-    thread_.join();
-    CloseSocket(listener_);
-#ifdef _WIN32
-    WSACleanup();
-#endif
-  }
-
-  std::string Url(const std::string& path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
-  bool Allows(const std::string& url) const { return url.rfind(Url("/"), 0) == 0; }
-
-  void Script(const std::string& path, std::vector<Step> steps) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    scripts_[path] = std::move(steps);
-    counts_[path] = 0;
-  }
-  int Requests(const std::string& path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return counts_[path];
-  }
-
- private:
-  void Run() {
-    while (!stop_) {
-      if (!Readable(listener_, 50)) {
-        continue;
-      }
-      const Socket client = accept(listener_, nullptr, nullptr);
-      if (client != kNoSocket) {
-        Serve(client);
-        CloseSocket(client);
-      }
-    }
-  }
-
-  void Send(Socket client, const std::string& text) { send(client, text.data(), int(text.size()), kNoSignal); }
-
-  void Serve(Socket client) {
-    std::string request;
-    char buffer[2048];
-    while (request.find("\r\n\r\n") == std::string::npos && Readable(client, 2000)) {
-      const int count = recv(client, buffer, sizeof(buffer), 0);
-      if (count <= 0) {
-        return;
-      }
-      request.append(buffer, size_t(count));
-    }
-    const size_t start = request.find(' ');
-    const size_t end = request.find(' ', start + 1);
-    if (start == std::string::npos || end == std::string::npos) {
-      return;
-    }
-    const std::string path = request.substr(start + 1, end - start - 1);
-
-    Step step = Status(404);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      const auto script = scripts_.find(path);
-      if (script != scripts_.end()) {
-        const int index = counts_[path]++;
-        step = script->second[std::min<size_t>(size_t(index), script->second.size() - 1)];
-      }
-    }
-
-    const auto head = [&](int status, size_t length, const std::string& extra) {
-      return "HTTP/1.1 " + std::to_string(status) + " Scripted\r\nContent-Length: " + std::to_string(length) +
-             "\r\nConnection: close\r\n" + extra + "\r\n";
-    };
-    switch (step.kind) {
-      case Step::Kind::kBody:
-      case Step::Kind::kStatus:
-        Send(client, head(step.status, step.body.size(), "") + step.body);
-        break;
-      case Step::Kind::kRedirect:
-        Send(client, head(step.status, 0, "Location: " + step.location + "\r\n"));
-        break;
-      case Step::Kind::kCutShort:
-        Send(client, head(200, step.body.size(), "") + step.body.substr(0, step.body.size() / 2));
-        break;
-      case Step::Kind::kStall:
-        Send(client, head(200, step.body.size(), "") + step.body.substr(0, step.body.size() / 2));
-        while (!stop_ && Readable(client, 50) == false) {
-        }
-        break;
-    }
-  }
-
-  Socket listener_ = kNoSocket;
-  unsigned short port_ = 0;
-  std::atomic<bool> stop_{false};
-  std::thread thread_;
-  std::mutex mutex_;
-  std::map<std::string, std::vector<Step>> scripts_;
-  std::map<std::string, int> counts_;
-};
+using namespace update_test;
 
 class TempDir {
  public:
@@ -270,12 +117,24 @@ struct Fixture {
     config.url_filter = [this](const std::string& url) { return server.Allows(url); };
     config.connect_timeout_ms = 2000;
     config.receive_timeout_ms = 400;
+    config.retry.max_attempts = 1;
     return config;
   }
 
   void ServeRelease(bool with_digest) { server.Script("/release", {Body(ReleaseJson(with_digest))}); }
   void ServeChecksum() { server.Script("/checksum", {Body(Sha256Hex(package) + "  " + kPackageName + "\n")}); }
 };
+
+bool WaitUntil(const std::function<bool()>& condition, int limit_ms) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(limit_ms);
+  while (std::chrono::steady_clock::now() < end) {
+    if (condition()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return condition();
+}
 
 bool Working(UpdateState state) {
   return state == UpdateState::kChecking || state == UpdateState::kDownloading || state == UpdateState::kVerifying;
@@ -741,6 +600,350 @@ void TestAppImageReplacementAndRelaunch() {
 }
 #endif
 
+std::map<std::string, std::string> Tree(const std::filesystem::path& root) {
+  std::map<std::string, std::string> files;
+  std::error_code ec;
+  for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->is_regular_file(ec)) {
+      std::ifstream file(it->path(), std::ios::binary);
+      std::ostringstream text;
+      text << file.rdbuf();
+      files[Utf8Path(it->path().lexically_relative(root))] = text.str();
+    }
+  }
+  return files;
+}
+
+void WriteInstall(const std::filesystem::path& install) {
+  std::filesystem::create_directories(install / "assets");
+  for (const auto& [name, text] : std::map<std::string, std::string>{
+           {"app.exe", "OLD LAUNCHER"}, {"trg-updater.exe", "OLD HELPER"}, {"assets/a.png", "OLD ASSET"}}) {
+    std::ofstream(install / name, std::ios::binary) << text;
+  }
+}
+
+UpdateConfig RetryingConfig(Fixture& fixture) {
+  UpdateConfig config = fixture.Config();
+  config.retry.max_attempts = 3;
+  config.retry.base_delay_ms = 20;
+  config.retry.max_delay_ms = 100;
+  return config;
+}
+
+void TestAutomaticRetries() {
+  std::printf("automatic retries inside one check or download\n");
+  Fixture fixture;
+  UpdateController controller(RetryingConfig(fixture));
+  fixture.server.Script("/release", {Status(503), Body(fixture.ReleaseJson(true))});
+  controller.StartCheck(true);
+  bool failed_between = false;
+  UpdateSnapshot snapshot;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  do {
+    controller.Poll();
+    snapshot = controller.snapshot();
+    failed_between = failed_between || snapshot.state == UpdateState::kFailed;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (Working(snapshot.state) && std::chrono::steady_clock::now() < deadline);
+  CHECK(snapshot.state == UpdateState::kAvailable && !failed_between);
+  CHECK(snapshot.attempts == 2 && snapshot.failure == UpdateFailure::kNone);
+  CHECK(fixture.server.Requests("/release") == 2);
+
+  fixture.server.Script("/package", {CutShort(fixture.package), Status(502), Body(fixture.package)});
+  snapshot = DownloadAndSettle(controller);
+  CHECK(snapshot.state == UpdateState::kReadyToRestart && snapshot.attempts == 3);
+  CHECK(fixture.server.Requests("/package") == 3);
+
+  Fixture down;
+  UpdateController down_controller(RetryingConfig(down));
+  down.ServeRelease(true);
+  CHECK(CheckAndSettle(down_controller).state == UpdateState::kAvailable);
+  down.server.Script("/package", {Status(503)});
+  const int workspaces = Workspaces();
+  snapshot = DownloadAndSettle(down_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kHttpStatus && snapshot.attempts == 3);
+  CHECK(snapshot.error.find("503") != std::string::npos);
+  CHECK(down.server.Requests("/package") == 3);
+  CHECK(Workspaces() == workspaces);
+  down.server.Script("/package", {Body(down.package)});
+  CHECK(RetryAndSettle(down_controller).state == UpdateState::kReadyToRestart);
+
+  Fixture permanent;
+  UpdateController permanent_controller(RetryingConfig(permanent));
+  permanent.ServeRelease(true);
+  CHECK(CheckAndSettle(permanent_controller).state == UpdateState::kAvailable);
+  permanent.server.Script("/package", {Status(404), Body(permanent.package)});
+  snapshot = DownloadAndSettle(permanent_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.attempts == 1 && permanent.server.Requests("/package") == 1);
+  CHECK(snapshot.failure == UpdateFailure::kHttpStatus);
+
+  Fixture checksum;
+  UpdateController checksum_controller(RetryingConfig(checksum));
+  checksum.ServeRelease(false);
+  checksum.server.Script("/package", {Body(checksum.package)});
+  checksum.server.Script("/checksum", {Status(500), Body(Sha256Hex(checksum.package) + "  " + kPackageName + "\n")});
+  CHECK(CheckAndSettle(checksum_controller).state == UpdateState::kAvailable);
+  snapshot = DownloadAndSettle(checksum_controller);
+  CHECK(snapshot.state == UpdateState::kReadyToRestart && snapshot.attempts == 1);
+  CHECK(checksum.server.Requests("/checksum") == 2);
+}
+
+void TestFailureCategories() {
+  std::printf("failure categories reach the snapshot\n");
+  Fixture oversized;
+  UpdateController oversized_controller(oversized.Config());
+  oversized.ServeRelease(true);
+  CHECK(CheckAndSettle(oversized_controller).state == UpdateState::kAvailable);
+  oversized.server.Script("/package", {Body(oversized.package + "extra")});
+  UpdateSnapshot snapshot = DownloadAndSettle(oversized_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kSizeLimit);
+
+  Fixture corrupt;
+  UpdateController corrupt_controller(corrupt.Config());
+  corrupt.ServeRelease(true);
+  CHECK(CheckAndSettle(corrupt_controller).state == UpdateState::kAvailable);
+  std::string altered = corrupt.package;
+  altered.back() = static_cast<char>(altered.back() ^ 0x55);
+  corrupt.server.Script("/package", {Body(altered)});
+  snapshot = DownloadAndSettle(corrupt_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kChecksum);
+
+  Fixture short_body;
+  UpdateController short_controller(short_body.Config());
+  short_body.ServeRelease(true);
+  CHECK(CheckAndSettle(short_controller).state == UpdateState::kAvailable);
+  short_body.server.Script("/package", {Body(short_body.package.substr(0, short_body.package.size() - 1))});
+  snapshot = DownloadAndSettle(short_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kContentLength || snapshot.failure == UpdateFailure::kInterrupted);
+
+  Fixture stalled;
+  UpdateController stalled_controller(stalled.Config());
+  stalled.ServeRelease(true);
+  CHECK(CheckAndSettle(stalled_controller).state == UpdateState::kAvailable);
+  stalled.server.Script("/package", {Stall(stalled.package)});
+  snapshot = DownloadAndSettle(stalled_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kReceiveTimeout);
+
+  Fixture loop;
+  UpdateController loop_controller(loop.Config());
+  loop.ServeRelease(true);
+  CHECK(CheckAndSettle(loop_controller).state == UpdateState::kAvailable);
+  loop.server.Script("/package", {Redirect(loop.server.Url("/package"))});
+  snapshot = DownloadAndSettle(loop_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kRedirectLimit);
+
+  Fixture limited;
+  UpdateController limited_controller(limited.Config());
+  limited.server.Script("/release", {Status(403)});
+  snapshot = CheckAndSettle(limited_controller);
+  ExpectFailedWithRetry(snapshot);
+  CHECK(snapshot.failure == UpdateFailure::kHttpStatus && snapshot.retry_check);
+}
+
+void TestCancelledUpdate() {
+  std::printf("cancelling a check and a download\n");
+  Fixture fixture;
+  UpdateConfig config = RetryingConfig(fixture);
+  config.receive_timeout_ms = 10000;
+  UpdateController controller(config);
+  fixture.server.Script("/release", {Hang()});
+  controller.StartCheck(true);
+  CHECK(WaitUntil([&] { return fixture.server.Requests("/release") >= 1; }, 3000));
+  controller.Cancel();
+  UpdateSnapshot snapshot = Settle(controller);
+  CHECK(snapshot.state == UpdateState::kIdle && snapshot.failure == UpdateFailure::kCancelled);
+  CHECK(snapshot.error.empty() && !snapshot.retry_available);
+  CHECK(fixture.server.Requests("/release") == 1);
+
+  fixture.ServeRelease(true);
+  CHECK(CheckAndSettle(controller).state == UpdateState::kAvailable);
+  fixture.server.Script("/package", {Hang()});
+  const int workspaces = Workspaces();
+  controller.StartDownload();
+  CHECK(WaitUntil([&] { return fixture.server.Requests("/package") >= 1; }, 3000));
+  controller.Cancel();
+  snapshot = Settle(controller);
+  CHECK(snapshot.state == UpdateState::kAvailable && snapshot.failure == UpdateFailure::kCancelled);
+  CHECK(snapshot.error.empty() && !snapshot.retry_available && snapshot.progress < 0.0f);
+  CHECK(fixture.server.Requests("/package") == 1);
+  CHECK(Workspaces() == workspaces && !controller.Busy());
+
+  fixture.server.Script("/package", {Body(fixture.package)});
+  snapshot = DownloadAndSettle(controller);
+  CHECK(snapshot.state == UpdateState::kReadyToRestart && snapshot.failure == UpdateFailure::kNone);
+
+  Fixture retrying;
+  UpdateConfig slow = RetryingConfig(retrying);
+  slow.retry.base_delay_ms = 5000;
+  slow.retry.max_delay_ms = 5000;
+  UpdateController retrying_controller(slow);
+  retrying.ServeRelease(true);
+  CHECK(CheckAndSettle(retrying_controller).state == UpdateState::kAvailable);
+  retrying.server.Script("/package", {Status(503), Body(retrying.package)});
+  retrying_controller.StartDownload();
+  CHECK(WaitUntil([&] { return retrying.server.Requests("/package") >= 1; }, 3000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto cancelled_at = std::chrono::steady_clock::now();
+  retrying_controller.Cancel();
+  snapshot = Settle(retrying_controller);
+  CHECK(snapshot.failure == UpdateFailure::kCancelled && snapshot.state == UpdateState::kAvailable);
+  CHECK(std::chrono::steady_clock::now() - cancelled_at < std::chrono::seconds(3));
+  CHECK(retrying.server.Requests("/package") == 1);
+}
+
+void TestInstalledPackageUntouched() {
+  std::printf("a failed download leaves the installed package alone\n");
+  Fixture fixture;
+  WriteInstall(fixture.temp.path / "install");
+  const std::map<std::string, std::string> before = Tree(fixture.temp.path / "install");
+  CHECK(before.size() == 3);
+  UpdateController controller(RetryingConfig(fixture));
+  fixture.ServeRelease(true);
+  CHECK(CheckAndSettle(controller).state == UpdateState::kAvailable);
+
+  std::string altered = fixture.package;
+  altered.back() = static_cast<char>(altered.back() ^ 0x55);
+  const std::vector<std::pair<const char*, std::vector<Step>>> scripts = {
+      {"missing", {Status(404)}},
+      {"unavailable", {Status(503)}},
+      {"cut", {CutShort(fixture.package)}},
+      {"corrupt", {Body(altered)}},
+      {"oversized", {Body(fixture.package + "extra")}},
+      {"stalled", {Stall(fixture.package)}},
+  };
+  for (const auto& [name, steps] : scripts) {
+    fixture.server.Script("/package", steps);
+    const UpdateSnapshot snapshot = DownloadAndSettle(controller);
+    CHECK(snapshot.state == UpdateState::kFailed);
+    CHECK(Tree(fixture.temp.path / "install") == before);
+    (void)name;
+  }
+  fixture.server.Script("/package", {Body(fixture.package)});
+  CHECK(RetryAndSettle(controller).state == UpdateState::kReadyToRestart);
+  CHECK(Tree(fixture.temp.path / "install") == before);
+}
+
+std::string AssetJson(Server& server, const std::string& name, const std::string& path = "/package") {
+  return "{\"name\":\"" + name + "\",\"browser_download_url\":\"" + server.Url(path) + "\",\"size\":1234}";
+}
+
+std::string ReleaseWith(Server& server, const std::string& tag, bool draft, bool prerelease,
+                        const std::vector<std::string>& assets) {
+  std::string list;
+  for (const std::string& name : assets) {
+    list += (list.empty() ? "" : ",") + AssetJson(server, name);
+  }
+  return "{\"tag_name\":\"" + tag + "\",\"draft\":" + (draft ? "true" : "false") +
+         ",\"prerelease\":" + (prerelease ? "true" : "false") + ",\"html_url\":\"" + server.Url("/page") +
+         "\",\"assets\":[" + list + "]}";
+}
+
+std::string ReplaceFirst(std::string text, const std::string& from, const std::string& to) {
+  const size_t at = text.find(from);
+  if (at != std::string::npos) {
+    text.replace(at, from.size(), to);
+  }
+  return text;
+}
+
+void TestSelfUpdateSelection() {
+  std::printf("self-update decisions with the production asset names\n");
+  TempDir temp;
+  Server server;
+  UpdateConfig config = sos::MakeUpdateConfig(temp.path);
+  config.current_version = "1.2.3";
+  config.releases_url = server.Url("/release");
+  config.url_filter = [&server](const std::string& url) { return server.Allows(url); };
+  config.install_supported = true;
+  config.log = nullptr;
+  config.retry.max_attempts = 1;
+  const auto name_for = [&](const char* version) { return config.asset_name(*ParseVersion(version)); };
+  const auto checksum_for = [&](const char* version) { return config.checksum_asset_name(*ParseVersion(version)); };
+  const std::string good = name_for("1.3.0");
+
+  const auto check = [&](const std::string& release) {
+    server.Script("/release", {Body(release)});
+    UpdateController controller(config);
+    controller.StartCheck(true);
+    return Settle(controller);
+  };
+  const auto available = [&](const UpdateSnapshot& snapshot) { return snapshot.state == UpdateState::kAvailable; };
+
+  UpdateSnapshot snapshot = check(ReleaseWith(server, "v1.3.0", false, false, {good, checksum_for("1.3.0")}));
+  CHECK(available(snapshot) && snapshot.latest_version == "1.3.0" && snapshot.asset_name == good);
+  CHECK(snapshot.current_version == "1.2.3");
+  snapshot = check(ReleaseWith(server, "1.3.0", false, false, {good}));
+  CHECK(available(snapshot));
+  snapshot = check(ReleaseWith(server, "v1.2.4", false, false, {name_for("1.2.4")}));
+  CHECK(available(snapshot));
+  snapshot = check(ReleaseWith(server, "v1.10.0", false, false, {name_for("1.10.0")}));
+  CHECK(available(snapshot) && snapshot.latest_version == "1.10.0");
+  snapshot = check(ReleaseWith(server, "v2.0.0", false, false, {name_for("2.0.0")}));
+  CHECK(available(snapshot));
+
+  for (const char* version : {"1.2.3", "1.2.2", "1.1.9", "1.0.0", "0.9.9", "0.0.1"}) {
+    snapshot = check(ReleaseWith(server, std::string("v") + version, false, false, {name_for(version)}));
+    CHECK(snapshot.state == UpdateState::kNoUpdate && snapshot.asset_name.empty());
+  }
+  snapshot = check(ReleaseWith(server, "v1.9.0", false, false, {name_for("1.9.0")}));
+  CHECK(available(snapshot));
+  snapshot = check(ReleaseWith(server, "v1.2.3", false, false, {good}));
+  CHECK(snapshot.state == UpdateState::kNoUpdate);
+
+  for (const char* tag : {"vbanana", "v", "", "v1", "v1.2", "v1.x.0", "v-1.0.0", "v1.2.3.4.5"}) {
+    snapshot = check(ReleaseWith(server, tag, false, false, {good}));
+    CHECK(!available(snapshot));
+  }
+
+  snapshot = check(ReleaseWith(server, "v1.3.0", true, false, {good}));
+  CHECK(snapshot.state == UpdateState::kNoUpdate);
+  snapshot = check(ReleaseWith(server, "v1.3.0", false, true, {good}));
+  CHECK(snapshot.state == UpdateState::kNoUpdate);
+  snapshot = check(ReleaseWith(server, "v1.4.0-beta.1", false, false, {name_for("1.4.0")}));
+  CHECK(snapshot.state == UpdateState::kNoUpdate);
+  snapshot = check(ReleaseWith(server, "v1.4.0-rc1", false, false, {good}));
+  CHECK(snapshot.state == UpdateState::kNoUpdate);
+
+  const std::vector<std::string> wrong = {
+      good + ".sig",
+      "Other" + good,
+      ReplaceFirst(good, "SonsOfSpartaPC", "SonsOfSparta"),
+      ReplaceFirst(ReplaceFirst(good, "x64", "arm64"), "x86_64", "aarch64"),
+      ReplaceFirst(ReplaceFirst(good, "windows", "linux"), "zip", "tar.gz"),
+      ReplaceFirst(good, ".zip", "-debug.zip"),
+      ReplaceFirst(good, "v1.3.0", "v1.3.1"),
+      name_for("1.2.3"),
+      checksum_for("1.3.0"),
+      " " + good,
+      good + " ",
+  };
+  for (const std::string& name : wrong) {
+    snapshot = check(ReleaseWith(server, "v1.3.0", false, false, {name}));
+    CHECK(!available(snapshot) && snapshot.state == UpdateState::kFailed);
+  }
+  std::string lower = good;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  snapshot = check(ReleaseWith(server, "v1.3.0", false, false, {lower}));
+  CHECK(lower == good || !available(snapshot));
+
+  std::vector<std::string> crowd = wrong;
+  crowd.push_back(good);
+  snapshot = check(ReleaseWith(server, "v1.3.0", false, false, crowd));
+  CHECK(available(snapshot) && snapshot.asset_name == good);
+
+  std::string foreign_host = ReleaseWith(server, "v1.3.0", false, false, {good});
+  foreign_host = ReplaceFirst(foreign_host, server.Url("/package"), "http://203.0.113.9/package");
+  snapshot = check(foreign_host);
+  CHECK(snapshot.state == UpdateState::kFailed);
+}
+
 void TestTransportTimeouts() {
   std::printf("transport timeouts\n");
   Fixture fixture;
@@ -776,6 +979,11 @@ int main() {
 #ifndef _WIN32
   TestAppImageReplacementAndRelaunch();
 #endif
+  TestAutomaticRetries();
+  TestFailureCategories();
+  TestCancelledUpdate();
+  TestInstalledPackageUntouched();
+  TestSelfUpdateSelection();
   TestTransportTimeouts();
   std::printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

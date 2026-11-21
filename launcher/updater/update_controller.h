@@ -12,6 +12,7 @@
 #include <trg/platform.h>
 
 #include "updater/github_release.h"
+#include "updater/update_http.h"
 #include "updater/url_policy.h"
 #include "updater/version.h"
 
@@ -39,8 +40,9 @@ struct UpdateConfig {
   std::string download_url_prefix;
   // Replaces the address policy; only the network tests set it.
   std::function<bool(const std::string& url)> url_filter;
-  int connect_timeout_ms = 15000;
-  int receive_timeout_ms = 30000;
+  int connect_timeout_ms = kDefaultConnectTimeoutMs;
+  int receive_timeout_ms = kDefaultReceiveTimeoutMs;
+  RetryPolicy retry;
   UpdatePackageKind package_kind = UpdatePackageKind::kZip;
   std::function<std::string(const SemanticVersion&)> asset_name;
   std::function<std::string(const SemanticVersion&)> checksum_asset_name;
@@ -65,6 +67,8 @@ struct UpdateSnapshot {
   std::string error;
   std::string install_unsupported_reason;
   float progress = -1.0f;
+  UpdateFailure failure = UpdateFailure::kNone;
+  int attempts = 0;
   bool install_supported = false;
   bool retry_available = false;
   bool retry_check = false;
@@ -96,6 +100,7 @@ class UpdateController {
   enum class RetryKind { kCheck, kDownload, kInstall };
 
   struct CheckOutcome;
+  struct DownloadOutcome;
   struct WorkspaceCleanup {
     std::filesystem::path path;
     bool enabled = false;
@@ -103,9 +108,10 @@ class UpdateController {
   };
 
   void FinishCheck(trg::Task::State state, const std::string& error);
-  void FailCheck(std::string error, bool manual);
+  void FailCheck(std::string error, bool manual, UpdateFailure failure, int attempts);
   void FinishDownload(trg::Task::State state, const std::string& error);
-  void Fail(std::string error, RetryKind retry, bool check_failure);
+  void Fail(std::string error, RetryKind retry, bool check_failure, UpdateFailure failure = UpdateFailure::kNone,
+            int attempts = 0);
   bool MakeWorkspace(std::string& error);
   void CleanupWorkspace();
 
@@ -119,6 +125,7 @@ class UpdateController {
   TaskKind task_kind_ = TaskKind::kNone;
   RetryKind retry_kind_ = RetryKind::kCheck;
   std::shared_ptr<CheckOutcome> check_outcome_;
+  std::shared_ptr<DownloadOutcome> download_outcome_;
   std::optional<Release> release_;
   std::optional<ReleaseAsset> asset_;
   std::optional<ReleaseAsset> checksum_asset_;

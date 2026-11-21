@@ -630,13 +630,20 @@ void TestTrgPatchSet() {
         }
     }
     std::sort(names.begin(), names.end());
-    Check(names.size() == 20, "TRG launcher has its 20 patches");
+    Check(names.size() == 21, "TRG launcher has its 21 patches");
     for (size_t i = 0; i < names.size(); ++i) {
         char prefix[8];
         std::snprintf(prefix, sizeof(prefix), "%04zu-", i + 1);
         Check(names[i].rfind(prefix, 0) == 0, "TRG patch numbering is continuous: " + names[i]);
     }
-    Check(!names.empty() && names.back() == "0020-action-edge-width.patch", "TRG action edge width patch is last");
+    Check(names.size() > 20 && names[19] == "0020-action-edge-width.patch", "TRG action edge width patch is twentieth");
+    Check(!names.empty() && names.back() == "0021-download-hardening.patch", "TRG download hardening patch is last");
+    const std::string hardening = ReadFile(folder / names.back());
+    for (const char* needle : {"enum class HttpFailure", "IsSensitiveHeader", "ResolveRedirect", "retry_after_ms",
+                               "kConnectTimeout", "kReceiveTimeout", "kTotalTimeout", "kHttpsDowngrade", "kSizeLimit"}) {
+        Check(Contains(hardening, needle), std::string("TRG download hardening patch has ") + needle);
+    }
+    Check(!Contains(hardening, "ALNHTTP") && !Contains(hardening, "DCPHTTP"), "TRG download hardening patch has no other project's marker");
     const std::string deps = ReadFile(kRoot / "gpu" / "deps.txt");
     Check(Contains(deps, "b384a28c712c9320eea8f9d50639dec49981b6c1"), "TRG Launcher 1.1.0 pin");
 }

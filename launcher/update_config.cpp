@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "release_assets.h"
 #include "update_restart_arguments.h"
 #include "updater/update_paths.h"
 #include "updater/update_platform.h"
@@ -69,10 +70,10 @@ trg::update::UpdateConfig MakeUpdateConfig(const std::filesystem::path& install_
 #if defined(_WIN32)
     config.package_kind = UpdatePackageKind::kZip;
     config.asset_name = [](const SemanticVersion& version) {
-        return "SonsOfSpartaPC-v" + version.CoreString() + "-windows-x64.zip";
+        return PackageName(version.CoreString(), kWindowsPackageSuffix);
     };
     config.checksum_asset_name = [](const SemanticVersion& version) {
-        return "SonsOfSpartaPC-v" + version.CoreString() + "-windows-x64.zip.sha256";
+        return ChecksumName(version.CoreString(), kWindowsPackageSuffix);
     };
     config.restart_executable = install_dir / "sons_of_sparta.exe";
     config.required_staged_files = {"sons_of_sparta.exe"};
@@ -84,10 +85,10 @@ trg::update::UpdateConfig MakeUpdateConfig(const std::filesystem::path& install_
 #else
     config.package_kind = UpdatePackageKind::kAppImage;
     config.asset_name = [](const SemanticVersion& version) {
-        return "SonsOfSpartaPC-v" + version.CoreString() + "-x86_64.AppImage";
+        return PackageName(version.CoreString(), kLinuxPackageSuffix);
     };
     config.checksum_asset_name = [](const SemanticVersion& version) {
-        return "SonsOfSpartaPC-v" + version.CoreString() + "-x86_64.AppImage.sha256";
+        return ChecksumName(version.CoreString(), kLinuxPackageSuffix);
     };
     std::filesystem::path appimage;
     if (trg::update::HasOriginalAppImage(appimage)) {
