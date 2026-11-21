@@ -230,7 +230,7 @@ inline constexpr Setting kSettings[] = {
     {Id::MouseSensitivity, Page::Controls, "mouse_pointer_sensitivity", "Mouse Sensitivity",
      "Controls how fast mouse movement moves the game's pointer.", Apply::Live, kMouseSensitivities},
     {Id::FrameRate, Page::Gameplay, "frame_rate", "Frame rate",
-     "60 FPS is the original game rate. Faster targets show the last frame again; game speed does not change.",
+     "60 FPS is the original game rate. Faster targets render more frames; game speed does not change.",
      Apply::Restart, kFrameRates},
     {Id::FrameRateInTitle, Page::Gameplay, "show_fps_title", "Frame rate in title",
      "Shows the frame rate in the window title.", Apply::Live, kOffOn},

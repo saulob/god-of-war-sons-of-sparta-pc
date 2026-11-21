@@ -98,7 +98,7 @@ RISKY_TYPE = re.compile(r"unique_ptr|shared_ptr|std::j?thread|mutex|condition_v
 
 # Every thread_local of the C++ host, by declaration: it is destroyed with its thread, so each must only free memory.
 THREAD_LOCALS = {
-    "gpu/shadps4/common/recursive_lock.cpp": ["thread_local std::unordered_map<void*, RecursiveLockState> g_recursive_locks"],
+    "gpu/shadps4/common/recursive_lock.cpp": ["thread_local std::vector<RecursiveLockState> g_recursive_locks"],
     "gpu/shadps4/common/thread.cpp": ["thread_local ThreadTimer thread_timer"],
     "gpu/shadps4/shader_recompiler/frontend/fetch_shader.cpp": [
         "thread_local const FetchShaderSnapshot* compiler_snapshot",

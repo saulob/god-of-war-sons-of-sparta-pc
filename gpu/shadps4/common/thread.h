@@ -6,6 +6,7 @@
 #pragma once
 
 #include <chrono>
+#include "common/pacing_balance.h"
 #include "common/types.h"
 
 namespace Common {
@@ -30,8 +31,7 @@ bool AccurateSleep(std::chrono::nanoseconds duration, std::chrono::nanoseconds* 
                    bool interruptible);
 
 class AccurateTimer {
-    std::chrono::nanoseconds target_interval{};
-    std::chrono::nanoseconds total_wait{};
+    PacingBalance balance;
 
     std::chrono::steady_clock::time_point start_time;
 
@@ -43,7 +43,7 @@ public:
     void End();
 
     std::chrono::nanoseconds GetTotalWait() const {
-        return total_wait;
+        return balance.Balance();
     }
 };
 
