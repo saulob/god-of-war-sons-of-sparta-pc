@@ -11,7 +11,9 @@ function Invoke-HostMutationTest {
         [Parameter(Mandatory)][string[]]$Copy,
         [object[]]$Mutations = @(),
         [string]$AssertStub = '',
-        [string[]]$IncludeDirs = @()
+        [string[]]$IncludeDirs = @(),
+        [string[]]$RootIncludeDirs = @(),
+        [string[]]$Libraries = @()
     )
     . (Join-Path $PSScriptRoot '_common.ps1')
     . (Join-Path $PSScriptRoot '_mutation.ps1')
@@ -45,10 +47,13 @@ function Invoke-HostMutationTest {
             $includes = @()
             if ($AssertStub) { $includes += @('-I', (Join-Path $Dir 'stub')) }
             foreach ($include in $IncludeDirs) { $includes += @('-I', (Join-Path $Dir $include)) }
+            foreach ($include in $RootIncludeDirs) { $includes += @('-I', (Join-Path $Root $include)) }
             $includes += @('-I', (Join-Path $Dir 'gpu/shim'), '-I', (Join-Path $Dir 'gpu/shadps4'), '-I', (Join-Path $prefix 'include'))
+            $link = @()
+            if ($Libraries) { $link = @('-L', (Join-Path $prefix 'lib')) + @($Libraries | ForEach-Object { '-l' + $_ }) }
             $rootText = $Dir.Replace('\', '/')
             $inputs = @((Join-Path $Root $Test)) + @($Sources | ForEach-Object { Join-Path $Dir $_ })
-            & $clang @flags @Extra "-DSOS_SOURCE_DIR=$rootText" @includes @inputs '-o' $Exe
+            & $clang @flags @Extra "-DSOS_SOURCE_DIR=$rootText" @includes @inputs '-o' $Exe @link
         }
 
         $baseline = Join-Path $temp 'base'

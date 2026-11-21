@@ -163,6 +163,7 @@ public:
         : renderer_(renderer), stalls_(10 * kNsPerSecond, 10), fast_(kSummaryEveryNs, 5) {}
 
     void SetRenderer(std::string_view renderer) { renderer_ = renderer; }
+    const std::string& renderer() const { return renderer_; }
 
     void SetMinimized(bool minimized, int64_t now_ns) {
         if (!started_) {

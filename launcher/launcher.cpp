@@ -38,7 +38,7 @@
 #include "game_process.h"
 #include "header_art.h"
 #include "host.h"
-#include "launcher_quit.h"
+#include "launcher_escape.h"
 #include "launcher_theme.h"
 #include "localization/ui_text.h"
 #include "options.h"
@@ -363,6 +363,7 @@ public:
         updater_->StartCheck();
 
         outcome = Outcome::kRunning;
+        host_.Reach(StartupStage::kPagesReady);
         host_.BeginFrame();
         outcome = Frame();
         host_.EndFrame(LauncherTheme().bg);
@@ -445,7 +446,7 @@ private:
             RequestPlay();
             break;
         case trg::Result::kQuit:
-            if (!play_.starting() && LauncherQuitAllowed(ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+            if (!play_.starting() && LauncherEscape().QuitAllowed()) {
                 return Outcome::kQuit;
             }
             break;

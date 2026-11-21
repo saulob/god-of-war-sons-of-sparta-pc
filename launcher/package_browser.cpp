@@ -5,6 +5,7 @@
 #include <system_error>
 #include <utility>
 
+#include "launcher_escape.h"
 #include "localization/ui_text.h"
 #include "utf8.h"
 
@@ -135,7 +136,7 @@ std::optional<fs::path> PackageBrowser::Draw(ImFont* font, float font_size, cons
     }
     ImGui::EndChild();
 
-    if (ImGui::Button(Tr("Cancel"))) {
+    if (ImGui::Button(Tr("Cancel")) || LauncherEscape().Take()) {
         keep = false;
     }
     ImGui::SameLine();

@@ -10,7 +10,9 @@
 #include <imgui.h>
 
 #include "launcher_frame_loop.h"
+#include "launcher_escape.h"
 #include "launcher_renderer.h"
+#include "launcher_startup.h"
 #include "placement.h"
 
 union SDL_Event;
@@ -39,8 +41,10 @@ public:
 
     // False when no window or renderer could be created; nothing is left open then.
     bool Open(const HostOptions& options);
-    // Shows the window once its first frame has been drawn. Does nothing when it was opened hidden.
+    // Shows the window, once, after its first frame was presented. Does nothing when it was opened hidden.
     void Show();
+    // Records a launcher startup stage outside the host (the pages are built by the caller).
+    void Reach(StartupStage stage);
     void Close();
 
     // Handles the window's events (F11 switches the launcher's own fullscreen) and returns when the next frame is due,
@@ -73,6 +77,7 @@ private:
     bool Focused() const;
     void ConfigureVsync();
     void NoteFrameDrawn(int64_t now_ns, const FrameTimes& times);
+    void LogPlacement(const char* stage, SavedPlacement saved);
 
     std::optional<WindowPlacement> restored_;
     SDL_Window* window_ = nullptr;
@@ -85,6 +90,11 @@ private:
     bool quit_ = false;
     LoopPacer loop_;
     PerformanceMonitor monitor_;
+    StartupTimeline startup_;
+    ShowGate show_gate_;
+    std::vector<DisplayFacts> display_facts_;
+    SavedPlacement saved_placement_ = SavedPlacement::kNone;
+    bool first_present_ = false;
     int64_t frame_begin_ns_ = 0;
 };
 

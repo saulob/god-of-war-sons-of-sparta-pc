@@ -97,12 +97,14 @@ SDL_Renderer* CreateLauncherRenderer(SDL_Window* window, RendererRequest request
 } // namespace
 
 bool LauncherHost::Open(const HostOptions& options) {
+    startup_ = StartupTimeline(NowNs());
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         std::printf("Launcher: SDL video failed: %s\n", SDL_GetError());
         return false;
     }
     video_ = true;
     gamepad_ = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    Reach(StartupStage::kSdlReady);
 
     const std::vector<Display> displays = ListDisplays();
     if (displays.empty()) {
@@ -115,13 +117,19 @@ bool LauncherHost::Open(const HostOptions& options) {
         usable.push_back(ToRect(display.usable));
     }
 
-    const bool restore = options.restore && PlacementIsVisible(*options.restore, usable);
-    restored_ = restore ? options.restore : std::nullopt;
+    if (options.restore) {
+        restored_ = RestorablePlacement(*options.restore, usable);
+    }
+    const bool restore = restored_ && PlacementIsSet(*restored_);
+    saved_placement_ = !options.restore ? SavedPlacement::kNone : restore ? SavedPlacement::kRestored : SavedPlacement::kStale;
+    for (const Display& display : displays) {
+        display_facts_.push_back({display.name, ToRect(display.bounds), ToRect(display.usable), display.scale, display.primary});
+    }
     const Display* target = &displays.front();
     int x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED;
     int width = 0, height = 0;
     if (restore) {
-        const Rect& normal = options.restore->normal;
+        const Rect& normal = restored_->normal;
         const SDL_Point center{(normal.left + normal.right) / 2, (normal.top + normal.bottom) / 2};
         const SDL_DisplayID id = SDL_GetDisplayForPoint(&center);
         for (const Display& display : displays) {
@@ -141,6 +149,8 @@ bool LauncherHost::Open(const HostOptions& options) {
         FitWindowSize(width, height, *target);
     }
 
+    Reach(StartupStage::kDisplaySelected);
+
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, options.title.c_str());
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
@@ -158,6 +168,8 @@ bool LauncherHost::Open(const HostOptions& options) {
     }
     SDL_SetWindowMinimumSize(window_, std::min(static_cast<int>(options.min_width * target->scale), width),
                              std::min(static_cast<int>(options.min_height * target->scale), height));
+    Reach(StartupStage::kWindowCreated);
+    LogPlacement("created", saved_placement_);
 
     const RendererRequest request = ParseRendererRequest(std::getenv(kLauncherRendererVariable));
     RendererSelection selection;
@@ -171,6 +183,8 @@ bool LauncherHost::Open(const HostOptions& options) {
     std::printf("%s\n",
                 RendererSelectedLine(SDL_GetRendererName(renderer_), request, selection.fallback, selection.pinned).c_str());
     ConfigureVsync();
+    show_gate_.RendererReady();
+    Reach(StartupStage::kRendererReady);
 
     IMGUI_CHECKVERSION();
     imgui_ = ImGui::CreateContext();
@@ -183,13 +197,15 @@ bool LauncherHost::Open(const HostOptions& options) {
     ImGui_ImplSDLRenderer3_Init(renderer_);
 
     hidden_ = options.hidden;
+    show_gate_.Opened(hidden_);
     loop_ = LoopPacer(hidden_ ? 0 : kLauncherFrameNs);
-    if (restore && options.restore->maximized) {
+    if (restored_ && restored_->maximized) {
         SDL_MaximizeWindow(window_);
     }
-    if (restore && options.restore->fullscreen) {
+    if (restored_ && restored_->fullscreen) {
         SDL_SetWindowFullscreen(window_, true);
     }
+    Reach(StartupStage::kUiReady);
     std::printf("Launcher: window %dx%d at %.2fx display scale, %s renderer\n", width, height, target->scale,
                 SDL_GetRendererName(renderer_));
     return true;
@@ -211,12 +227,41 @@ void LauncherHost::ConfigureVsync() {
     std::printf("Launcher renderer: pacing=%dhz_deadline vsync_effective=%d\n", kLauncherTargetHz, effective ? 1 : 0);
 }
 
+void LauncherHost::Reach(StartupStage stage) {
+    const std::optional<StageReached> reached = startup_.Reach(stage, NowNs());
+    if (!reached) {
+        return;
+    }
+    sos_startup_phase(StartupStagePhase(stage));
+    if (reached->slow) {
+        std::printf("%s\n", startup_.SlowLine(*reached, monitor_.renderer(), window_ && Minimized()).c_str());
+    }
+}
+
+void LauncherHost::LogPlacement(const char* stage, SavedPlacement saved) {
+    PlacementFacts facts;
+    int x = 0, y = 0, width = 0, height = 0;
+    SDL_GetWindowPosition(window_, &x, &y);
+    SDL_GetWindowSize(window_, &width, &height);
+    facts.window = {x, y, x + width, y + height};
+    SDL_GetWindowSizeInPixels(window_, &facts.pixel_width, &facts.pixel_height);
+    facts.pixel_density = SDL_GetWindowPixelDensity(window_);
+    facts.content_scale = SDL_GetWindowDisplayScale(window_);
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window_);
+    facts.maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    facts.fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+    facts.saved = saved;
+    std::printf("%s\n", PlacementLine(stage, facts, display_facts_).c_str());
+}
+
 void LauncherHost::Show() {
-    if (!window_ || hidden_) {
+    if (!window_ || !show_gate_.TryShow()) {
         return;
     }
     SDL_ShowWindow(window_);
     SDL_RaiseWindow(window_);
+    Reach(StartupStage::kShown);
+    LogPlacement("shown", saved_placement_);
 }
 
 ImTextureID LauncherHost::CreateTexture(const uint8_t* rgba, int width, int height) {
@@ -333,6 +378,10 @@ struct LauncherHost::LoopEnv {
 };
 
 bool LauncherHost::WaitForFrame() {
+    if (!startup_.Reached(StartupStage::kLoopActive)) {
+        Reach(StartupStage::kLoopActive);
+        std::printf("%s\n", startup_.SummaryLine(monitor_.renderer()).c_str());
+    }
     LoopEnv env{*this};
     return sos::WaitForFrame(env, loop_, monitor_);
 }
@@ -352,6 +401,7 @@ void LauncherHost::BeginFrame() {
     const float scale = SDL_GetWindowDisplayScale(window_);
     ImGui::GetStyle().FontScaleDpi = scale > 0.0f ? scale : 1.0f;
     ImGui::NewFrame();
+    LauncherEscape().BeginFrame(ImGui::IsKeyPressed(ImGuiKey_Escape, false));
 }
 
 void LauncherHost::EndFrame(const ImVec4& clear, const char* capture_path) {
@@ -372,6 +422,11 @@ void LauncherHost::EndFrame(const ImVec4& clear, const char* capture_path) {
     SDL_RenderPresent(renderer_);
     const int64_t presented = NowNs();
     NoteFrameDrawn(presented, {submitting - frame_begin_ns_, presenting - submitting, presented - presenting});
+    if (!first_present_) {
+        first_present_ = true;
+        show_gate_.FramePresented();
+        Reach(StartupStage::kFirstFramePresented);
+    }
 }
 
 bool LauncherHost::Fullscreen() const {
@@ -380,6 +435,8 @@ bool LauncherHost::Fullscreen() const {
 
 void LauncherHost::SetFullscreen(bool fullscreen) {
     SDL_SetWindowFullscreen(window_, fullscreen);
+    // X11 and Wayland apply it later; a frame in between could record the fullscreen size as the window's own.
+    SDL_SyncWindow(window_);
 }
 
 std::optional<WindowState> LauncherHost::State() const {

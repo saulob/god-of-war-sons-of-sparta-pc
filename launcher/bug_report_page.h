@@ -9,6 +9,7 @@
 
 #include "bug_report.h"
 #include "bug_report_http.h"
+#include "bug_report_session.h"
 #include "trg/launcher.h"
 
 namespace sos {
@@ -27,19 +28,8 @@ public:
     void Draw(trg::Ui& ui, const ReportFacts& facts);
 
 private:
-    struct Delivery {
-        std::atomic<bool> done{false};
-        BugReportReceipt receipt;
-        std::shared_ptr<const BugReportPackage> package;
-    };
-    struct DumpRetry {
-        std::atomic<bool> done{false};
-        CrashUpload outcome = CrashUpload::kFailed;
-    };
-
     void FindLogs();
-    void CollectDelivery();
-    void CollectDumpRetry();
+    void Collect();
     void RetryDump();
     void SelectLog(size_t index);
     void ForgetPreview();
@@ -65,11 +55,10 @@ private:
     std::shared_ptr<const BugReportPackage> previewed_;
     std::string preview_text_;
     bool log_failed_ = false;
-    std::shared_ptr<Delivery> delivery_;
-    std::shared_ptr<DumpRetry> dump_retry_;
-    std::optional<CrashDump> sent_dump_;
+    BugReportSession session_;
+    std::string description_backup_;
+    bool description_active_ = false;
     bool attach_crash_report_ = false;
-    std::optional<BugReportReceipt> result_;
     bool bring_result_into_view_ = false;
 };
 

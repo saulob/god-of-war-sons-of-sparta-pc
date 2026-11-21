@@ -279,7 +279,10 @@ bool JsonBoolField(const trg::update::json::Value& obj, std::string_view key, bo
 enum class DumpStep { kDone, kRetry, kStop };
 
 DumpStep UploadDumpPass(const BugReportServiceConfig& config, const std::string& ticket, const std::string& receipt,
-                        const CrashDump& dump, const HttpTransport& send) {
+                        const CrashDump& dump, const HttpTransport& send, const BugReportProgressSink& progress) {
+    const auto report = [&](uint64_t sent) {
+        if (progress) progress({BugReportProgress::Kind::kDumpBytes, ticket, sent, dump.bytes});
+    };
     std::error_code ec;
     if (fs::file_size(dump.path, ec) != dump.bytes || ec) return DumpStep::kStop;
 
@@ -297,6 +300,7 @@ DumpStep UploadDumpPass(const BugReportServiceConfig& config, const std::string&
 
     uint64_t at = uint64_t(std::max<int64_t>(0, JsonIntField(*state, "stored", 0)));
     if (at > dump.bytes) return DumpStep::kStop;
+    report(at);
     const size_t chunk_limit = size_t(std::clamp<int64_t>(JsonIntField(*state, "chunk_bytes", int64_t(kDumpChunkBytes)),
                                                           1024, int64_t(kDumpChunkBytes)));
 
@@ -319,6 +323,7 @@ DumpStep UploadDumpPass(const BugReportServiceConfig& config, const std::string&
         if (put_res.status == 409) return DumpStep::kRetry;
         if (put_res.status < 200 || put_res.status >= 300) return DumpStep::kRetry;
         at += want;
+        report(at);
     }
 
     const HttpResponse done_res = send({"POST", base + "/api/reports/" + ticket + "/dump/complete",
@@ -330,12 +335,6 @@ DumpStep UploadDumpPass(const BugReportServiceConfig& config, const std::string&
 }
 
 } // namespace
-
-const char* BugReportLimitTitle(BugReportOutcome outcome) {
-    if (outcome == BugReportOutcome::kRecentLimit) return "Too many reports were sent recently";
-    if (outcome == BugReportOutcome::kDailyLimit) return "Daily report limit reached";
-    return nullptr;
-}
 
 BugReportServiceConfig ResolveBugReportConfig(const fs::path& user_dir) {
     BugReportServiceConfig config;
@@ -355,14 +354,14 @@ HttpResponse SendHttpRequest(const HttpRequest& request) {
 }
 
 CrashUpload UploadCrashDump(const BugReportServiceConfig& config, const std::string& ticket, const std::string& receipt,
-                            const CrashDump& dump, const HttpTransport& transport) {
+                            const CrashDump& dump, const HttpTransport& transport, const BugReportProgressSink& progress) {
     if (config.endpoint_url.empty() || ticket.empty() || !IsReceiptHex(receipt)) return CrashUpload::kFailed;
     const HttpTransport send = transport ? transport : HttpTransport(SendHttpRequest);
     for (int attempt = 0; attempt < kDumpUploadAttempts; ++attempt) {
         if (attempt > 0 && config.retry_pause_ms > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(config.retry_pause_ms * attempt));
         }
-        const DumpStep step = UploadDumpPass(config, ticket, receipt, dump, send);
+        const DumpStep step = UploadDumpPass(config, ticket, receipt, dump, send, progress);
         if (step == DumpStep::kDone) return CrashUpload::kUploaded;
         if (step == DumpStep::kStop) break;
     }
@@ -370,7 +369,7 @@ CrashUpload UploadCrashDump(const BugReportServiceConfig& config, const std::str
 }
 
 BugReportReceipt FileBugReport(const BugReportServiceConfig& config, const BugReportPackage& package,
-                               const HttpTransport& transport) {
+                               const HttpTransport& transport, const BugReportProgressSink& progress) {
     BugReportReceipt receipt;
     if (config.endpoint_url.empty()) {
         receipt.outcome = BugReportOutcome::kUnreachable;
@@ -413,12 +412,13 @@ BugReportReceipt FileBugReport(const BugReportServiceConfig& config, const BugRe
     receipt.outcome = BugReportOutcome::kSent;
     receipt.credential = IsReceiptHex(cred) ? cred : std::string();
     receipt.submitted_at = JsonIntField(*parsed, "submitted_at", 0);
+    if (progress) progress({BugReportProgress::Kind::kTextAccepted, receipt.ticket, 0, 0});
 
     if (package.crash_dump) {
         const std::string dump_state = JsonStringField(*parsed, "dump");
         receipt.crash = (receipt.credential.empty() || dump_state != "expected")
                             ? CrashUpload::kFailed
-                            : UploadCrashDump(config, receipt.ticket, receipt.credential, *package.crash_dump, send);
+                            : UploadCrashDump(config, receipt.ticket, receipt.credential, *package.crash_dump, send, progress);
     } else if (package.crash_dump_requested) {
         receipt.crash = CrashUpload::kFailed;
     }

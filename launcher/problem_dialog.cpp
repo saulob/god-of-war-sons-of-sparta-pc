@@ -7,6 +7,7 @@
 
 #include <imgui.h>
 
+#include "launcher_escape.h"
 #include "localization/ui_text.h"
 
 namespace sos {
@@ -57,7 +58,7 @@ void ProblemDialog::Draw(const trg::Fonts& fonts, const trg::Theme& theme) {
         ImGui::TextUnformatted(Tr(advice_.c_str()));
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0.0f, fonts.size * 0.5f));
-        const bool key = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+        const bool key = LauncherEscape().Take() || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                          ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false) || ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
                          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
         ImGui::SetCursorPosX(std::max(0.0f, (ImGui::GetWindowWidth() - fonts.size * 6.0f) * 0.5f));

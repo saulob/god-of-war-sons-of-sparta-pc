@@ -4,10 +4,10 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
-#include <thread>
 #include <utility>
 
 #include "imgui.h"
+#include "launcher_escape.h"
 #include "localization/ui_text.h"
 #include "trg/platform.h"
 #include "utf8.h"
@@ -77,9 +77,8 @@ BugReportPage::BugReportPage(Places places) : places_(std::move(places)) {}
 
 void BugReportPage::Draw(trg::Ui& ui, const ReportFacts& facts) {
     if (!logs_found_) FindLogs();
-    CollectDelivery();
-    CollectDumpRetry();
-    const bool sending = delivery_ != nullptr || dump_retry_ != nullptr;
+    Collect();
+    const bool sending = session_.busy();
     if (CheckDraft(description_, !logs_.empty()) != problem_) problem_ = DraftProblem::kNone;
     AccentText(ui, kPrivacyHeadline);
     ui.Paragraph(kPrivacyNote);
@@ -100,23 +99,15 @@ void BugReportPage::FindLogs() {
     SelectLog(DefaultGameLog(logs_));
 }
 
-void BugReportPage::CollectDelivery() {
-    if (!delivery_ || !delivery_->done) return;
-    result_ = delivery_->receipt;
-    sent_dump_ = delivery_->package->crash_dump;
-    delivery_.reset();
+void BugReportPage::Collect() {
+    const Collected collected = session_.Collect();
+    if (collected == Collected::kNothing) return;
     bring_result_into_view_ = true;
-    if (result_->outcome == BugReportOutcome::kSent) {
+    const ReportPhase phase = session_.View().phase;
+    if (collected == Collected::kDelivery && (phase == ReportPhase::kSent || phase == ReportPhase::kSentDumpFailed)) {
         description_[0] = '\0';
         ForgetPreview();
     }
-}
-
-void BugReportPage::CollectDumpRetry() {
-    if (!dump_retry_ || !dump_retry_->done) return;
-    if (result_) result_->crash = dump_retry_->outcome;
-    dump_retry_.reset();
-    bring_result_into_view_ = true;
 }
 
 void BugReportPage::ForgetPreview() {
@@ -157,30 +148,14 @@ void BugReportPage::TogglePreview(const ReportFacts& facts) {
 }
 
 void BugReportPage::Send(const ReportFacts& facts) {
-    if (!AcceptDraft()) return;
+    if (session_.busy() || !AcceptDraft()) return;
     std::shared_ptr<const BugReportPackage> package = previewed_ ? previewed_ : BuildPackage(facts);
     if (!package) return;
-    BugReportServiceConfig config = ResolveBugReportConfig(places_.user_dir);
-    result_.reset();
-    delivery_ = std::make_shared<Delivery>();
-    delivery_->package = package;
-    bring_result_into_view_ = true;
-    std::thread([delivery = delivery_, package = std::move(package), config = std::move(config)] {
-        delivery->receipt = FileBugReport(config, *package);
-        delivery->done = true;
-    }).detach();
+    if (session_.Submit(std::move(package), ResolveBugReportConfig(places_.user_dir))) bring_result_into_view_ = true;
 }
 
 void BugReportPage::RetryDump() {
-    if (!result_ || !sent_dump_ || result_->ticket.empty() || result_->credential.empty() || dump_retry_) return;
-    BugReportServiceConfig config = ResolveBugReportConfig(places_.user_dir);
-    dump_retry_ = std::make_shared<DumpRetry>();
-    bring_result_into_view_ = true;
-    std::thread([retry = dump_retry_, config = std::move(config), ticket = result_->ticket, receipt = result_->credential,
-                 dump = *sent_dump_] {
-        retry->outcome = UploadCrashDump(config, ticket, receipt, dump);
-        retry->done = true;
-    }).detach();
+    if (session_.RetryDump(ResolveBugReportConfig(places_.user_dir))) bring_result_into_view_ = true;
 }
 
 void BugReportPage::SelectLog(size_t index) {
@@ -200,6 +175,10 @@ void BugReportPage::DrawDescription(trg::Ui& ui, bool sending) {
                                   ImVec2(-FLT_MIN, kDescriptionHeight * ui.scale()), flags, KeepDescriptionShort)) {
         ForgetPreview();
     }
+    if (KeepTextOnEscape(description_, sizeof(description_), description_backup_, LauncherEscape().Pressed(), description_active_)) {
+        ForgetPreview();
+    }
+    description_active_ = ImGui::IsItemActive();
     ImGui::PopStyleColor();
     ImGui::EndDisabled();
     const size_t used = CountCharacters(description_);
@@ -296,49 +275,34 @@ void BugReportPage::DrawSend(trg::Ui& ui, const ReportFacts& facts, bool sending
 }
 
 void BugReportPage::DrawResult(trg::Ui& ui) {
-    if (dump_retry_) {
-        ui.Spacer(4);
-        ui.StatusCard(trg::Status::kBusy, "Uploading the crash report...", "This can take a little longer than the report itself.");
-        return;
-    }
-    if (delivery_) {
-        ui.Spacer(4);
-        ui.StatusCard(trg::Status::kBusy, "Sending your report...", "This takes a few seconds.");
-        return;
-    }
-    if (!result_) return;
+    const ReportView view = session_.View();
+    const ReportCard card = CardFor(view, session_.DumpUploaded());
+    if (card.tone == CardTone::kNone) return;
     ui.Spacer(4);
-    switch (result_->outcome) {
-    case BugReportOutcome::kSent: {
-        const std::string id = std::string(Tr("Report ID:")) + " " + result_->ticket;
-        ui.StatusCard(trg::Status::kReady, "Report sent successfully", id.c_str());
+    const trg::Status status = card.tone == CardTone::kBusy ? trg::Status::kBusy
+                               : card.tone == CardTone::kReady ? trg::Status::kReady : trg::Status::kAttention;
+    ui.StatusCard(status, card.title, card.detail.c_str());
+    if (card.copy_ticket) {
         ui.Spacer(4);
         if (ImGui::Button(Tr("Copy report ID"))) {
-            ImGui::SetClipboardText(result_->ticket.c_str());
+            ImGui::SetClipboardText(view.ticket.c_str());
             ui.SetStatus("Report ID copied.");
         }
-        if (result_->crash == CrashUpload::kUploaded) ui.Help("The crash report was uploaded with it.");
-        if (result_->crash == CrashUpload::kFailed) {
-            WarningText(ui, "The report was sent, but its crash report could not be uploaded.");
-            if (sent_dump_ && !result_->credential.empty() && ImGui::Button(Tr("Retry crash report upload"))) RetryDump();
-        }
-        break;
     }
-    case BugReportOutcome::kRecentLimit:
-    case BugReportOutcome::kDailyLimit:
-        ui.StatusCard(trg::Status::kAttention, BugReportLimitTitle(result_->outcome), "Please try again later");
+    switch (card.dump) {
+    case DumpLine::kNone:
         break;
-    case BugReportOutcome::kUnreachable:
-        ui.StatusCard(trg::Status::kAttention, "Cannot reach the report service",
-                      "Check your connection and press Send report again; your text is kept.");
+    case DumpLine::kUploading:
+        ui.Spacer(4);
+        ui.StatusCard(trg::Status::kBusy, card.dump_text, "This can take a little longer than the report itself.",
+                      card.dump_progress);
         break;
-    case BugReportOutcome::kRefused:
-        ui.StatusCard(trg::Status::kAttention, "The report was not accepted",
-                      "Change the description or choose another log, then send it again.");
+    case DumpLine::kUploaded:
+        ui.Help(card.dump_text);
         break;
-    case BugReportOutcome::kServiceError:
-        ui.StatusCard(trg::Status::kAttention, "The report service could not take the report",
-                      "This is not your fault. Try again in a few minutes; your text is kept.");
+    case DumpLine::kFailed:
+        WarningText(ui, card.dump_text);
+        if (card.retry_dump && ImGui::Button(Tr("Retry crash report upload"))) RetryDump();
         break;
     }
 }

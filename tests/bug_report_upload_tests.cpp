@@ -86,8 +86,17 @@ void TestLiveResumableUploadAndDashboardDownload(const std::string& base_url, co
     config.retry_pause_ms = 10;
 
     // The local server is configured with SOS_DROP_CHUNK_OFFSET=65536 so chunk 2 drops once and must resume cleanly.
-    const BugReportReceipt receipt = FileBugReport(config, *pkg);
+    std::vector<BugReportProgress> events;
+    const BugReportReceipt receipt = FileBugReport(config, *pkg, nullptr, [&](const BugReportProgress& event) { events.push_back(event); });
     Check(receipt.outcome == BugReportOutcome::kSent, "report filed over HTTP");
+    bool ordered = !events.empty() && events.front().kind == BugReportProgress::Kind::kTextAccepted && events.front().ticket == receipt.ticket;
+    bool monotonic = true;
+    for (size_t i = 1; i < events.size(); ++i) {
+        ordered = ordered && events[i].kind == BugReportProgress::Kind::kDumpBytes && events[i].total == dump_bytes.size();
+        monotonic = monotonic && events[i].sent >= (i > 1 ? events[i - 1].sent : 0) && events[i].sent <= events[i].total;
+    }
+    Check(ordered && events.size() > 3, "progress: the accepted text comes first, then dump bytes of the whole dump");
+    Check(monotonic && events.back().sent == dump_bytes.size(), "progress: confirmed dump bytes never go back and end at the full size");
     Check(receipt.ticket.rfind("SOS-", 0) == 0, "received SOS-XXXXXX ticket");
     Check(receipt.credential.size() == 64, "received 64-hex receipt");
     Check(receipt.crash == CrashUpload::kUploaded, "interrupted multi-chunk dump resumed and completed");
@@ -144,7 +153,10 @@ void TestTextPreservedWhenDumpUploadFails(const fs::path& temp) {
         return {false, 0, "", "simulated network down"};
     };
     BugReportServiceConfig cfg{"http://127.0.0.1:1", "client0000000001", 0, 1000};
-    const BugReportReceipt r = FileBugReport(cfg, *pkg, fake);
+    std::vector<BugReportProgress> events;
+    const BugReportReceipt r = FileBugReport(cfg, *pkg, fake, [&](const BugReportProgress& event) { events.push_back(event); });
+    Check(events.size() == 1 && events[0].kind == BugReportProgress::Kind::kTextAccepted && events[0].ticket == "SOS-234567",
+          "progress: a failed dump upload still reported the accepted text and no dump bytes");
     Check(r.outcome == BugReportOutcome::kSent, "textual report preserved even when dump upload fails");
     Check(r.ticket == "SOS-234567", "ticket preserved on dump upload failure");
     Check(r.crash == CrashUpload::kFailed, "dump upload failure surfaced clearly");

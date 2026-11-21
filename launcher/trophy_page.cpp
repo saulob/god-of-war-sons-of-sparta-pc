@@ -259,7 +259,7 @@ void TrophyPage::DrawModals(trg::Ui& ui) {
         ImGui::CloseCurrentPopup();
     };
     const ImVec2 button(150 * scale, 0);
-    const bool escape = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    const bool escape = LauncherEscape().Take();
     ImGui::PushFont(ui.fonts().semibold, 0.0f);
     switch (shown) {
     case Modal::kEnter: ImGui::TextUnformatted(Tr("Enter Trophy Key")); break;
