@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Cursor visibility from the last meaningful gameplay input device, and from mouse idle time in fullscreen.
 #pragma once
 
 #include <cstdint>
@@ -10,34 +9,13 @@ namespace DcpCursor {
 
 enum class Device { Mouse, Keyboard, Controller };
 
-inline constexpr std::uint64_t kIdleHideMs = 5000;
-
 class State {
 public:
-    // gameplay: the game window is accepting input (false in the launcher).
-    // overlay: a mouse-driven UI is open and needs the cursor.
-    // pointer: Pointer Control is active, so the game's own pointer is the cursor and the host cursor stays hidden.
-    // fullscreen, now_ms: the cursor also hides after kIdleHideMs without mouse motion while fullscreen and focused.
-    // Returns the new visibility when it changes, otherwise nullopt.
-    std::optional<bool> Update(bool gameplay, bool focused, bool overlay, bool pointer = false, bool fullscreen = false,
-                               std::uint64_t now_ms = 0) {
+    std::optional<bool> Update(bool gameplay, bool focused, bool overlay, bool pointer = false) {
         if (!gameplay) {
             device_ = Device::Mouse;
-            device_before_overlay_ = Device::Mouse;
-            overlay_ = false;
-        } else if (overlay && !overlay_) {
-            device_before_overlay_ = device_;
-            overlay_ = true;
-        } else if (!overlay && overlay_) {
-            device_ = device_before_overlay_;
-            overlay_ = false;
         }
-        if (!idle_started_ || !fullscreen || !focused || overlay) {
-            last_motion_ms_ = now_ms;
-            idle_started_ = true;
-        }
-        const bool idle = now_ms > last_motion_ms_ && now_ms - last_motion_ms_ >= kIdleHideMs;
-        const bool visible = !gameplay || !focused || overlay || (device_ == Device::Mouse && !pointer && !idle);
+        const bool visible = !gameplay || !focused || overlay || (device_ == Device::Mouse && !pointer);
         if (visible == visible_) {
             return std::nullopt;
         }
@@ -45,18 +23,29 @@ public:
         return visible;
     }
 
-    // With Mouse Controls off the mouse is not a gameplay device: it never becomes the last device.
     void SetMouseControls(bool on) { mouse_controls_ = on; }
-    // Only motion in the game window counts, so another window's mouse never changes the game cursor.
-    void MouseMoved(std::uint32_t event_window, std::uint32_t game_window, std::uint64_t now_ms) {
+
+    void MouseMoved(std::uint32_t event_window, std::uint32_t game_window, float dx, float dy) {
+        if (event_window != game_window || (dx == 0.0f && dy == 0.0f)) {
+            return;
+        }
+        MouseActivity();
+    }
+
+    void MouseButtonPressed(std::uint32_t event_window, std::uint32_t game_window) {
         if (event_window != game_window) {
             return;
         }
-        last_motion_ms_ = now_ms;
         MouseActivity();
     }
-    void MouseButtonPressed() { MouseActivity(); }
-    void MouseWheelMoved() { MouseActivity(); }
+
+    void MouseWheelMoved(std::uint32_t event_window, std::uint32_t game_window, float dx, float dy) {
+        if (event_window != game_window || (dx == 0.0f && dy == 0.0f)) {
+            return;
+        }
+        MouseActivity();
+    }
+
     void KeyboardActivity() { device_ = Device::Keyboard; }
     void ControllerActivity() { device_ = Device::Controller; }
 
@@ -72,22 +61,19 @@ private:
 
     bool mouse_controls_ = true;
     Device device_ = Device::Mouse;
-    Device device_before_overlay_ = Device::Mouse;
-    bool overlay_ = false;
     bool visible_ = true;
-    bool idle_started_ = false;
-    std::uint64_t last_motion_ms_ = 0;
 };
 
-// A key press that counts as gameplay input: not a repeat, and not a host shortcut.
 constexpr bool IsGameplayKey(bool repeat, bool host_shortcut) {
     return !repeat && !host_shortcut;
 }
 
-// Stick threshold in the gamepad's raw -32768..32767 units.
+// Stick engage/release thresholds in SDL's raw -32768..32767 axis units; hysteresis prevents edge jitter.
 inline constexpr int kStickDeadzone = 7849;
-// Trigger threshold in the runtime's 0..255 trigger units.
+inline constexpr int kStickReleaseDeadzone = 5500;
+// Trigger engage/release thresholds in 0..255 units (raw SDL 0..32767 / 128).
 inline constexpr int kTriggerThreshold = 30;
+inline constexpr int kTriggerReleaseThreshold = 15;
 
 struct ControllerState {
     std::uint32_t buttons = 0;
@@ -95,8 +81,6 @@ struct ControllerState {
     int left_trigger = 0, right_trigger = 0;
 };
 
-// Reports only the start of meaningful controller input, not a held button,
-// stick, or trigger, so mouse movement is not overridden by input already down.
 class ControllerActivityFilter {
 public:
     bool Update(const ControllerState& state) {
@@ -113,17 +97,33 @@ public:
 
 private:
     static bool StickCrossed(int value, bool& was_active) {
-        const bool active = std::abs(value) >= kStickDeadzone;
-        const bool started = active && !was_active;
-        was_active = active;
-        return started;
+        const int magnitude = std::abs(value);
+        if (!was_active) {
+            if (magnitude >= kStickDeadzone) {
+                was_active = true;
+                return true;
+            }
+            return false;
+        }
+        if (magnitude < kStickReleaseDeadzone) {
+            was_active = false;
+        }
+        return false;
     }
 
     static bool TriggerCrossed(int value, bool& was_active) {
-        const bool active = value / 128 >= kTriggerThreshold; // raw 0..32767 to 0..255
-        const bool started = active && !was_active;
-        was_active = active;
-        return started;
+        const int level = value > 0 ? value / 128 : 0;
+        if (!was_active) {
+            if (level >= kTriggerThreshold) {
+                was_active = true;
+                return true;
+            }
+            return false;
+        }
+        if (level < kTriggerReleaseThreshold) {
+            was_active = false;
+        }
+        return false;
     }
 
     std::uint32_t buttons_ = 0;

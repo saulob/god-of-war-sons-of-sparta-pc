@@ -270,14 +270,9 @@ void WindowSDL::ToggleBorderless() {
     DcpSettings::SaveDisplayMode();
 }
 
-// Window thread. Visible while an overlay needs the mouse or focus is away; otherwise the last gameplay input device
-// decides in both modes, and in Borderless a still mouse also hides it after DcpCursor::kIdleHideMs.
 void WindowSDL::UpdateCursor() {
-    const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
-    const bool focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
-    const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
-    if (const auto visible = cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured(), fullscreen,
-                                           SDL_GetTicks())) {
+    const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    if (const auto visible = cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured())) {
         if (*visible) {
             SDL_ShowCursor();
         } else {
@@ -379,6 +374,33 @@ bool WindowSDL::PollEvents() {
         }
         const bool ui = DcpOverlay::CapturesInput();
         const bool controller_activity = TrackControllerEvent(event);
+        const SDL_WindowID game_window = SDL_GetWindowID(window);
+        if (controller_activity) {
+            cursor.ControllerActivity();
+        }
+        switch (event.type) {
+        case SDL_EVENT_MOUSE_MOTION:
+            cursor.MouseMoved(event.motion.windowID, game_window, event.motion.xrel, event.motion.yrel);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            cursor.MouseButtonPressed(event.button.windowID, game_window);
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            cursor.MouseWheelMoved(event.wheel.windowID, game_window, event.wheel.x, event.wheel.y);
+            break;
+        case SDL_EVENT_KEY_DOWN: {
+            const bool host_shortcut = event.key.scancode == DcpSettings::Get().window_mode_key ||
+                                       event.key.scancode == DcpSettings::Get().menu_key ||
+                                       event.key.scancode == SDL_SCANCODE_F1 ||
+                                       (ui && event.key.key == SDLK_ESCAPE);
+            if (event.key.windowID == game_window && DcpCursor::IsGameplayKey(event.key.repeat, host_shortcut)) {
+                cursor.KeyboardActivity();
+            }
+            break;
+        }
+        default:
+            break;
+        }
         if (text_active && (event.type == SDL_EVENT_TEXT_INPUT || event.type == SDL_EVENT_KEY_DOWN)) {
             std::scoped_lock lock{text_mutex};
             if (event.type == SDL_EVENT_TEXT_INPUT) {
@@ -410,20 +432,17 @@ bool WindowSDL::PollEvents() {
             continue;
         }
         if (controller_activity && !ui) {
-            cursor.ControllerActivity();
             dcp_mouse_controller_activity(dcp_mouse_global());
         }
         switch (event.type) {
         case SDL_EVENT_MOUSE_MOTION:
             if (!ui) {
-                cursor.MouseMoved(event.motion.windowID, SDL_GetWindowID(window), SDL_GetTicks());
                 const float to_game = SDL_GetWindowPixelDensity(window) * dcp_mouse_game_scale(GetWidth(), GetHeight());
                 dcp_mouse_motion(dcp_mouse_global(), event.motion.xrel * to_game, event.motion.yrel * to_game);
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (!ui) {
-                cursor.MouseButtonPressed();
                 dcp_mouse_button(dcp_mouse_global(), event.button.button, 1);
             }
             break;
@@ -432,7 +451,6 @@ bool WindowSDL::PollEvents() {
             break;
         case SDL_EVENT_MOUSE_WHEEL:
             if (!ui) {
-                cursor.MouseWheelMoved();
                 dcp_mouse_wheel(dcp_mouse_global(), event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -event.wheel.y
                                                                                                    : event.wheel.y);
             }
@@ -442,11 +460,8 @@ bool WindowSDL::PollEvents() {
             break;
         case SDL_EVENT_KEY_DOWN: {
             const bool window_shortcut = event.key.scancode == DcpSettings::Get().window_mode_key;
-            const bool host_shortcut = window_shortcut || event.key.scancode == DcpSettings::Get().menu_key;
             if (window_shortcut && !event.key.repeat) {
                 ToggleBorderless();
-            } else if (DcpCursor::IsGameplayKey(event.key.repeat, host_shortcut) && !ui) {
-                cursor.KeyboardActivity();
             }
             break;
         }

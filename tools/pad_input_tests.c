@@ -27,6 +27,22 @@ uint32_t SDL_WasInit(uint32_t flags) { (void)flags; return 0; }
 bool SDL_InitSubSystem(uint32_t flags) { (void)flags; return true; }
 const char *SDL_GetHint(const char *name) { (void)name; return NULL; }
 bool SDL_SetHint(const char *name, const char *value) { (void)name; (void)value; return true; }
+bool SDL_GetPathInfo(const char *path, SDL_PathInfo *info) { (void)path; (void)info; return false; }
+int SDL_AddGamepadMappingsFromFile(const char *file) { (void)file; return 0; }
+const char *SDL_GetError(void) { return ""; }
+SDL_JoystickID *SDL_GetJoysticks(int *count) {
+    SDL_JoystickID *ids = malloc(2 * sizeof(*ids));
+    ids[0] = 7;
+    ids[1] = 0;
+    *count = fake.present ? 1 : 0;
+    return ids;
+}
+bool SDL_IsGamepad(SDL_JoystickID id) { return id == 7 && fake.present; }
+SDL_GUID SDL_GetJoystickGUIDForID(SDL_JoystickID id) { (void)id; SDL_GUID g; memset(&g, 0, sizeof(g)); return g; }
+void SDL_GUIDToString(SDL_GUID guid, char *pszGUID, int cbGUID) { (void)guid; snprintf(pszGUID, (size_t)cbGUID, "00000000000000000000000000000000"); }
+const char *SDL_GetJoystickNameForID(SDL_JoystickID id) { (void)id; return NULL; }
+uint16_t SDL_GetJoystickVendorForID(SDL_JoystickID id) { (void)id; return 0; }
+uint16_t SDL_GetJoystickProductForID(SDL_JoystickID id) { (void)id; return 0; }
 SDL_JoystickID *SDL_GetGamepads(int *count) {
     SDL_JoystickID *ids = malloc(2 * sizeof(*ids));
     ids[0] = 7;

@@ -283,14 +283,18 @@ def cursor_checks(tree):
     header = strip_code(tree[CURSOR])
     update = function_body(window, "void WindowSDL::UpdateCursor(")
     poll = function_body(window, "bool WindowSDL::PollEvents(")
-    results.append(("the cursor state is updated once per window poll with the real fullscreen and focus flags and a millisecond clock",
-                    "(flags & SDL_WINDOW_INPUT_FOCUS)" in update and "(flags & SDL_WINDOW_FULLSCREEN)" in update
-                    and "cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured(), fullscreen,\n"
-                        "                                           SDL_GetTicks())" in update
+    results.append(("the cursor state is updated once per window poll with focus, overlay and pointer state, with no fullscreen-only timer",
+                    "(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS)" in update
+                    and "SDL_WINDOW_FULLSCREEN" not in update
+                    and "SDL_GetTicks" not in update
+                    and "cursor.Update(true, focused, DcpOverlay::CapturesInput(), mouse_capture.Captured())" in update
                     and poll.count("UpdateCursor();") == 1 and window.count("UpdateCursor();") == 1))
-    results.append(("only mouse motion of the game window restarts the idle timer: the event's window id is compared with the game window's",
-                    "cursor.MouseMoved(event.motion.windowID, SDL_GetWindowID(window), SDL_GetTicks());" in poll
-                    and "cursor.MouseMoved()" not in window))
+    results.append(("mouse motion, button and wheel check the game window ID and non-zero deltas, and input-source tracking runs before overlay consumption",
+                    "cursor.MouseMoved(event.motion.windowID, game_window, event.motion.xrel, event.motion.yrel);" in poll
+                    and "cursor.MouseButtonPressed(event.button.windowID, game_window);" in poll
+                    and "cursor.MouseWheelMoved(event.wheel.windowID, game_window, event.wheel.x, event.wheel.y);" in poll
+                    and in_order(poll, "cursor.ControllerActivity();", "cursor.MouseMoved(", "cursor.KeyboardActivity();",
+                                 "DcpOverlay::HandleEvent(event)")))
     results.append(("SDL_ShowCursor and SDL_HideCursor are called only when the state reports a change, plus the window's destructor",
                     window.count("SDL_HideCursor()") == 1 and window.count("SDL_ShowCursor()") == 2
                     and in_order(update, "if (const auto visible = cursor.Update(", "if (*visible) {", "SDL_ShowCursor();", "} else {", "SDL_HideCursor();")
@@ -301,10 +305,14 @@ def cursor_checks(tree):
     launcher = [p for p, raw in tree.items() if p.startswith("launcher/") and re.search(r"SDL_HideCursor|dcp_cursor|DcpCursor", raw)]
     results.append(("the launcher never hides the cursor and does not use the game cursor state"
                     + (f" (found in {', '.join(launcher)})" if launcher else ""), not launcher))
-    results.append(("the cursor state allocates nothing: no container, string, smart pointer or new in the header",
-                    not re.search(r"std::(?:vector|string|map|unordered_map|unique_ptr|shared_ptr|function)|\bnew\b|\bmalloc\b", header)))
-    results.append(("the idle delay is five seconds and applies to fullscreen only",
-                    "kIdleHideMs = 5000;" in header and "if (!idle_started_ || !fullscreen || !focused || overlay) {" in header))
+    results.append(("the cursor state allocates nothing and has no SDL dependency or obsolete idle timer",
+                    not re.search(r"std::(?:vector|string|map|unordered_map|unique_ptr|shared_ptr|function)|\bnew\b|\bmalloc\b", header)
+                    and "SDL_" not in header
+                    and "kIdleHideMs" not in header and "last_motion_ms_" not in header and "chrono" not in header))
+    results.append(("the window uses no second gamepad open path and deadzone/hysteresis constants are centralized",
+                    "SDL_OpenGamepad" not in window and "SDL_GetGamepads" not in window
+                    and "kStickDeadzone" in header and "kStickReleaseDeadzone" in header
+                    and "kTriggerThreshold" in header and "kTriggerReleaseThreshold" in header))
     return results
 
 
@@ -358,16 +366,21 @@ def mutations(area):
             (RUNTIME_SETTINGS, '{{"display_mode", DisplayModeKey()}}', '{{"display_style", DisplayModeKey()}}', "F11 stops saving the display mode"),
         ]
     return [
-        (WINDOW, "fullscreen,\n                                           SDL_GetTicks())", "false,\n                                           SDL_GetTicks())", "the window reports windowed to the cursor"),
-        (WINDOW, "cursor.MouseMoved(event.motion.windowID, SDL_GetWindowID(window), SDL_GetTicks());", "cursor.MouseMoved(0, 0, SDL_GetTicks());", "mouse motion is accepted from any window"),
+        (WINDOW, "const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;",
+         "const bool focused = (SDL_GetWindowFlags(window) & (SDL_WINDOW_INPUT_FOCUS | SDL_WINDOW_FULLSCREEN)) != 0;",
+         "windowed cursor policy regresses to fullscreen gating"),
+        (WINDOW, "cursor.MouseMoved(event.motion.windowID, game_window, event.motion.xrel, event.motion.yrel);",
+         "cursor.MouseMoved(0, 0, event.motion.xrel, event.motion.yrel);", "mouse motion is accepted from any window"),
+        (WINDOW, "cursor.MouseMoved(event.motion.windowID, game_window, event.motion.xrel, event.motion.yrel);",
+         "cursor.MouseMoved(event.motion.windowID, game_window, 1.0f, 1.0f);", "synthetic zero-delta motion is not passed"),
         (WINDOW, "            SDL_HideCursor();\n", "            SDL_HideCursor();\n        }\n        SDL_HideCursor();\n        {\n", "the cursor is hidden without a state change"),
-        (WINDOW, "const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;", "const bool fullscreen = true;", "fullscreen is assumed"),
         (WINDOW, "    UpdateMouseCapture();\n    UpdateCursor();\n", "    UpdateMouseCapture();\n    UpdateCursor();\n    UpdateCursor();\n", "the cursor is updated twice per poll"),
-        (WINDOW, "SDL_GetTicks())) {", "SDL_GetTicksNS())) {", "the clock is not in milliseconds"),
+        (WINDOW, "        if (controller_activity) {\n            cursor.ControllerActivity();\n        }",
+         "        if (controller_activity && !ui) {\n        }",
+         "overlay handling skips cursor controller tracking"),
         ("launcher/host.cpp", "SDL_Quit();", "SDL_Quit();\n    SDL_HideCursor();", "the launcher hides the cursor"),
-        (CURSOR, "kIdleHideMs = 5000;", "kIdleHideMs = 3000;", "the idle delay changes"),
-        (CURSOR, "if (!idle_started_ || !fullscreen || !focused || overlay) {", "if (!idle_started_ || !focused || overlay) {", "the idle timer runs while windowed"),
-        (CURSOR, "    std::uint64_t last_motion_ms_ = 0;", "    std::uint64_t last_motion_ms_ = 0;\n    std::vector<int> history_;", "the cursor state allocates"),
+        (CURSOR, "inline constexpr int kStickDeadzone = 7849;", "inline constexpr std::uint64_t kIdleHideMs = 5000;\ninline constexpr int kStickDeadzone = 7849;", "the obsolete idle timer returns"),
+        (CURSOR, "    bool visible_ = true;", "    bool visible_ = true;\n    std::vector<int> history_;", "the cursor state allocates"),
     ]
 
 

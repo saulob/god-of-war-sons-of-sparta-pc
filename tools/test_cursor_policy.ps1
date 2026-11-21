@@ -1,6 +1,6 @@
-# Headless checks of the game cursor policy (gpu\shim\dcp_cursor.h): the five second idle hide in fullscreen, focus and
-# fullscreen transitions, mouse events of another window and the single SDL call per change, with an injected clock, then
-# the same tests against mutated copies of the header, which must each fail. No window, SDL, launcher or game is started.
+# Headless checks of the input-aware game cursor policy (gpu\shim\dcp_cursor.h): mouse/keyboard/controller transitions,
+# stick and trigger deadzones with hysteresis, overlay visibility override and post-close restoration, focus changes,
+# windowed/borderless parity, and SDL call deduplication, plus mutated copies of the header that must each fail.
 [CmdletBinding()]
 param()
 
@@ -42,28 +42,31 @@ try {
     $real.Lines | ForEach-Object { Write-Host $_ }
     if ($real.Code -ne 0) { Write-Host '  [fail] the cursor policy tests fail on the real header'; $failed = $true }
 
-    $source = [IO.File]::ReadAllText($header)
+    $source = ([IO.File]::ReadAllText($header)).Replace("`r`n", "`n")
     $mutations = @(
-        @{ Old = '!fullscreen || '; New = ''; What = 'the idle timer runs while windowed (cursor hides in Windowed)' },
-        @{ Old = '!gameplay || !focused || overlay ||'; New = '!gameplay || overlay ||'; Old2 = '!fullscreen || !focused || overlay'; New2 = '!fullscreen || overlay'; What = 'focus loss does not show the cursor' },
-        @{ Old = "        last_motion_ms_ = now_ms;`n        MouseActivity();"; New = '        MouseActivity();'; What = 'mouse movement does not restart the timer' },
-        @{ Old = 'if (event_window != game_window) {'; New = 'if (false) {'; What = 'motion of another window is accepted' },
-        @{ Old = '!fullscreen || !focused || overlay'; New = '!fullscreen || overlay'; What = 'focus return does not start a fresh delay' },
-        @{ Old = '!fullscreen || !focused || overlay'; New = '!fullscreen || !focused'; What = 'an open overlay does not restart the delay' },
-        @{ Old = '!idle_started_ || '; New = ''; What = 'the first update does not start the delay' },
-        @{ Old = 'now_ms > last_motion_ms_ && '; New = ''; What = 'a clock that steps back hides the cursor' },
-        @{ Old = 'if (visible == visible_) {'; New = 'if (false) {'; What = 'SDL is called on every update' },
-        @{ Old = 'kIdleHideMs = 5000;'; New = 'kIdleHideMs = 4000;'; What = 'the delay is 4 s' },
-        @{ Old = 'kIdleHideMs = 5000;'; New = 'kIdleHideMs = 6000;'; What = 'the delay is 6 s' }
+        @{ Old = "        if (mouse_controls_) {`n            device_ = Device::Mouse;`n        }"; New = "        (void)mouse_controls_;"; What = 'mouse activity fails to show cursor' },
+        @{ Old = 'if (event_window != game_window || (dx == 0.0f && dy == 0.0f)) {'; New = 'if (event_window != game_window) {'; What = 'synthetic zero-delta mouse motion is accepted' },
+        @{ Old = 'if (event_window != game_window || (dx == 0.0f && dy == 0.0f)) {'; New = 'if (dx == 0.0f && dy == 0.0f) {'; What = 'motion of another window is accepted' },
+        @{ Old = 'void KeyboardActivity() { device_ = Device::Keyboard; }'; New = 'void KeyboardActivity() {}'; What = 'keyboard input fails to hide cursor' },
+        @{ Old = 'void ControllerActivity() { device_ = Device::Controller; }'; New = 'void ControllerActivity() {}'; What = 'controller input fails to hide cursor' },
+        @{ Old = '!gameplay || !focused || overlay ||'; New = '!gameplay || !focused ||'; What = 'overlay no longer forces cursor visible' },
+        @{ Old = "        if (!gameplay) {`n            device_ = Device::Mouse;`n        }"; New = "        if (!gameplay || overlay) {`n            device_ = Device::Mouse;`n        }"; What = 'overlay close forgets controller/keyboard input state' },
+        @{ Old = 'inline constexpr int kStickDeadzone = 7849;'; New = 'inline constexpr int kStickDeadzone = 1;'; What = 'stick deadzone is removed' },
+        @{ Old = 'inline constexpr int kStickReleaseDeadzone = 5500;'; New = 'inline constexpr int kStickReleaseDeadzone = 7849;'; What = 'stick hysteresis is removed' },
+        @{ Old = 'inline constexpr int kTriggerThreshold = 30;'; New = 'inline constexpr int kTriggerThreshold = 1;'; What = 'trigger deadzone is removed' },
+        @{ Old = 'inline constexpr int kTriggerReleaseThreshold = 15;'; New = 'inline constexpr int kTriggerReleaseThreshold = 30;'; What = 'trigger hysteresis is removed' },
+        @{ Old = 'if (visible == visible_) {'; New = 'if (false) {'; What = 'cursor API is called repeatedly without state transition' },
+        @{ Old = '!gameplay || !focused || overlay ||'; New = '!gameplay || overlay ||'; What = 'focus loss fails to show cursor' },
+        @{ Old = '!gameplay || !focused || overlay ||'; New = '!focused || overlay ||'; What = 'non-gameplay (launcher) policy regressed' }
     )
     $index = 0
     foreach ($mutation in $mutations) {
         $index++
         $folder = Join-Path $temp "mutation$index"
         New-Item -ItemType Directory -Force -Path $folder | Out-Null
-        $changed = $source.Replace($mutation.Old, $mutation.New)
-        if ($mutation.ContainsKey('Old2')) { $changed = $changed.Replace($mutation.Old2, $mutation.New2) }
-        if ($changed -eq $source) { Write-Host "  [fail] mutation did not apply: $($mutation.What)"; $failed = $true; continue }
+        $at = $source.IndexOf($mutation.Old, [StringComparison]::Ordinal)
+        if ($at -lt 0) { Write-Host "  [fail] mutation did not apply: $($mutation.What)"; $failed = $true; continue }
+        $changed = $source.Substring(0, $at) + $mutation.New + $source.Substring($at + $mutation.Old.Length)
         [IO.File]::WriteAllText((Join-Path $folder 'dcp_cursor.h'), $changed)
         $run = Invoke-Test (Build-Test "mutation$index" @('-I', $folder, '-I', (Join-Path $root 'gpu\shim')) '-Wno-error')
         if ($run.Code -ne 0 -and @($run.Lines | Where-Object { $_ -match '\[fail\]' }).Count -gt 0) { Write-Host "  [ok  ] the tests fail when $($mutation.What)" }
