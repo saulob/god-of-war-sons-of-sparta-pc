@@ -10,7 +10,8 @@ function Invoke-HostMutationTest {
         [string[]]$Sources = @(),
         [Parameter(Mandatory)][string[]]$Copy,
         [object[]]$Mutations = @(),
-        [string]$AssertStub = ''
+        [string]$AssertStub = '',
+        [string[]]$IncludeDirs = @()
     )
     . (Join-Path $PSScriptRoot '_common.ps1')
     . (Join-Path $PSScriptRoot '_mutation.ps1')
@@ -43,6 +44,7 @@ function Invoke-HostMutationTest {
             param([string]$Dir, [string]$Exe, [string[]]$Extra)
             $includes = @()
             if ($AssertStub) { $includes += @('-I', (Join-Path $Dir 'stub')) }
+            foreach ($include in $IncludeDirs) { $includes += @('-I', (Join-Path $Dir $include)) }
             $includes += @('-I', (Join-Path $Dir 'gpu/shim'), '-I', (Join-Path $Dir 'gpu/shadps4'), '-I', (Join-Path $prefix 'include'))
             $rootText = $Dir.Replace('\', '/')
             $inputs = @((Join-Path $Root $Test)) + @($Sources | ForEach-Object { Join-Path $Dir $_ })

@@ -1,8 +1,22 @@
 #include "host.h"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "backends/imgui_impl_sdl3.h"
@@ -17,18 +31,67 @@ Rect ToRect(const SDL_Rect& rect) {
     return {rect.x, rect.y, rect.x + rect.w, rect.y + rect.h};
 }
 
-SDL_Renderer* CreateLauncherRenderer(SDL_Window* window) {
 #ifdef _WIN32
-    // A Direct3D 11 device here races the NVIDIA driver's worker threads at teardown.
-    return SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
-#else
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, nullptr);
-    if (!renderer) {
-        std::printf("Launcher: no accelerated renderer (%s), using the software one\n", SDL_GetError());
-        renderer = SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
+constexpr bool kWindows = true;
+
+bool PinModule(std::string_view name) {
+    const std::wstring wide(name.begin(), name.end());
+    if (!LoadLibraryW(wide.c_str())) {
+        return false;
     }
-    return renderer;
+    HMODULE pinned = nullptr;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, wide.c_str(), &pinned) != 0;
+}
+
+int64_t ThreadCpuNs() {
+    FILETIME created, exited, kernel, user;
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        return -1;
+    }
+    const auto ticks = [](const FILETIME& time) {
+        return (static_cast<int64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+    };
+    return (ticks(kernel) + ticks(user)) * 100;
+}
+#else
+constexpr bool kWindows = false;
+
+bool PinModule(std::string_view) {
+    return false;
+}
+
+int64_t ThreadCpuNs() {
+    timespec time{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time) != 0) {
+        return -1;
+    }
+    return static_cast<int64_t>(time.tv_sec) * kNsPerSecond + time.tv_nsec;
+}
 #endif
+
+int64_t NowNs() {
+    return static_cast<int64_t>(SDL_GetTicksNS());
+}
+
+SDL_Renderer* CreateLauncherRenderer(SDL_Window* window, RendererRequest request, RendererSelection& selection) {
+    SDL_Renderer* renderer = nullptr;
+    selection = SelectRenderer(
+        LauncherRendererOrder(kWindows, request),
+        [](std::string_view module) {
+            if (PinModule(module)) {
+                return true;
+            }
+            std::printf("Launcher: cannot keep %.*s loaded, skipping that renderer\n", int(module.size()), module.data());
+            return false;
+        },
+        [&](const std::string& name) {
+            renderer = SDL_CreateRenderer(window, name.empty() ? nullptr : name.c_str());
+            if (!renderer) {
+                std::printf("Launcher: no %s renderer (%s)\n", name.empty() ? "accelerated" : name.c_str(), SDL_GetError());
+            }
+            return renderer != nullptr;
+        });
+    return renderer;
 }
 
 } // namespace
@@ -96,13 +159,18 @@ bool LauncherHost::Open(const HostOptions& options) {
     SDL_SetWindowMinimumSize(window_, std::min(static_cast<int>(options.min_width * target->scale), width),
                              std::min(static_cast<int>(options.min_height * target->scale), height));
 
-    renderer_ = CreateLauncherRenderer(window_);
+    const RendererRequest request = ParseRendererRequest(std::getenv(kLauncherRendererVariable));
+    RendererSelection selection;
+    renderer_ = CreateLauncherRenderer(window_, request, selection);
     if (!renderer_) {
         std::printf("Launcher: cannot create a renderer: %s\n", SDL_GetError());
         Close();
         return false;
     }
-    SDL_SetRenderVSync(renderer_, 1);
+    monitor_.SetRenderer(RendererLabel(SDL_GetRendererName(renderer_)));
+    std::printf("%s\n",
+                RendererSelectedLine(SDL_GetRendererName(renderer_), request, selection.fallback, selection.pinned).c_str());
+    ConfigureVsync();
 
     IMGUI_CHECKVERSION();
     imgui_ = ImGui::CreateContext();
@@ -115,6 +183,7 @@ bool LauncherHost::Open(const HostOptions& options) {
     ImGui_ImplSDLRenderer3_Init(renderer_);
 
     hidden_ = options.hidden;
+    loop_ = LoopPacer(hidden_ ? 0 : kLauncherFrameNs);
     if (restore && options.restore->maximized) {
         SDL_MaximizeWindow(window_);
     }
@@ -124,6 +193,22 @@ bool LauncherHost::Open(const HostOptions& options) {
     std::printf("Launcher: window %dx%d at %.2fx display scale, %s renderer\n", width, height, target->scale,
                 SDL_GetRendererName(renderer_));
     return true;
+}
+
+// The software renderer's VSync is only simulated by SDL on a Windows GDI window, so it is turned off there and the frame
+// cap alone paces the loop.
+void LauncherHost::ConfigureVsync() {
+    const bool set = SDL_SetRenderVSync(renderer_, 1);
+    int value = 0;
+    SDL_GetRenderVSync(renderer_, &value);
+    const bool software = std::string_view(SDL_GetRendererName(renderer_)) == SDL_SOFTWARE_RENDERER;
+    int surface_value = 0;
+    const bool real = !software || (SDL_GetWindowSurfaceVSync(window_, &surface_value) && surface_value != 0);
+    const bool effective = set && value == 1 && real;
+    if (set && !effective) {
+        SDL_SetRenderVSync(renderer_, 0);
+    }
+    std::printf("Launcher renderer: pacing=%dhz_deadline vsync_effective=%d\n", kLauncherTargetHz, effective ? 1 : 0);
 }
 
 void LauncherHost::Show() {
@@ -191,36 +276,77 @@ void LauncherHost::Close() {
     sos_startup_phase("launcher host closed");
 }
 
+void LauncherHost::HandleEvent(const SDL_Event& event) {
+    ImGui_ImplSDL3_ProcessEvent(&event);
+    switch (event.type) {
+    case SDL_EVENT_QUIT:
+        quit_ = true;
+        break;
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        if (event.window.windowID == SDL_GetWindowID(window_)) {
+            quit_ = true;
+        }
+        break;
+    case SDL_EVENT_KEY_DOWN:
+        if (event.key.key == SDLK_F11 && !event.key.repeat) {
+            SetFullscreen(!Fullscreen());
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 bool LauncherHost::PumpEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        ImGui_ImplSDL3_ProcessEvent(&event);
-        switch (event.type) {
-        case SDL_EVENT_QUIT:
-            quit_ = true;
-            break;
-        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-            if (event.window.windowID == SDL_GetWindowID(window_)) {
-                quit_ = true;
-            }
-            break;
-        case SDL_EVENT_KEY_DOWN:
-            if (event.key.key == SDLK_F11 && !event.key.repeat) {
-                SetFullscreen(!Fullscreen());
-            }
-            break;
-        default:
-            break;
-        }
+        HandleEvent(event);
     }
     return !quit_;
+}
+
+void LauncherHost::WaitForEvent(int64_t timeout_ns) {
+    SDL_Event event;
+    if (SDL_WaitEventTimeout(&event, static_cast<Sint32>(std::max<int64_t>(timeout_ns / kNsPerMs, 1)))) {
+        HandleEvent(event);
+    }
 }
 
 bool LauncherHost::Minimized() const {
     return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
+bool LauncherHost::Focused() const {
+    return (SDL_GetWindowFlags(window_) & SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
+struct LauncherHost::LoopEnv {
+    LauncherHost& host;
+
+    bool PumpEvents() { return host.PumpEvents(); }
+    bool Minimized() { return host.Minimized(); }
+    int64_t NowNs() { return sos::NowNs(); }
+    void SleepNs(int64_t ns) { SDL_DelayNS(static_cast<Uint64>(ns)); }
+    void WaitForEventNs(int64_t ns) { host.WaitForEvent(ns); }
+    int64_t ThreadCpuNs() { return sos::ThreadCpuNs(); }
+    void Emit(const std::string& line) { std::printf("%s\n", line.c_str()); }
+};
+
+bool LauncherHost::WaitForFrame() {
+    LoopEnv env{*this};
+    return sos::WaitForFrame(env, loop_, monitor_);
+}
+
+void LauncherHost::NoteFrameDrawn(int64_t now_ns, const FrameTimes& times) {
+    if (loop_.capped()) {
+        if (const std::optional<StallEvent> stall = monitor_.FrameDrawn(now_ns, times)) {
+            std::printf("%s\n", monitor_.StallLine(*stall, Focused()).c_str());
+        }
+    }
+}
+
 void LauncherHost::BeginFrame() {
+    frame_begin_ns_ = NowNs();
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     const float scale = SDL_GetWindowDisplayScale(window_);
@@ -229,6 +355,7 @@ void LauncherHost::BeginFrame() {
 }
 
 void LauncherHost::EndFrame(const ImVec4& clear, const char* capture_path) {
+    const int64_t submitting = NowNs();
     ImGui::Render();
     const ImGuiIO& io = ImGui::GetIO();
     SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
@@ -241,7 +368,10 @@ void LauncherHost::EndFrame(const ImVec4& clear, const char* capture_path) {
             SDL_DestroySurface(frame);
         }
     }
+    const int64_t presenting = NowNs();
     SDL_RenderPresent(renderer_);
+    const int64_t presented = NowNs();
+    NoteFrameDrawn(presented, {submitting - frame_begin_ns_, presenting - submitting, presented - presenting});
 }
 
 bool LauncherHost::Fullscreen() const {

@@ -9,8 +9,11 @@
 
 #include <imgui.h>
 
+#include "launcher_frame_loop.h"
+#include "launcher_renderer.h"
 #include "placement.h"
 
+union SDL_Event;
 struct SDL_Renderer;
 struct SDL_Texture;
 struct SDL_Window;
@@ -40,9 +43,10 @@ public:
     void Show();
     void Close();
 
-    // Handles the window's events (F11 switches the launcher's own fullscreen). False once it was closed.
-    bool PumpEvents();
-    bool Minimized() const;
+    // Handles the window's events (F11 switches the launcher's own fullscreen) and returns when the next frame is due,
+    // at most 60 a second; a minimized window only wakes at a low rate and a hidden one is not limited. False once the
+    // window was closed.
+    bool WaitForFrame();
 
     // Between these two the caller draws the launcher with ImGui. A capture path saves the frame as a PNG.
     void BeginFrame();
@@ -60,6 +64,16 @@ public:
     const std::optional<WindowPlacement>& Restored() const { return restored_; }
 
 private:
+    struct LoopEnv;
+
+    bool PumpEvents();
+    void HandleEvent(const SDL_Event& event);
+    void WaitForEvent(int64_t timeout_ns);
+    bool Minimized() const;
+    bool Focused() const;
+    void ConfigureVsync();
+    void NoteFrameDrawn(int64_t now_ns, const FrameTimes& times);
+
     std::optional<WindowPlacement> restored_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
@@ -69,6 +83,9 @@ private:
     bool gamepad_ = false;
     bool hidden_ = false;
     bool quit_ = false;
+    LoopPacer loop_;
+    PerformanceMonitor monitor_;
+    int64_t frame_begin_ns_ = 0;
 };
 
 } // namespace sos
