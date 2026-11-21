@@ -71,7 +71,7 @@ std::vector<fs::path> SourceFiles(const fs::path& folder) {
     return files;
 }
 
-std::string Relative(const fs::path& path) { return fs::relative(path, kRoot).generic_string(); }
+std::string Relative(const fs::path& path) { return path.lexically_relative(kRoot).generic_string(); }
 
 void TestPages() {
     const std::vector<std::string> expected = {"Play",     "Display",  "Graphics",   "Gameplay", "Cheats",
@@ -560,7 +560,7 @@ void TestLauncherSource() {
         has(label, std::string("Play page ") + label);
     }
     has("case PageId::kCheats:\n            return {name, \"\", [](trg::Ui&) {}", "Cheats page has no blurb and no body");
-    has("case PageId::kBugReport:\n            return {name, \"\", [](trg::Ui&) {}", "Bug Report page has no blurb and no body");
+    has("bug_report_page_->Draw(ui, facts)", "Bug Report page draws the bug report page");
     has("trophy_page_->Draw(ui)", "Trophies page draws the trophy page");
     has("trg::update::UpdateController", "updater is part of the launcher");
     has("DrawUpdateBanner", "update banner is drawn");
@@ -573,19 +573,16 @@ void TestLauncherSource() {
     Check(pages >= 9, "every page is built");
 }
 
-void TestNoOnlineAndNoBugReportBackend() {
+void TestNoOnlineBackend() {
     for (const char* file : {"online_client.cpp", "online_client.h", "online_page.cpp", "online_page.h", "online_view.cpp",
                              "online_view.h", "online_settings.cpp", "online_settings.h", "online_status_script.c",
-                             "incident_page.cpp", "incident_page.h", "incident_report.cpp", "incident_report.h",
-                             "my_reports.cpp", "my_reports.h", "report_history.cpp", "report_history.h",
-                             "log_scrubber.cpp", "log_scrubber.h", "controller_prompts.cpp", "exit_game_script.c",
-                             "menu_buttons.c", "text_fix.c", "frame_rate.c", "resolution.c"}) {
+                             "controller_prompts.cpp", "exit_game_script.c", "menu_buttons.c", "text_fix.c",
+                             "frame_rate.c", "resolution.c"}) {
         Check(!fs::exists(kRoot / "launcher" / file), std::string("launcher has no ") + file);
     }
     const std::vector<std::string> forbidden = {"online_page", "online_client", "online_view", "OnlinePage", "kOnline",
                                                 "online.svg", "Connection test", "PlayNeedsTest", "lobby", "Lobby",
-                                                "IncidentPage", "MyReports", "workers.dev", "Worker URL",
-                                                "ticket", "report history"};
+                                                "IncidentPage", "MyReports", "workers.dev", "Worker URL"};
     for (const fs::path& path : SourceFiles(kRoot / "launcher")) {
         const std::string name = Relative(path);
         if (name.find("launcher/third_party/") == 0 || name.find("launcher/updater/third_party/") == 0) {
@@ -660,7 +657,7 @@ int main() {
     TestGameProcess();
     TestProfile();
     TestLauncherSource();
-    TestNoOnlineAndNoBugReportBackend();
+    TestNoOnlineBackend();
     TestNoAlienationLeftovers();
     TestTrgPatchSet();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

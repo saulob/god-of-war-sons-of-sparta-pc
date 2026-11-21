@@ -29,15 +29,23 @@ static void make_directories(const char *dir) {
     mkdir(path, 0777);
 }
 
+static unsigned session_file_number(const char *name) {
+    unsigned number = 0, attempt = 0;
+    int used = 0, tail = 0;
+    if (sscanf(name, "sons_of_sparta_%u%n", &number, &used) != 1 || used <= 0) return 0;
+    const char *rest = name + used;
+    if (!strcmp(rest, ".log") || !strcmp(rest, ".dmp")) return number;
+    if (sscanf(rest, "_%u.dmp%n", &attempt, &tail) == 1 && tail > 0 && !rest[tail]) return number;
+    return 0;
+}
+
 static unsigned last_number(const char *dir) {
     DIR *d = opendir(dir);
     unsigned last = 0;
     if (!d) return 0;
     for (struct dirent *e; (e = readdir(d));) {
-        unsigned number = 0;
-        int used = 0;
-        if (sscanf(e->d_name, "sons_of_sparta_%u.log%n", &number, &used) == 1 && used > 0 && !e->d_name[used] && number > last)
-            last = number;
+        const unsigned number = session_file_number(e->d_name);
+        if (number > last) last = number;
     }
     closedir(d);
     return last;

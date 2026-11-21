@@ -1,0 +1,11 @@
+name = "sons-of-sparta-bug-report"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+[[durable_objects.bindings]]
+name = "BUG_REPORTS"
+class_name = "BugReportObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BugReportObject"]

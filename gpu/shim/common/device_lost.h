@@ -120,6 +120,12 @@ public:
     void SetFaultQuery(void (*query)(FaultInfo&)) noexcept {
         query_fault.store(query, std::memory_order_release);
     }
+    void SetExitFlush(void (*flush)()) noexcept {
+        exit_flush.store(flush, std::memory_order_release);
+    }
+    [[nodiscard]] void (*ExitFlush() const noexcept)() {
+        return exit_flush.load(std::memory_order_acquire);
+    }
     [[nodiscard]] u32 FaultQueries() const noexcept {
         return fault_claimed.load(std::memory_order_acquire) ? 1u : 0u;
     }
@@ -185,6 +191,7 @@ private:
 
     Hooks hooks;
     std::atomic<void (*)(FaultInfo&)> query_fault;
+    std::atomic<void (*)()> exit_flush{};
     std::atomic<Phase> phase{Phase::Healthy};
     std::atomic<u32> owner_thread{};
     std::atomic<bool> fault_claimed{};

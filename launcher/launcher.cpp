@@ -28,6 +28,7 @@
 #include "trg/launcher.h"
 #include "trg/platform.h"
 
+#include "bug_report_page.h"
 #include "controller_icons.h"
 #include "controller_prompts.h"
 #include "dcp_graphics.h"
@@ -346,6 +347,16 @@ public:
             header_art_aspect_ = float(header_art_image_.width) / float(header_art_image_.height);
         }
         trophy_page_ = std::make_unique<TrophyPage>(host_, UserDir());
+        std::vector<std::filesystem::path> install_folders;
+        if (!InstallDir().empty()) install_folders.push_back(InstallDir());
+        if (!paths_.app0.empty()) install_folders.push_back(paths_.app0);
+        bug_report_page_ = std::make_unique<BugReportPage>(BugReportPage::Places{
+            config_.logs_dir ? PathFromUtf8(config_.logs_dir) : std::filesystem::path(),
+            config_.log_file ? PathFromUtf8(config_.log_file) : std::filesystem::path(),
+            UserDir(),
+            std::move(install_folders),
+        });
+        os_text_ = OperatingSystemText();
         trg::SetTranslator(&TranslateLauncherText);
         launcher_ = std::make_unique<trg::Launcher>(MakeConfig());
         updater_ = std::make_unique<trg::update::UpdateController>(MakeUpdateConfig(InstallDir()));
@@ -683,7 +694,8 @@ private:
         case PageId::kTrophies:
             return {name, "Your trophies on this PC.", [this](trg::Ui& ui) { PageTrophies(ui); }, nullptr, nullptr};
         case PageId::kBugReport:
-            return {name, "", [](trg::Ui&) {}, nullptr, nullptr};
+            return {name, "Send a problem report with your game log and optional crash dump.",
+                    [this](trg::Ui& ui) { PageBugReport(ui); }, nullptr, nullptr};
         case PageId::kAbout:
             return {name, "This port, and where your files and settings live.", [this](trg::Ui& ui) { PageAbout(ui); },
                     nullptr, nullptr};
@@ -1052,6 +1064,17 @@ private:
         trophy_page_->Draw(ui);
     }
 
+    void PageBugReport(trg::Ui& ui) {
+        const ReportFacts facts{
+            SOS_PORT_VERSION,
+            build_ ? BuildDisplayName(*build_) : InstalledGameName(files_, build_),
+            build_ ? std::string(build_->version) : std::string(),
+            build_ ? std::string(build_->title_id) : std::string(),
+            os_text_,
+        };
+        bug_report_page_->Draw(ui, facts);
+    }
+
     void PageAbout(trg::Ui& ui) {
         ui.SponsorCard(
             "This open source PC port is maintained and developed in my free time. If you enjoy the project and would "
@@ -1142,6 +1165,8 @@ private:
     std::unique_ptr<trg::Launcher> launcher_;
     std::unique_ptr<trg::update::UpdateController> updater_;
     std::unique_ptr<TrophyPage> trophy_page_;
+    std::unique_ptr<BugReportPage> bug_report_page_;
+    std::string os_text_;
     PlayGate play_;
     ProblemDialog problem_;
     PlacementTracker placement_;

@@ -21,6 +21,7 @@
 #include "dcp_toggles.h"
 #include "dcp_write_log.h"
 #include "dcpgpu.h"
+#include "common/device_lost.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
@@ -53,9 +54,11 @@ int dcp_check_vulkan(char* cause, size_t cause_size, char* advice, size_t advice
 // runtime_log.c
 void runtime_log_flush(void);
 void runtime_log_mark_clean_exit(void);
+void runtime_log_mark_crash(void);
 void runtime_log_finalize(void);
 // startup_phase.c
 void sos_startup_phase(const char* phase);
+const char* sos_startup_phase_current(void);
 }
 
 Frontend::WindowSDL* g_window = nullptr;
@@ -199,6 +202,7 @@ extern "C" int dcpgpu_available(void) {
 
 // Each renderer needs its own kind of window, so Auto asks whether Vulkan can run before there is one.
 static void SelectRenderer() {
+    sos_startup_phase("renderer selection");
     const auto choice = DcpRenderer::Choice(DcpSettings::Get().renderer.load());
     char cause[320] = "", advice[320] = "";
     const bool vulkan_usable = choice != DcpRenderer::Auto ||
@@ -221,6 +225,12 @@ static_assert(DCP_GPU_FEATURE_RENDER_RESOLUTION == DcpSettings::RenderResolution
               DCP_GPU_FEATURE_SKIP_INTRO == DcpSettings::SkipIntro);
 
 extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
+    Common::DeviceLost::Global().SetExitFlush([] {
+        std::fprintf(stderr, "Startup phase: %s\n", sos_startup_phase_current());
+        std::fflush(stderr);
+        runtime_log_mark_crash();
+        runtime_log_flush();
+    });
     DcpSettings::Load(config->settings_file);
     DcpSettings::Get().features = config->features;
     EmulatorSettings.SetInternalScreenSize(u32(config->display_width), u32(config->display_height));
@@ -233,6 +243,7 @@ extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
     const s32 width = config->width, height = config->height;
     g_window_thread = std::thread([title, width, height] {
         Common::SetCurrentThreadName("dcp:window");
+        sos_startup_phase("window creation");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str(),
                                                Frontend::GraphicsApiFor(DcpRenderer::Active()));
         {

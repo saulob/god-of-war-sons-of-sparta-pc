@@ -18,6 +18,7 @@
 #include "dcp_graphics.h"
 #include "dcp_settings.h"
 #include "sdl_window.h"
+#include "startup_phase.h"
 #include "video_core/allocation_fallback.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -221,8 +222,10 @@ Instance::Instance(s32 index, bool validation)
 
 Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_device_index,
                    bool enable_validation, bool enable_crash_diagnostic)
-    : instance{CreateInstance(window_info.type, enable_validation, enable_crash_diagnostic)},
+    : instance{(sos_startup_phase("Vulkan instance creation"),
+                CreateInstance(window_info.type, enable_validation, enable_crash_diagnostic))},
       physical_devices{EnumeratePhysicalDevices(instance)} {
+    sos_startup_phase("GPU selection");
     if (enable_validation) {
         debug_callback = CreateDebugCallback(*instance);
     }
@@ -379,6 +382,7 @@ bool InitializePipelineBinaryCache(vk::Device device, bool supported,
 }
 
 bool Instance::CreateDevice() {
+    sos_startup_phase("Vulkan device creation");
     const vk::StructureChain feature_chain = physical_device.getFeatures2<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
         vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,

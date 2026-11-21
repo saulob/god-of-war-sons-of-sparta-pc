@@ -116,6 +116,7 @@ void WatchLoop() {
 } // namespace
 
 extern "C" void runtime_history_note(const char* api, const char* library, std::uintptr_t caller);
+extern "C" void sos_startup_phase(const char* phase);
 extern "C" void sos_startup_milestone(const char* format, ...);
 extern "C" void sos_startup_profile_end(void);
 
@@ -140,6 +141,7 @@ std::atomic<int> video_frame{kNoVideoFrame};
 
 void Presented() {
     if (!any_present.load(std::memory_order_relaxed) && !any_present.exchange(true)) {
+        sos_startup_phase("first present");
         sos_startup_milestone("first present");
     }
     int delivered = kVideoFrameDelivered;

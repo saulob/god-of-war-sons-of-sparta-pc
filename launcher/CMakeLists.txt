@@ -33,10 +33,12 @@ target_link_libraries(sos_imgui_sdl PUBLIC SDL3::SDL3)
 # Game files (check, PKG unpacking, install, boot image), the trophies (src/trophies) and the settings file: no window
 # needed (tests link only this).
 find_package(ZLIB REQUIRED)
-add_library(sos_launcher_core STATIC boot_image.cpp build_diagnostics.cpp controller_icons.cpp controller_prompts.c prompt_dialog.c file_browser.cpp
+add_library(sos_launcher_core STATIC boot_image.cpp bug_report.cpp bug_report_http.cpp build_diagnostics.cpp
+    controller_icons.cpp controller_prompts.c prompt_dialog.c file_browser.cpp
     game_files.cpp
-    game_install.cpp game_process.cpp game_profile.cpp header_art.cpp options.cpp page_icons.cpp paths.cpp
+    game_install.cpp game_process.cpp game_profile.cpp header_art.cpp log_scrubber.cpp options.cpp page_icons.cpp paths.cpp
     pkg_extract.cpp resolution.cpp settings.cpp trophy_content.cpp localization/ui_text.cpp
+    updater/json.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_data.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_key.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_pack.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_runtime.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_service.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_store.cpp
@@ -67,9 +69,9 @@ add_custom_command(OUTPUT ${SOS_PAGE_ICON_SOURCE}
     COMMENT "Embedding the page icons")
 target_sources(sos_launcher_core PRIVATE ${SOS_PAGE_ICON_SOURCE})
 
-add_library(sos_launcher STATIC host.cpp launcher.cpp package_browser.cpp problem_dialog.cpp shift_key.cpp
+add_library(sos_launcher STATIC bug_report_page.cpp host.cpp launcher.cpp package_browser.cpp problem_dialog.cpp shift_key.cpp
     trophy_page.cpp update_config.cpp
-    updater/github_release.cpp updater/json.cpp updater/sha256.cpp updater/third_party/miniz/miniz.c
+    updater/github_release.cpp updater/sha256.cpp updater/third_party/miniz/miniz.c
     updater/update_controller.cpp updater/update_job.cpp updater/update_paths.cpp updater/update_platform.cpp
     updater/update_ui.cpp updater/update_zip.cpp updater/version.cpp)
 set_source_files_properties(updater/third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")

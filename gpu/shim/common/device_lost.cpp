@@ -45,6 +45,9 @@ void EndProcess(const char* summary, int status) {
     std::fflush(stdout);
     std::fprintf(stderr, "Runtime: %s; the process ends with status %d\n", summary, status);
     std::fflush(stderr);
+    if (auto* flush = Global().ExitFlush()) {
+        flush();
+    }
     std::_Exit(status);
 }
 

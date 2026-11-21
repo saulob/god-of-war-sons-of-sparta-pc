@@ -1,6 +1,6 @@
 # Headless checks of the launcher: page order, page icons at 100%, 150% and 225%, header art placement, settings,
 # key bindings, game process arguments, the game identity, the supported-build names, the TRG patch set and what the
-# launcher must not contain (Online, a Bug Report backend, another game's identity). No window, game or network.
+# launcher must not contain (Online, another game's identity). No window, game or network.
 [CmdletBinding()]
 param()
 

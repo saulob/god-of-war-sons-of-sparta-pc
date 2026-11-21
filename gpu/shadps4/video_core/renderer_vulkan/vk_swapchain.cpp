@@ -15,6 +15,7 @@
 #include "dcp_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
+#include "startup_phase.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
@@ -44,7 +45,8 @@ static_assert(vk::PresentModeKHR(DcpPresent::Mode::Immediate) == vk::PresentMode
               vk::PresentModeKHR(DcpPresent::Mode::Fifo) == vk::PresentModeKHR::eFifo);
 
 Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& window_)
-    : instance{instance_}, window{window_}, surface{CreateSurface(instance.GetInstance(), window)},
+    : instance{instance_}, window{window_},
+      surface{(sos_startup_phase("swapchain creation"), CreateSurface(instance.GetInstance(), window))},
       gamescope{DcpPresent::GamescopeSession()} {
     FindPresentFormat();
     FindPresentMode();

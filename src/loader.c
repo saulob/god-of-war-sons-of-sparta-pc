@@ -614,6 +614,7 @@ int main(int argc, char **argv) {
 #endif
 
     SosPaths paths;
+    sos_startup_phase("configuration load");
     const SosPathRequest path_request = { boot, content_profile, app0, user_dir, logs_dir };
     if (!sos_resolve_paths(&path_request, &paths)) fail(paths.error);
     static char settings_file[4200];
@@ -704,6 +705,7 @@ int main(int argc, char **argv) {
     }
     dcpgpu_register_kernel();
 
+    sos_startup_phase("boot image load");
     FILE *f = fopen(boot, "rb");
     if (!f) fail("cannot open boot file");
     char magic[8];
@@ -863,6 +865,7 @@ int main(int argc, char **argv) {
         DcpGpuConfig gpu = { "God of War: Sons of Sparta", "CUSA57767", user_dir, settings_file,
                              (uint32_t)sdk, 0, 1920, 1080, gpu_features, render_target.display_width,
                              render_target.display_height };
+        sos_startup_phase("renderer initialization");
         if (dcpgpu_available() && dcpgpu_init(&gpu) == 0) {
 #ifdef _WIN32
             gpu_enabled = 1;
@@ -873,6 +876,7 @@ int main(int argc, char **argv) {
             printf("GPU: video core not started (see the log)\n");
     }
 
+    sos_startup_phase("module registration");
     printf("Modules: %" PRIu64 "\n", module_count);
     if (runtime_module_register_main("eboot.bin", image, module_count ? modules[0].base : size) != 0)
         fail("cannot register the main executable");
