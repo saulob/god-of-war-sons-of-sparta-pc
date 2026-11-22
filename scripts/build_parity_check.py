@@ -136,6 +136,24 @@ def prompt_dialog_sites(text):
     return found
 
 
+def exit_game_sites(text):
+    """{version: semantics}: prologues (without relocated displacement), 9 range lengths and 5 field offsets."""
+    found = {}
+    for match in re.finditer(r"kExitGame_(\d+)_(\d+) = \{(.*?)\};", text, re.S):
+        body = match.group(3)
+        byte_blocks = re.findall(r"\{(0x[0-9a-f]+(?:, 0x[0-9a-f]+)+)\}", body)
+        ranges = re.findall(r"\{0x([0-9a-f]+)u, 0x([0-9a-f]+)u\}", body)
+        layout = re.search(r"ull,\s*((?:0x[0-9a-f]+u, ){4}0x[0-9a-f]+u),", body)
+        if len(byte_blocks) == 4 and len(ranges) == 9 and layout:
+            toggle, confirm, quit_b, text_b = (byte_list(b) for b in byte_blocks)
+            found[f"{match.group(1)}.{match.group(2)}"] = (
+                toggle, confirm, quit_b[:6] + quit_b[10:], text_b,
+                tuple(int(b, 16) - int(a, 16) for a, b in ranges),
+                byte_list(layout.group(1)),
+            )
+    return found
+
+
 def dispatch_rows(text, prefix):
     """{build key: symbols} of a C table of `{"CUSA...-x.y", ...}` rows."""
     return {key: re.findall(r"\b" + prefix + r"\w*", rest) for key, rest in re.findall(r'\{"(CUSA\d+-[\d.]+)",([^\n]*)\}', text)}
@@ -160,7 +178,7 @@ def check_identity(gate, builds, sources):
         table = sources["il2cpp:" + name]
         gate.same_builds({f"{TITLE}-{v}" for v in table}, keys, f"scripts/il2cpp_index.py {name}")
     gate.check(all(sources["il2cpp:EBOOT_SHA256"].get(v) == b["sha256"] for v, b in builds.items()), "scripts/il2cpp_index.py fingerprints differ from scripts/game_profiles.py")
-    for name in ("prompt_sites", "prompt_dialog"):
+    for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         gate.same_builds({f"{TITLE}-{v}" for v in sources[name + ":BUILDS"]}, keys, f"scripts/{name}.py BUILDS")
 
 
@@ -208,6 +226,21 @@ def check_dialog(gate, builds, sources):
         gate.check(sites[version] == sites.get(reference), f"CUSA57767 {version} dialog site differs from {reference} in prologue, range lengths or object layout")
 
 
+def check_exit_game(gate, builds, sources):
+    gate.start("Title menu Exit Game")
+    keys = {b["key"] for b in builds.values()}
+    sites = exit_game_sites(sources["src/sos_exit_game_sites.h"])
+    gate.same_builds({f"{TITLE}-{v}" for v in sites}, keys, "src/sos_exit_game_sites.h")
+    dispatch = dispatch_rows(sources["src/sos_exit_game.c"], "kExitGame")
+    gate.same_builds(dispatch, keys, "src/sos_exit_game.c build table")
+    for key, symbols in dispatch.items():
+        suffix = "_" + key.rsplit("-", 1)[1].replace(".", "_")
+        gate.check(symbols and all(s.endswith(suffix) for s in symbols), f"src/sos_exit_game.c routes {key} to another build's site")
+    reference = min(builds)
+    for version in sorted(set(builds) & set(sites)):
+        gate.check(sites[version] == sites.get(reference), f"CUSA57767 {version} Exit Game site differs from {reference} in prologue, range lengths or object layout")
+
+
 def check_resolution(gate, builds, sources):
     gate.start("Render resolution and frame rate")
     rows = game_profile_rows(sources["launcher/game_profile.cpp"])
@@ -215,7 +248,7 @@ def check_resolution(gate, builds, sources):
     gate.check(None not in tables and len(tables) == 1, "launcher/game_profile.cpp: every supported build must use the same resolution site table, or one must be added per build")
 
 
-FEATURES = [check_identity, check_skip_intro, check_prompts, check_dialog, check_resolution]
+FEATURES = [check_identity, check_skip_intro, check_prompts, check_dialog, check_exit_game, check_resolution]
 
 # Sources that carry build-keyed data, with the feature that owns them.
 OWNERS = {
@@ -223,6 +256,7 @@ OWNERS = {
     "scripts/il2cpp_index.py": "Build identity", "src/sos_skip_intro.c": "Skip Intro",
     "launcher/controller_prompts.c": "Xbox controller prompts", "launcher/controller_prompts_sites.h": "Xbox controller prompts",
     "launcher/prompt_dialog.c": "Settings dialog glyphs", "launcher/prompt_dialog_sites.h": "Settings dialog glyphs",
+    "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
 }
 # Host code with no build-specific data: one test covers it, not one per build.
 SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save and redzone layers"}
@@ -230,9 +264,9 @@ SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save an
 # Tests and checks that must name every supported build, or iterate the inventory.
 COVERAGE = [
     ("tests/skip_intro_tests.cpp", "names"), ("tests/title_patch_matrix_tests.cpp", "names"), ("tests/controller_prompts_tests.cpp", "names"),
-    ("tests/prompt_dialog_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
+    ("tests/prompt_dialog_tests.cpp", "names"), ("tests/exit_game_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
     ("scripts/skip_intro_check.py", "names"), ("scripts/title_input_check.py", "names"), ("scripts/map_input_check.py", "names"),
-    ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"),
+    ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"), ("scripts/exit_game_sites.py", "names"),
     ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
 ]
 
@@ -370,10 +404,11 @@ def check_real_builds(gate, builds, load):
 def read_sources():
     sources = {path: read(path) for path in (
         "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "launcher/controller_prompts.c",
-        "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h")}
+        "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
+        "src/sos_exit_game.c", "src/sos_exit_game_sites.h")}
     for name in ("EBOOT_SHA256", "IMAGE_FOLDERS"):
         sources["il2cpp:" + name] = ast_assignment("scripts/il2cpp_index.py", name) or {}
-    for name in ("prompt_sites", "prompt_dialog"):
+    for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         sources[name + ":BUILDS"] = ast_assignment(f"scripts/{name}.py", "BUILDS") or ()
     for path, _mode in COVERAGE:
         sources["cov:" + path] = read(path) if (ROOT / path).is_file() else None
@@ -415,6 +450,8 @@ def self_test():
     expect_failure("1.01 dropped from the Skip Intro table", mutate=lambda s: s.update({"src/sos_skip_intro.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_skip_intro.c"])}))
     expect_failure("1.01 dropped from the prompt dispatch table", mutate=lambda s: s.update({"launcher/controller_prompts.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["launcher/controller_prompts.c"])}))
     expect_failure("1.01 dropped from the dialog dispatch table", mutate=lambda s: s.update({"launcher/prompt_dialog.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["launcher/prompt_dialog.c"])}))
+    expect_failure("1.01 dropped from the Exit Game dispatch table", mutate=lambda s: s.update({"src/sos_exit_game.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["src/sos_exit_game.c"])}))
+    expect_failure("an Exit Game layout offset changed in 1.01", mutate=lambda s: s.update({"src/sos_exit_game_sites.h": re.sub(r"(kExitGame_1_01.*?0x10u, 0xb8u, )0x40u", r"\g<1>0x44u", s["src/sos_exit_game_sites.h"], count=1, flags=re.S)}))
     expect_failure("an Xbox patch byte changed in 1.01", mutate=lambda s: s.update({"launcher/controller_prompts_sites.h": re.sub(
         r"(kSites_1_01.*?\{0x02, 0, 0, 0\})", lambda m: m.group(1).replace("{0x02, 0, 0, 0}", "{0x01, 0, 0, 0}"), s["launcher/controller_prompts_sites.h"], count=1, flags=re.S)}))
     expect_failure("a dialog layout offset changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?0x20, 0x20, 0x30, )0x168", r"\g<1>0x169", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))

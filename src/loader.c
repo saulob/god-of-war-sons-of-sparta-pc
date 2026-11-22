@@ -20,6 +20,7 @@
 #include "sos_launcher.h"
 #include "skip_intro.h"
 #include "sos_skip_intro.h"
+#include "sos_exit_game.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 #include "trophies/trophy_runtime.h"
@@ -798,7 +799,7 @@ int main(int argc, char **argv) {
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
-                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES);
+                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
@@ -1064,6 +1065,15 @@ int main(int argc, char **argv) {
         } else {
             printf("Controller prompts: Settings dialogs keep the PlayStation glyphs: %s\n", dialog_message);
         }
+    }
+    {
+        char exit_message[200];
+        uint8_t *exit_stubs = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
+                              SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES;
+        if (sos_exit_game_install(image, size, prompt_key[0] ? prompt_key : NULL, exit_stubs, SOS_EXIT_GAME_STUB_BYTES,
+                                  exit_message, sizeof(exit_message)))
+            sos_exit_game_arm(image, prompt_key, dcpgpu_request_close);
+        printf("Exit Game: %s\n", exit_message);
     }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);
