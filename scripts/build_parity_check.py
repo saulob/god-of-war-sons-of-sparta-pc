@@ -120,17 +120,19 @@ def prompt_sites(text):
 
 
 def prompt_dialog_sites(text):
-    """{version: semantics}: the prologue without its relocated displacement, the ranges' lengths and the object layout."""
+    """{version: semantics}: the prologue without its relocated displacement, the ranges' lengths, the object layout and the menu hooks'
+    lengths, entries and Image fields."""
     found = {}
     for match in re.finditer(r"kDialog_(\d+)_(\d+) = \{(.*?)\};", text, re.S):
         body = match.group(3)
         prologue = re.search(r"\{(0x[0-9a-f]+(?:, 0x[0-9a-f]+){17})\}", body)
         ranges = re.findall(r"\{0x([0-9a-f]+)u, 0x([0-9a-f]+)u\}", body)
-        layout = re.search(r"ull,\s*((?:0x[0-9a-f]+(?:, )?)+)\s*$", body.strip())
-        if prologue and layout:
+        layout = re.search(r"ull,\s*((?:0x[0-9a-f]+, ){5}0x[0-9a-f]+),", body)
+        menus = re.findall(r"\{0x[0-9a-f]+u, (0x[0-9a-f]+)u, 0x[0-9a-f]+ull, \{([^}]*)\}, (\d+)u, \{([^}]*)\}\}", body)
+        if prologue and layout and len(menus) == 2:
             bytes18 = byte_list(prologue.group(1))
             found[f"{match.group(1)}.{match.group(2)}"] = (bytes18[:13] + bytes18[17:], tuple(int(b, 16) - int(a, 16) for a, b in ranges),
-                                                           byte_list(layout.group(1)))
+                                                           byte_list(layout.group(1)), tuple((length, entry, count, offsets) for length, entry, count, offsets in menus))
     return found
 
 
@@ -416,6 +418,7 @@ def self_test():
     expect_failure("an Xbox patch byte changed in 1.01", mutate=lambda s: s.update({"launcher/controller_prompts_sites.h": re.sub(
         r"(kSites_1_01.*?\{0x02, 0, 0, 0\})", lambda m: m.group(1).replace("{0x02, 0, 0, 0}", "{0x01, 0, 0, 0}"), s["launcher/controller_prompts_sites.h"], count=1, flags=re.S)}))
     expect_failure("a dialog layout offset changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?0x20, 0x20, 0x30, )0x168", r"\g<1>0x169", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))
+    expect_failure("a menu hook Image field changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?4u, \{0x198u, )0x1a0u", r"\g<1>0x1a4u", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))
     expect_failure("a 1.01 fingerprint changed in the build header", mutate=lambda s: s.update({"src/game_build.h": s["src/game_build.h"].replace("aafe8a2a", "bbbb8a2a")}))
     expect_failure("1.01 missing from the image tables", mutate=lambda s: s.update({"il2cpp:IMAGE_FOLDERS": {k: v for k, v in s["il2cpp:IMAGE_FOLDERS"].items() if k != "1.01"}}))
     expect_failure("a graphics check that stops iterating the supported builds", mutate=lambda s: s.update({"cov:scripts/graphics_import_check.py": s["cov:scripts/graphics_import_check.py"].replace("PROFILES", "X")}))

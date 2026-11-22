@@ -9,6 +9,8 @@
 enum { CONTROL_DEVICE_GAMEPAD = 2, KEPT_BYTES = 11, FLAG_COMPARE_AT = 11, FLAG_COMPARE_BYTES = 7 };
 enum { NATIVE_OBJECT = 0x10, LIST_ITEMS = 0x10, LIST_SIZE = 0x18, ARRAY_LENGTH = 0x18, ARRAY_ITEMS = 0x20 };
 enum { CONFIRM_LABEL = 2, BACK_LABEL = 3 };
+/* The ranges of the dialog site that hold get_overseer and set_override_sprite. */
+enum { SERVICE_FIRST = 2, SERVICE_LAST = 3 };
 
 typedef struct {
     const char *build;
@@ -232,4 +234,87 @@ SOS_PROMPT_DIALOG_SYSV void sos_prompt_dialog_handler(void *prompt) {
     if (xbox && (!confirm_image || !back_image || confirm_image == back_image)) return;
     if (confirm_image) set_glyph(confirm_image, confirm);
     if (back_image) set_glyph(back_image, back);
+}
+
+/* Entered with the menu in rdi, on the game thread, before the menu is initialised. Its prompt Images are serialized fields. */
+static void menu_glyphs(void *menu, const SosPromptMenu *spec) {
+    if (!g_dialog.armed) return;
+    if (!g_dialog.overridden && !sos_prompt_uses_xbox(g_dialog.style, sos_pad_kind_current())) return;
+    const void *const overseer_method = resolved_slot(g_dialog.game.overseer_slot);
+    if (!alive(menu) || !overseer_method) return;
+    void *const overseer = g_dialog.game.get_overseer(overseer_method);
+    void *const icons = overseer ? pointer_at(overseer, g_dialog.site.icon_data) : NULL;
+    if (!alive(icons)) return;
+    const int xbox = xbox_glyphs_active(overseer);
+    void *const confirm = xbox ? pointer_at(icons, g_dialog.site.xbox_confirm) : NULL;
+    if (xbox && !alive(confirm)) return;
+    for (uint32_t i = 0; i < spec->image_count && i < SOS_PROMPT_MENU_IMAGES; ++i) {
+        void *const image = pointer_at(menu, spec->images[i]);
+        if (alive(image)) set_glyph(image, confirm);
+    }
+}
+
+SOS_PROMPT_DIALOG_SYSV void sos_prompt_menu_handler_save(void *menu) { menu_glyphs(menu, &g_dialog.site.menus[0]); }
+
+SOS_PROMPT_DIALOG_SYSV void sos_prompt_menu_handler_pit(void *menu) { menu_glyphs(menu, &g_dialog.site.menus[1]); }
+
+int sos_prompt_menu_verify(const uint8_t *image, uint64_t size, const char *build_key, int index, const char **why) {
+    const SosPromptDialogSite *site = sos_prompt_dialog_site(build_key);
+    const char *reason = NULL;
+    if (!site || index < 0 || index >= SOS_PROMPT_MENUS) {
+        reason = "no verified menu hook in this build";
+    } else {
+        const SosPromptMenu *menu = &site->menus[index];
+        if (menu->length < SOS_PROMPT_MENU_STOLEN || (uint64_t)menu->method + menu->length > size) reason = "the image ends before the menu code";
+        else if (memcmp(image + menu->method, menu->entry, SOS_PROMPT_MENU_STOLEN)) reason = "the menu method does not start as verified";
+        else if (fnv1a(UINT64_C(0xcbf29ce484222325), image + menu->method, menu->length) != menu->hash) reason = "the menu method is not the verified code";
+        else {
+            uint64_t services = UINT64_C(0xcbf29ce484222325);
+            for (int i = SERVICE_FIRST; i <= SERVICE_LAST && !reason; ++i) {
+                const SosPromptDialogRange range = site->ranges[i];
+                if (range.begin >= range.end || range.end > size) reason = "the image ends before the code the menu handler calls";
+                else services = fnv1a(services, image + range.begin, range.end - range.begin);
+            }
+            if (!reason && services != site->services) reason = "the code the menu handler calls is not the verified code";
+        }
+    }
+    if (reason && why) *why = reason;
+    return reason == NULL;
+}
+
+enum { MENU_STUB_SIZE = sizeof(kStubHead) + 8 + sizeof(kStubTail) + SOS_PROMPT_MENU_STOLEN + 5 };
+_Static_assert(MENU_STUB_SIZE <= SOS_PROMPT_MENU_STUB_BYTES, "the menu hook stub fits");
+
+int sos_prompt_menu_install(uint8_t *image, uint64_t size, const char *build_key, int index, uint8_t *stub, size_t stub_capacity, char *message,
+                            size_t message_size) {
+    const char *why = "";
+    if (!sos_prompt_menu_verify(image, size, build_key, index, &why)) {
+        snprintf(message, message_size, "not applied: %s in %s", why, build_key ? build_key : "this build");
+        return 0;
+    }
+    const SosPromptMenu *menu = &sos_prompt_dialog_site(build_key)->menus[index];
+    uint8_t *method = image + menu->method;
+    if (!stub || stub_capacity < MENU_STUB_SIZE || !reaches(method + 5, stub) || !reaches(stub + MENU_STUB_SIZE, method + SOS_PROMPT_MENU_STOLEN)) {
+        snprintf(message, message_size, "not applied: no room for the stub within reach of the image");
+        return 0;
+    }
+    const uint64_t handler = (uint64_t)(uintptr_t)(index == 0 ? sos_prompt_menu_handler_save : sos_prompt_menu_handler_pit);
+    uint8_t *at = stub;
+    memcpy(at, kStubHead, sizeof(kStubHead));
+    at += sizeof(kStubHead);
+    memcpy(at, &handler, sizeof(handler));
+    at += sizeof(handler);
+    memcpy(at, kStubTail, sizeof(kStubTail));
+    at += sizeof(kStubTail);
+    memcpy(at, method, SOS_PROMPT_MENU_STOLEN);
+    at += SOS_PROMPT_MENU_STOLEN;
+    const int32_t back = (int32_t)((int64_t)(intptr_t)(method + SOS_PROMPT_MENU_STOLEN) - (int64_t)(intptr_t)(at + 5));
+    *at++ = 0xe9;
+    memcpy(at, &back, sizeof(back));
+    const int32_t into = (int32_t)((int64_t)(intptr_t)stub - (int64_t)(intptr_t)(method + 5));
+    method[0] = 0xe9;
+    memcpy(method + 1, &into, sizeof(into));
+    memset(method + 5, 0x90, SOS_PROMPT_MENU_STOLEN - 5);
+    snprintf(message, message_size, "%s menu glyph hook installed at image+0x%x", index == 0 ? "Campfire" : "Pit player", menu->method);
+    return 1;
 }

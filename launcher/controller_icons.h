@@ -1,6 +1,8 @@
 // The Xbox prompt set of the game ships no left-stick directions: the text tokens LASUP, LASDOWN, LASLEFT and LASRIGHT have no
-// Xbox glyph. Prepared copies of resources.assets and resources.assets.resS add them from the game's own PlayStation stick
-// artwork; the game's files are only read, and the copies are used in their place through exact path aliases.
+// Xbox glyph, and it lacks the special icons (Button South/East/North Mask) the interaction marker and the confirmation panels
+// ask for. Prepared copies of resources.assets, resources.assets.resS and the Addressables icon bundle, which InputOverseer reads
+// its icons from, add them from the game's own artwork; the game's files are only read, and the copies are used in their place
+// through exact path aliases.
 #pragma once
 
 #include <cstdint>
@@ -13,23 +15,27 @@ namespace sos {
 
 // Changes when the prepared files would differ, so copies made by an older version are made again. The launcher's own size
 // or version is not part of the cache identity.
-inline constexpr int kControllerIconsPatchVersion = 1;
+inline constexpr int kControllerIconsPatchVersion = 2;
 
 inline constexpr char kIconsAssetsName[] = "resources.assets";
 inline constexpr char kIconsStreamName[] = "resources.assets.resS";
 inline constexpr char kIconsGuestAssets[] = "/app0/Media/resources.assets";
 inline constexpr char kIconsGuestStream[] = "/app0/Media/resources.assets.resS";
+inline constexpr char kIconsBundleName[] = "0342107720d621839faadc2c6c3deb69.bundle";
+inline constexpr char kIconsBundleFolder[] = "StreamingAssets/aa/PS4";
+inline constexpr char kIconsGuestBundle[] = "/app0/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb69.bundle";
 
-// The two files of one icon source; both are always used together.
+// The files of one icon source, always used together. An empty bundle path leaves the icon bundle out.
 struct IconFiles {
     std::filesystem::path assets;
     std::filesystem::path streamed;
+    std::filesystem::path bundle;
 };
 
 enum class IconSetState { kMissing, kComplete, kPartial, kUnrecognised };
 
-// Reads the files only. kComplete: the Xbox prompt set has all four directions and everything they refer to; kMissing: the
-// analysed game files without them; kPartial: some of them, which is never patched further.
+// Reads the files only. kComplete: the Xbox prompt set has all four directions, the interaction icons and everything they refer
+// to; kMissing: the analysed game files without them; kPartial: some of them, which is never patched further.
 IconSetState InspectIconSet(const IconFiles& files, std::string* why = nullptr);
 
 // What the Xbox prompts hold: the special icon map, the glyphs of the sprite asset and where the sprite sheet's pixels are.
@@ -49,7 +55,7 @@ struct XboxPrompts {
 // False when the assets are not the analysed game data.
 bool ReadXboxPrompts(const IconFiles& files, XboxPrompts& prompts);
 
-// True when the pair is the analysed game data with the complete direction set, with the glyph pixels in place.
+// True when the files are the analysed game data with the complete set, with the glyph pixels in place.
 bool HasControllerIcons(const IconFiles& files);
 
 enum class IconPatchResult { kPrepared, kComplete, kUnsupported, kFailed };
@@ -62,7 +68,7 @@ enum class IconPlanKind { kUseOriginal, kUsePrepared, kPrepare };
 
 struct IconPlan {
     IconPlanKind kind = IconPlanKind::kUseOriginal;
-    IconFiles files;   // the files the game reads; empty for kUseOriginal and kPrepare
+    IconFiles files;   // the files the game reads, all three together; empty for kUseOriginal and kPrepare
     std::string note;  // for the log
 };
 

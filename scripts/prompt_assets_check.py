@@ -199,6 +199,89 @@ def texture_pixels(data, objects, texture, resources):
     return width, height, texture_format, len(pixels), sum(1 for byte in pixels if byte)
 
 
+def named_scripts(media):
+    """{MonoScript name: [path ids]} of globalgamemanagers.assets, where every scene's MonoBehaviour finds its script."""
+    path = media / "globalgamemanagers.assets"
+    if not path.is_file():
+        return None
+    data, objects = parse(path)
+    scripts = {}
+    for path_id, (offset, size, class_id) in objects.items():
+        if class_id == 115:
+            name = object_name(data, offset, size, class_id)
+            if name:
+                scripts.setdefault(name, []).append(path_id)
+    return scripts
+
+
+def components_of(data, objects, game_object):
+    offset, size, _ = objects[game_object]
+    count = struct.unpack_from("<i", data, offset)[0]
+    found = []
+    for index in range(count):
+        file_id, path_id = struct.unpack_from("<iq", data, offset + 4 + index * 12)
+        if file_id == 0 and path_id in objects:
+            found.append(path_id)
+    return found
+
+
+def script_of(data, objects, behaviour):
+    offset, size, class_id = objects[behaviour]
+    if class_id != 114 or size < 28:
+        return None
+    file_id, path_id = struct.unpack_from("<iq", data, offset + 16)
+    return path_id if file_id > 0 else None
+
+
+def check_scene_prompts(media, resources_data, resources_objects):
+    """The campfire menu (SaveMiniMenu) and the pit player menu show plain Image prompts serialized with the PlayStation Cross sprite
+    (KS_ButtonPrompt_2) and no component that follows the controller: the reason they need their own Xbox glyph hook."""
+    scripts = named_scripts(media)
+    cross = next((path_id for path_id, (offset, size, class_id) in resources_objects.items()
+                  if class_id == CLASS_SPRITE and object_name(resources_data, offset, size, class_id) == "KS_ButtonPrompt_2"), None)
+    if scripts is None or cross is None or not all(name in scripts for name in ("SaveMiniMenu", "PitPlayerSelectMiniMenu", "Image", "AutoButtonSprite")):
+        print("  [skip] the scene prompt check needs globalgamemanagers.assets and its scripts")
+        return
+    followers = set(scripts["AutoButtonSprite"]) | set(scripts.get("UIControlTypeListener", [])) | set(scripts.get("UiPromptIconSwitcher", []))
+    images = set(scripts["Image"])
+    for scene in ("level4", "level120"):
+        path = media / scene
+        if not path.is_file():
+            print(f"  [skip] {scene} is not installed: its menu prompts were not read")
+            continue
+        data, objects = parse(path)
+        for menu, expected in (("SaveMiniMenu", 4), ("PitPlayerSelectMiniMenu", 2)):
+            owners = [path_id for path_id in objects if script_of(data, objects, path_id) in set(scripts[menu])]
+            if not check(len(owners) == 1, f"{scene}: exactly one {menu}"):
+                continue
+            targets = []
+            offset, size, _ = objects[owners[0]]
+            for at in range(0, size - 11, 4):
+                file_id, target = struct.unpack_from("<iq", data, offset + at)
+                if file_id == 0 and target in objects and script_of(data, objects, target) in images:
+                    behaviour_offset = objects[target][0]
+                    game_object = struct.unpack_from("<iq", data, behaviour_offset)[1]
+                    if game_object in objects and objects[game_object][2] == 1:
+                        targets.append((target, game_object))
+            prompts = []
+            for image, game_object in targets:
+                owner_components = components_of(data, objects, game_object)
+                label = None
+                for cand in range(objects[game_object][0] + 4 + len(owner_components) * 12, objects[game_object][0] + 4 + len(owner_components) * 12 + 16, 4):
+                    text_length = struct.unpack_from("<I", data, cand)[0]
+                    if 0 < text_length < 40 and all(32 <= byte < 127 for byte in data[cand + 4:cand + 4 + text_length]):
+                        label = bytes(data[cand + 4:cand + 4 + text_length]).decode()
+                        break
+                if label == "Button Prompt":
+                    prompts.append((image, game_object, owner_components))
+            check(len(prompts) == expected, f"{scene}: {menu} holds {expected} 'Button Prompt' Images (found {len(prompts)})")
+            for image, game_object, components in prompts:
+                sprites = [struct.unpack_from("<iq", data, objects[image][0] + at) for at in range(0, objects[image][1] - 11, 4)]
+                static_cross = any(file_id > 0 and path_id == cross for file_id, path_id in sprites)
+                follower = any(script_of(data, objects, component) in followers for component in components)
+                check(static_cross and not follower, f"{scene}: a {menu} prompt shows the serialized PlayStation Cross sprite and has no controller-following component")
+
+
 def main():
     media = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_MEDIA
     path = media / "resources.assets"
@@ -267,6 +350,7 @@ def main():
     print(f"  info  the Xbox icon map has {len(maps[2][1])} special icon(s) ({', '.join(maps[2][1])}); the PlayStation 5 map also has "
           f"{', '.join(lacking)}. Those icons are not drawn in Xbox mode.")
     print(f"  info  Xbox icon map {len(xbox_sprites)} sprites, PlayStation maps {len(ps_sprites)} sprites")
+    check_scene_prompts(media, data, objects)
     return 1 if failures else 0
 
 

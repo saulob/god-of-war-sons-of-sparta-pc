@@ -70,11 +70,12 @@ int sos_build_boot_image(const char* app0, const char* out, char* error, size_t 
 typedef struct {
     char assets[4096];   /* the prepared resources.assets the game reads in place of its own; empty: the game's own files */
     char streamed[4096]; /* the prepared resources.assets.resS, always together with assets */
+    char bundle[4096];   /* the prepared Addressables icon bundle, always together with the two above */
     char report[4096];   /* what the preparation found and did, one line per step, for the log */
 } SosControllerIcons;
 
-/* The Xbox prompts need left-stick glyphs the game does not ship; they are added to prepared copies of two of its data files
- * (launcher/controller_icons.h). Does nothing for the PlayStation style or a build without verified prompts. Only when copies
+/* The Xbox prompts need left-stick glyphs and interaction icons the game does not ship; they are added to prepared copies of
+ * three of its data files (launcher/controller_icons.h). Does nothing for the PlayStation style or a build without verified prompts. Only when copies
  * have to be made is a small window shown while it happens. Never fails: with no prepared copies the game's own files are used. */
 void sos_prepare_controller_icons(const char* app0, const char* image_dir, int prompt_style, int build_supported,
                                   SosControllerIcons* icons);

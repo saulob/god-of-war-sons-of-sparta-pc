@@ -695,9 +695,10 @@ int main(int argc, char **argv) {
 
     {
         if (app0) runtime_file_configure(app0, user_dir);
-        if (controller_icons.assets[0] && controller_icons.streamed[0] &&
+        if (controller_icons.assets[0] && controller_icons.streamed[0] && controller_icons.bundle[0] &&
             runtime_file_alias("/app0/Media/resources.assets", controller_icons.assets) == 0 &&
-            runtime_file_alias("/app0/Media/resources.assets.resS", controller_icons.streamed) == 0)
+            runtime_file_alias("/app0/Media/resources.assets.resS", controller_icons.streamed) == 0 &&
+            runtime_file_alias("/app0/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb69.bundle", controller_icons.bundle) == 0)
             puts("Controller icons: prepared copies in use");
         runtime_savedata_configure("CUSA57767");
         trophy_runtime_configure(app0, user_dir);
@@ -796,7 +797,8 @@ int main(int argc, char **argv) {
     }
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
-    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES);
+    const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
+                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
@@ -1049,6 +1051,16 @@ int main(int argc, char **argv) {
                                       SOS_PROMPT_DIALOG_STUB_BYTES, dialog_message, sizeof(dialog_message))) {
             sos_prompt_dialog_arm(prompt_style, image, prompt_key);
             printf("Controller prompts: %s\n", dialog_message);
+            for (int menu = 0; menu < SOS_PROMPT_MENUS; ++menu) {
+                char menu_message[200];
+                uint8_t *menu_stub = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
+                                     SOS_PROMPT_DIALOG_STUB_BYTES + (size_t)menu * SOS_PROMPT_MENU_STUB_BYTES;
+                if (sos_prompt_menu_install(image, size, prompt_key, menu, menu_stub, SOS_PROMPT_MENU_STUB_BYTES, menu_message,
+                                            sizeof(menu_message)))
+                    printf("Controller prompts: %s\n", menu_message);
+                else
+                    printf("Controller prompts: menu %d keeps the PlayStation glyph: %s\n", menu, menu_message);
+            }
         } else {
             printf("Controller prompts: Settings dialogs keep the PlayStation glyphs: %s\n", dialog_message);
         }

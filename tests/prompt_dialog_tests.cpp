@@ -1,10 +1,11 @@
-// Settings confirmation dialog glyphs: the hook table, the handler on fake game objects and the hook on the real boot images of
-// CUSA57767 1.00 and 1.01 (verification, installation, the stub, and every other patch of the launch).
+// Settings confirmation dialog and campfire menu glyphs: the hook tables, the handlers on fake game objects and the hooks on the real
+// boot images of CUSA57767 1.00 and 1.01 (verification, installation, the stubs, and every other patch of the launch).
 // Build: see tools/test_prompt_dialog.ps1. No game, launcher or window is started.
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -357,6 +358,234 @@ void TestHandler(const char* key) {
     sos_prompt_dialog_arm_with(SOS_PROMPTS_PLAYSTATION, nullptr, nullptr);
 }
 
+// ---- the campfire and pit player menus -------------------------------------------------------------------------------------
+
+constexpr const char* kMenuNames[] = {"campfire menu", "pit player menu"};
+
+void CallMenuHandler(int menu, void* object) {
+    if (menu == 0) sos_prompt_menu_handler_save(object);
+    else sos_prompt_menu_handler_pit(object);
+}
+
+void TestMenuTable(const char* key) {
+    const std::string name = std::string(key) + ": ";
+    const SosPromptDialogSite* site = sos_prompt_dialog_site(key);
+    if (site == nullptr) return;
+    static const uint8_t entry[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+    Check(site->services != 0, name + "the code the menu handlers call has its own hash");
+    for (int m = 0; m < SOS_PROMPT_MENUS; ++m) {
+        const SosPromptMenu& menu = site->menus[m];
+        const std::string label = name + kMenuNames[m] + ": ";
+        Check(menu.method != 0 && menu.length > 0x100 && menu.hash != 0, label + "has a method, a length and a hash");
+        Check(std::memcmp(menu.entry, entry, sizeof(entry)) == 0, label + "the entry is push rbp; mov rbp,rsp; push r15");
+        Check(menu.image_count == (m == 0 ? 4u : 2u), label + "lists all of its confirm prompt Images");
+        Check(menu.images[0] == 0x198 && menu.images[1] == 0x1a0 && (m != 0 || (menu.images[2] == 0x1a8 && menu.images[3] == 0x1b0)), label + "the Image fields are the layout read from the metadata");
+        for (const SosPromptDialogRange& range : site->ranges) {
+            Check(uint64_t{menu.method} + menu.length <= range.begin || menu.method >= range.end, label + "does not overlap code the dialog hook hashes");
+        }
+    }
+    Check(site->menus[0].method != site->menus[1].method, name + "the two menus are two methods");
+    Check(sos_prompt_menu_verify(nullptr, 0, "CUSA57767-9.99", 0, nullptr) == 0 && sos_prompt_menu_verify(nullptr, 0, nullptr, 0, nullptr) == 0 &&
+              sos_prompt_menu_verify(nullptr, 0, key, -1, nullptr) == 0 && sos_prompt_menu_verify(nullptr, 0, key, SOS_PROMPT_MENUS, nullptr) == 0,
+          name + "an unknown build or menu has no hook");
+}
+
+struct MenuScene {
+    World world;
+    std::deque<Object> objects;
+    Object* menu = nullptr;
+    Object* overseer = nullptr;
+    Object* icons = nullptr;
+    Object* xboxA = nullptr;
+    Object* xboxB = nullptr;
+    Object* image[SOS_PROMPT_MENU_IMAGES] = {};
+    Object overseerMethod;
+    uintptr_t overseerSlot = 0;
+    SosPromptDialogSite site{};
+    int index = 0;
+    size_t count = 0;
+
+    Object* New() {
+        objects.emplace_back();
+        Object* object = &objects.back();
+        object->Set(0x10, object->ptr());
+        return object;
+    }
+
+    MenuScene(const char* key, int menuIndex) : index(menuIndex) {
+        site = *sos_prompt_dialog_site(key);
+        world.overseerMethod = overseerMethod.ptr();
+        overseerSlot = reinterpret_cast<uintptr_t>(overseerMethod.ptr());
+        menu = New();
+        count = site.menus[index].image_count;
+        for (size_t i = 0; i < count; ++i) {
+            image[i] = New();
+            menu->Set(site.menus[index].images[i], image[i]->ptr());
+        }
+        overseer = New();
+        icons = New();
+        xboxA = New();
+        xboxB = New();
+        overseer->Set(site.icon_data, icons->ptr());
+        overseer->SetInt(site.input_device, kGamepad);
+        icons->Set(site.xbox_confirm, xboxA->ptr());
+        icons->Set(site.xbox_back, xboxB->ptr());
+        world.overseer = overseer->ptr();
+    }
+
+    void Arm(int style) {
+        SosPromptDialogGame game{};
+        game.get_overseer = FakeGetOverseer;
+        game.set_override_sprite = FakeSetOverride;
+        game.overseer_slot = &overseerSlot;
+        g_world = &world;
+        sos_prompt_dialog_arm_with(style, &site, &game);
+    }
+
+    void Run() {
+        g_world = &world;
+        CallMenuHandler(index, menu->ptr());
+    }
+
+    std::vector<uint8_t> Snapshot() const {
+        std::vector<uint8_t> all;
+        for (const Object& object : objects) all.insert(all.end(), object.bytes.begin(), object.bytes.end());
+        return all;
+    }
+
+    void* OverrideOf(size_t i) const { return image[i]->Get(site.override_sprite); }
+    bool AllOverride(const void* sprite) const {
+        for (size_t i = 0; i < count; ++i) {
+            if (OverrideOf(i) != sprite) return false;
+        }
+        return true;
+    }
+};
+
+void ExpectMenuUntouched(MenuScene& scene, const std::string& name) {
+    const std::vector<uint8_t> before = scene.Snapshot();
+    scene.world.setCalls = 0;
+    scene.Run();
+    Check(scene.Snapshot() == before && scene.world.setCalls == 0 && scene.world.badArguments == 0, name + ": nothing is written");
+}
+
+void TestMenuHandler(const char* key) {
+    sos_pad_kind_publish(SOS_PAD_NONE);
+    for (int m = 0; m < SOS_PROMPT_MENUS; ++m) {
+        const std::string name = std::string(key) + ": " + kMenuNames[m] + ": ";
+        {
+            MenuScene s(key, m);
+            s.Arm(SOS_PROMPTS_XBOX);
+            s.Run();
+            Check(s.AllOverride(s.xboxA->ptr()), name + "forced Xbox: every confirm prompt is Xbox A (South)");
+            Check(s.world.setCalls == static_cast<int>(s.count) && s.world.badArguments == 0, name + "forced Xbox: exactly one overrideSprite write per prompt Image");
+            Check(std::none_of(s.image, s.image + s.count, [&](const Object* image) { return image->Get(s.site.override_sprite) == s.xboxB->ptr(); }), name + "forced Xbox: no prompt shows Xbox B (East, the back action)");
+            s.Run();
+            Check(s.AllOverride(s.xboxA->ptr()), name + "forced Xbox: opening the menu again keeps A");
+        }
+        {
+            MenuScene s(key, m);
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Arm(SOS_PROMPTS_PLAYSTATION);
+            ExpectMenuUntouched(s, name + "forced PlayStation with an Xbox controller keeps the serialized Cross");
+            Check(s.AllOverride(nullptr), name + "forced PlayStation: overrideSprite stays empty");
+        }
+        {
+            MenuScene s(key, m);
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Arm(SOS_PROMPTS_AUTOMATIC);
+            s.Run();
+            Check(s.AllOverride(s.xboxA->ptr()), name + "Automatic with an Xbox controller: A");
+            sos_pad_kind_publish(SOS_PAD_PLAYSTATION4);
+            s.Run();
+            Check(s.AllOverride(nullptr), name + "Automatic switched to a DualShock 4: the serialized Cross is back (no stale Xbox A)");
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Run();
+            Check(s.AllOverride(s.xboxA->ptr()), name + "Automatic back to an Xbox controller: A (no stale Cross)");
+            sos_pad_kind_publish(SOS_PAD_PLAYSTATION5);
+            s.Run();
+            Check(s.AllOverride(nullptr), name + "Automatic switched to a DualSense: Cross");
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Run();
+            s.overseer->SetInt(s.site.input_device, kKeyboard);
+            s.Run();
+            Check(s.AllOverride(nullptr), name + "Automatic with an Xbox controller but keyboard input: Cross");
+            s.overseer->SetInt(s.site.input_device, kGamepad);
+            s.Run();
+            Check(s.AllOverride(s.xboxA->ptr()), name + "and A again once the gamepad is the input");
+        }
+        for (const int kind : {SOS_PAD_PLAYSTATION4, SOS_PAD_PLAYSTATION5, SOS_PAD_OTHER, SOS_PAD_NONE}) {
+            MenuScene s(key, m);
+            sos_pad_kind_publish(kind);
+            s.Arm(SOS_PROMPTS_AUTOMATIC);
+            ExpectMenuUntouched(s, name + "Automatic with controller kind " + std::to_string(kind) + " (PlayStation fallback)");
+        }
+        {
+            MenuScene s(key, m);
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Arm(SOS_PROMPTS_AUTOMATIC);
+            s.Run();
+            const void* const other = s.xboxB->ptr();
+            s.icons->Set(s.site.xbox_confirm, other);
+            s.icons->Set(s.site.xbox_back, s.menu->ptr());
+            s.Run();
+            Check(s.AllOverride(other) && s.world.badArguments == 0, name + "the sprite is the game's XboxSeries confirm sprite at its offset, never the back sprite");
+        }
+        {
+            MenuScene s(key, m);
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Arm(SOS_PROMPTS_AUTOMATIC);
+            s.Run();
+            const std::vector<uint8_t> overridden = s.Snapshot();
+            sos_pad_kind_publish(SOS_PAD_OTHER);
+            s.Run();
+            sos_pad_kind_publish(SOS_PAD_XBOX);
+            s.Run();
+            Check(s.Snapshot() == overridden, name + "Xbox, other, Xbox again returns to the identical object state");
+        }
+        sos_pad_kind_publish(SOS_PAD_XBOX);
+        const auto fallback = [&](const std::string& label, auto&& damage) {
+            MenuScene s(key, m);
+            damage(s);
+            s.Arm(SOS_PROMPTS_AUTOMATIC);
+            ExpectMenuUntouched(s, name + label);
+        };
+        fallback("missing InputOverseer", [](MenuScene& s) { s.world.overseer = nullptr; });
+        fallback("missing InputIconData", [](MenuScene& s) { s.overseer->Set(s.site.icon_data, nullptr); });
+        fallback("InputIconData without its native object", [](MenuScene& s) { s.icons->Set(0x10, nullptr); });
+        fallback("missing Xbox confirm sprite", [](MenuScene& s) { s.icons->Set(s.site.xbox_confirm, nullptr); });
+        fallback("destroyed Xbox confirm sprite", [](MenuScene& s) { s.xboxA->Set(0x10, nullptr); });
+        fallback("InputOverseer method info not resolved yet", [](MenuScene& s) { s.overseerSlot |= 1; });
+        fallback("menu without its native object", [](MenuScene& s) { s.menu->Set(0x10, nullptr); });
+        {
+            MenuScene s(key, m);
+            s.Arm(SOS_PROMPTS_XBOX);
+            s.menu->Set(s.site.menus[m].images[0], nullptr);
+            s.Run();
+            Check(s.OverrideOf(1) == s.xboxA->ptr() && s.world.setCalls == static_cast<int>(s.count) - 1, name + "a missing prompt Image is skipped and the others still show A");
+        }
+        {
+            MenuScene s(key, m);
+            s.Arm(SOS_PROMPTS_XBOX);
+            s.image[1]->Set(0x10, nullptr);
+            s.Run();
+            Check(s.OverrideOf(0) == s.xboxA->ptr() && s.OverrideOf(1) == nullptr, name + "a destroyed prompt Image is skipped and the others still show A");
+        }
+        {
+            MenuScene s(key, m);
+            s.Arm(SOS_PROMPTS_XBOX);
+            g_world = &s.world;
+            CallMenuHandler(m, nullptr);
+            Check(s.world.setCalls == 0, name + "a missing menu is ignored");
+            sos_prompt_dialog_arm_with(SOS_PROMPTS_XBOX, nullptr, nullptr);
+            s.Run();
+            Check(s.world.setCalls == 0, name + "a hook that was never armed does nothing");
+        }
+    }
+    sos_pad_kind_publish(SOS_PAD_NONE);
+    sos_prompt_dialog_arm_with(SOS_PROMPTS_PLAYSTATION, nullptr, nullptr);
+}
+
 // ---- the real boot images --------------------------------------------------------------------------------------------------
 
 using Image = std::vector<uint8_t>;
@@ -373,7 +602,7 @@ struct Boot {
     std::vector<uint64_t> segments;
 };
 
-constexpr uint64_t kStubRoom = SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES;
+constexpr uint64_t kStubRoom = SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES;
 
 bool ReadBoot(const fs::path& path, Boot& boot) {
     std::ifstream in(path, std::ios::binary);
@@ -687,6 +916,192 @@ void TestHookReal(const char* key, const fs::path& boot_path) {
     }
 }
 
+uint8_t* MenuStub(Image& image, uint64_t size, int menu) {
+    return image.data() + size + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES + static_cast<uint64_t>(menu) * SOS_PROMPT_MENU_STUB_BYTES;
+}
+
+void TestMenuHookReal(const char* key, const fs::path& boot_path) {
+    const SosPromptDialogSite& site = *sos_prompt_dialog_site(key);
+    Boot boot;
+    if (!ReadBoot(boot_path, boot)) return;
+    Image& image = boot.image;
+    const uint64_t size = boot.size;
+    const Image original = image;
+    const char* why = "";
+    char message[200];
+    const std::string other = std::string(key) == kBuilds[0] ? kBuilds[1] : kBuilds[0];
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+    for (int m = 0; m < SOS_PROMPT_MENUS; ++m) {
+        const SosPromptMenu& menu = site.menus[m];
+        const std::string name = std::string(key) + ": " + kMenuNames[m] + ": ";
+        image = original;
+        Check(sos_prompt_menu_verify(image.data(), size, key, m, &why), name + "the real method and the code its handler calls are the verified code (every byte hashed)");
+        Check(!sos_prompt_menu_verify(image.data(), size, other.c_str(), m, &why), name + "the other build's hook does not match this code");
+        Check(menu.method != sos_prompt_dialog_site(other.c_str())->menus[m].method, name + "the method address is this build's own");
+
+        const uint8_t* method = image.data() + menu.method;
+        std::vector<size_t> lengths;
+        size_t at = 0;
+        bool position_independent = true;
+        while (at < SOS_PROMPT_MENU_STOLEN) {
+            Decoded d;
+            if (!Decode(decoder, method + at, menu.length - at, d)) break;
+            const auto category = d.instruction.meta.category;
+            if ((d.instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE) || category == ZYDIS_CATEGORY_CALL || category == ZYDIS_CATEGORY_UNCOND_BR || category == ZYDIS_CATEGORY_COND_BR ||
+                category == ZYDIS_CATEGORY_RET || std::any_of(d.operands, d.operands + d.instruction.operand_count, [](const ZydisDecodedOperand& op) { return op.type == ZYDIS_OPERAND_TYPE_MEMORY && op.mem.base == ZYDIS_REGISTER_RIP; }))
+                position_independent = false;
+            lengths.push_back(d.instruction.length);
+            at += d.instruction.length;
+        }
+        Check(at == SOS_PROMPT_MENU_STOLEN && lengths == std::vector<size_t>({1, 3, 2}) && position_independent, name + "the 6 stolen bytes are push, mov and push with nothing relative");
+        std::vector<uint64_t> targets;
+        size_t decoded = 0;
+        for (at = 0; at < menu.length;) {
+            Decoded d;
+            if (!Decode(decoder, method + at, menu.length - at, d)) break;
+            if (d.instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE) {
+                for (int k = 0; k < d.instruction.operand_count_visible; ++k) {
+                    if (d.operands[k].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && d.operands[k].imm.is_relative) targets.push_back(at + d.instruction.length + static_cast<int64_t>(d.operands[k].imm.value.s));
+                }
+            }
+            at += d.instruction.length;
+            ++decoded;
+            if (d.instruction.meta.category == ZYDIS_CATEGORY_RET && at + 16 >= menu.length) break;
+        }
+        Check(decoded > 80, name + "the method decodes (" + std::to_string(decoded) + " instructions swept)");
+        Check(std::none_of(targets.begin(), targets.end(), [](uint64_t target) { return target > 0 && target < SOS_PROMPT_MENU_STOLEN; }), name + "no branch of the method lands inside the stolen bytes");
+
+        uint8_t* stub = MenuStub(image, size, m);
+        Check(sos_prompt_menu_install(image.data(), size, key, m, stub, 20, message, sizeof(message)) == 0 && image == original, name + "a stub area that is too small refuses and writes nothing");
+        Check(sos_prompt_menu_install(image.data(), size, key, m, image.data() + size + (uint64_t{1} << 32), SOS_PROMPT_MENU_STUB_BYTES, message, sizeof(message)) == 0 && image == original,
+              name + "a stub out of 32-bit reach refuses and writes nothing");
+        Check(sos_prompt_menu_install(image.data(), size, key, m, stub, SOS_PROMPT_MENU_STUB_BYTES, message, sizeof(message)) == 1, name + "the hook installs: " + message);
+        const std::set<uint64_t> changed = Changed(original, image, size);
+        Check(!changed.empty() && *changed.begin() >= menu.method && *changed.rbegin() < uint64_t{menu.method} + SOS_PROMPT_MENU_STOLEN, name + "only the method's first 6 bytes of the image change");
+        int32_t rel = 0;
+        const uint8_t* hooked = image.data() + menu.method;
+        std::memcpy(&rel, hooked + 1, 4);
+        Check(hooked[0] == 0xe9 && hooked + 5 + rel == stub && hooked[5] == 0x90, name + "the method starts with a jump to the stub and a nop up to the resume address");
+
+        std::vector<uint8_t> expected(kExpectedHead, kExpectedHead + sizeof(kExpectedHead));
+        const uint64_t handler = reinterpret_cast<uint64_t>(m == 0 ? &sos_prompt_menu_handler_save : &sos_prompt_menu_handler_pit);
+        expected.insert(expected.end(), reinterpret_cast<const uint8_t*>(&handler), reinterpret_cast<const uint8_t*>(&handler) + 8);
+        expected.insert(expected.end(), kExpectedTail, kExpectedTail + sizeof(kExpectedTail));
+        expected.insert(expected.end(), original.begin() + menu.method, original.begin() + menu.method + SOS_PROMPT_MENU_STOLEN);
+        expected.push_back(0xe9);
+        const int32_t back = static_cast<int32_t>((hooked + SOS_PROMPT_MENU_STOLEN) - (stub + expected.size() + 4));
+        expected.insert(expected.end(), reinterpret_cast<const uint8_t*>(&back), reinterpret_cast<const uint8_t*>(&back) + 4);
+        Check(std::memcmp(stub, expected.data(), expected.size()) == 0, name + "the stub saves the argument registers, calls this menu's handler, restores them, replays the 6 bytes and jumps back");
+        Check(std::all_of(stub + expected.size(), stub + SOS_PROMPT_MENU_STUB_BYTES, [](uint8_t b) { return b == 0; }) && expected.size() <= SOS_PROMPT_MENU_STUB_BYTES, name + "the stub fits its area and writes nothing past itself");
+        at = 0;
+        int calls = 0, pushes = 0, pops = 0;
+        uint64_t jumpTarget = 0;
+        while (at < expected.size()) {
+            Decoded d;
+            if (!Decode(decoder, stub + at, expected.size() - at, d)) break;
+            calls += d.instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
+            pushes += d.instruction.mnemonic == ZYDIS_MNEMONIC_PUSH;
+            pops += d.instruction.mnemonic == ZYDIS_MNEMONIC_POP;
+            if (d.instruction.mnemonic == ZYDIS_MNEMONIC_JMP) jumpTarget = reinterpret_cast<uint64_t>(stub + at + d.instruction.length) + static_cast<int64_t>(d.operands[0].imm.value.s);
+            at += d.instruction.length;
+        }
+        Check(at == expected.size() && calls == 1 && pushes == 8 && pops == 6, name + "the stub decodes to one call, six argument registers saved and restored and the two replayed pushes");
+        Check(jumpTarget == reinterpret_cast<uint64_t>(hooked + SOS_PROMPT_MENU_STOLEN), name + "the stub returns to the instruction after the stolen bytes");
+        Check(!sos_prompt_menu_verify(image.data(), size, key, m, &why), name + "a hooked method no longer verifies, so a second install refuses");
+        Image twice = image;
+        Check(sos_prompt_menu_install(twice.data(), size, key, m, MenuStub(twice, size, m), SOS_PROMPT_MENU_STUB_BYTES, message, sizeof(message)) == 0 && twice == image, name + "installing twice refuses and writes nothing");
+
+        struct Part {
+            const char* what;
+            uint32_t begin, end;
+        };
+        const Part parts[] = {{"the method", menu.method, menu.method + menu.length},
+                              {"get_overseer", site.ranges[2].begin, site.ranges[2].end},
+                              {"set_override_sprite", site.ranges[3].begin, site.ranges[3].end}};
+        for (const Part& part : parts) {
+            for (const uint32_t offset : {part.begin, (part.begin + part.end) / 2, part.end - 1}) {
+                Image damaged = original;
+                damaged[offset] ^= 0x5a;
+                const Image before = damaged;
+                Check(sos_prompt_menu_install(damaged.data(), size, key, m, MenuStub(damaged, size, m), SOS_PROMPT_MENU_STUB_BYTES, message, sizeof(message)) == 0 && damaged == before,
+                      name + "a changed byte of " + part.what + " at 0x" + std::to_string(offset) + " refuses and writes nothing");
+            }
+        }
+        Image blank(size + kStubRoom, 0);
+        Check(!sos_prompt_menu_verify(blank.data(), size, key, m, &why) && !sos_prompt_menu_verify(image.data(), menu.method + 8, key, m, &why) &&
+                  !sos_prompt_menu_verify(image.data(), size, "CUSA57767-9.99", m, &why) && !sos_prompt_menu_verify(image.data(), size, nullptr, m, &why),
+              name + "a blank, truncated or unknown image refuses");
+
+        // The loader's order: the other prompt patches, the dialog hook, then both menus; each writes its own bytes and area.
+        const SosPromptHook* hook = sos_controller_prompts_hook(key);
+        const SosSkipIntroSite* skip = sos_skip_intro_site(key);
+        Check(hook != nullptr && skip != nullptr, name + "the Automatic hook and Skip Intro have sites in this build");
+        if (hook == nullptr || skip == nullptr) continue;
+        for (const int style : {SOS_PROMPTS_XBOX, SOS_PROMPTS_AUTOMATIC}) {
+            const std::string label = name + (style == SOS_PROMPTS_XBOX ? "Xbox" : "Automatic") + " prompts, Skip Intro on: ";
+            Image combined = original;
+            char note[240];
+            bool applied = sos_skip_intro_apply(combined.data(), size, key, combined.data() + size, SOS_SKIP_INTRO_STUB_BYTES, note, sizeof(note)) == 1;
+            if (style == SOS_PROMPTS_XBOX) applied &= sos_controller_prompts_apply(combined.data(), size, key, SOS_PROMPTS_XBOX, note, sizeof(note)) == SOS_PROMPTS_XBOX;
+            else applied &= sos_prompt_hook_install(combined.data(), size, key, combined.data() + size + SOS_SKIP_INTRO_STUB_BYTES, SOS_PROMPT_HOOK_STUB_BYTES, note, sizeof(note)) == 1;
+            applied &= sos_prompt_dialog_install(combined.data(), size, key, combined.data() + size + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES, SOS_PROMPT_DIALOG_STUB_BYTES, note, sizeof(note)) == 1;
+            Check(applied, label + "the other patches and the dialog hook apply");
+            const Image others = combined;
+            Check(sos_prompt_menu_verify(combined.data(), size, key, m, &why), label + "the menu code still verifies after them");
+            bool installed = true;
+            for (int each = 0; each < SOS_PROMPT_MENUS; ++each) installed &= sos_prompt_menu_install(combined.data(), size, key, each, MenuStub(combined, size, each), SOS_PROMPT_MENU_STUB_BYTES, note, sizeof(note)) == 1;
+            Check(installed, label + "both menu hooks install after them");
+            const std::set<uint64_t> menuBytes = Changed(others, combined, size);
+            Check(!menuBytes.empty() && std::all_of(menuBytes.begin(), menuBytes.end(), [&](uint64_t byte) {
+                      for (const SosPromptMenu& each : site.menus) {
+                          if (byte >= each.method && byte < uint64_t{each.method} + SOS_PROMPT_MENU_STOLEN) return true;
+                      }
+                      return false;
+                  }),
+                  label + "they write only the first 6 bytes of each menu method");
+            const auto emptyArea = [&](uint64_t from, uint64_t count) {
+                return std::all_of(combined.begin() + static_cast<std::ptrdiff_t>(size + from), combined.begin() + static_cast<std::ptrdiff_t>(size + from + count), [](uint8_t b) { return b == 0; });
+            };
+            Check(!emptyArea(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES + static_cast<uint64_t>(m) * SOS_PROMPT_MENU_STUB_BYTES, SOS_PROMPT_MENU_STUB_BYTES),
+                  label + "the menu stub is written in its own area");
+            Image menusFirst = original;
+            for (int each = 0; each < SOS_PROMPT_MENUS; ++each) sos_prompt_menu_install(menusFirst.data(), size, key, each, MenuStub(menusFirst, size, each), SOS_PROMPT_MENU_STUB_BYTES, note, sizeof(note));
+            Check(sos_prompt_dialog_verify(menusFirst.data(), size, key, &why) && sos_skip_intro_verify(menusFirst.data(), size, skip, &why) && sos_prompt_hook_verify(menusFirst.data(), size, key, &why) &&
+                      sos_controller_prompts_state(menusFirst.data(), size, key) == SOS_PROMPTS_PLAYSTATION,
+                  label + "the dialog hook, Skip Intro, the Automatic hook and the static sites still verify on an image with the menu hooks");
+        }
+    }
+    size_t sites = 0;
+    const SosPromptSite* statics = sos_controller_prompts_sites(key, &sites);
+    bool apart = statics != nullptr && sites == 14;
+    for (size_t i = 0; statics != nullptr && i < sites; ++i) {
+        for (const SosPromptMenu& menu : site.menus) apart &= statics[i].offset + statics[i].length <= menu.method || statics[i].offset >= uint64_t{menu.method} + menu.length;
+    }
+    Check(apart, std::string(key) + ": none of the 14 static Xbox prompt sites lies in a hooked menu method");
+
+    for (const bool hooked : {false, true}) {
+        RzaImage analysis{};
+        Image current = original;
+        if (hooked) {
+            for (int m = 0; m < SOS_PROMPT_MENUS; ++m) sos_prompt_menu_install(current.data(), size, key, m, MenuStub(current, size, m), SOS_PROMPT_MENU_STUB_BYTES, message, sizeof(message));
+        }
+        const std::string name = std::string(key) + ": menus: ";
+        Check(rza_enumerate(current.data(), size, boot.segments.data(), boot.segments.size() / 3, &analysis) != 0, name + "the red-zone analysis reads the " + (hooked ? "hooked" : "pristine") + " image");
+        if (analysis.functions == nullptr) continue;
+        Check(rza_scan(current.data(), size, &analysis, 1, nullptr, 0) >= 0, name + "the red-zone analysis scans the " + (hooked ? "hooked" : "pristine") + " image");
+        for (const SosPromptMenu& menu : site.menus) {
+            const RzaFunction* found = nullptr;
+            for (size_t i = 0; i < analysis.count; ++i) {
+                if (analysis.functions[i].begin <= menu.method && menu.method < analysis.functions[i].end) found = &analysis.functions[i];
+            }
+            Check(found != nullptr && (found->flags & (RZA_RED | RZA_INSERTQ)) == 0, name + "the red-zone pass has no rewrite for the menu method at 0x" + std::to_string(menu.method));
+        }
+        rza_free(&analysis);
+    }
+}
+
 void TestRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
     struct Real {
@@ -705,6 +1120,7 @@ void TestRealImages() {
             continue;
         }
         TestHookReal(build.key, boot);
+        TestMenuHookReal(build.key, boot);
     }
 }
 
@@ -714,8 +1130,10 @@ int main() {
     for (const char* key : kBuilds) {
         TestTable(key);
         TestHandler(key);
+        TestMenuTable(key);
+        TestMenuHandler(key);
     }
-    TestRealImages();
+    if (std::getenv("SOS_TEST_FAST") == nullptr) TestRealImages();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

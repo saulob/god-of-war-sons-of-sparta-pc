@@ -1,5 +1,8 @@
 #include "controller_icons.h"
 
+#include "icon_bundle.h"
+#include "icon_common.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdarg>
@@ -18,24 +21,7 @@ namespace sos {
 namespace {
 
 namespace fs = std::filesystem;
-using Bytes = std::vector<std::uint8_t>;
-
-struct Failure : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
-// The analysed game data differs: nothing is patched, and the answer is the same until the files change.
-struct Unsupported : Failure {
-    using Failure::Failure;
-};
-
-void Require(bool condition, const std::string& message) {
-    if (!condition) throw Failure(message);
-}
-
-void Recognise(bool condition, const std::string& message) {
-    if (!condition) throw Unsupported(message);
-}
+using namespace icons;
 
 // Object IDs of the analysed resources.assets (Unity 2022.3, serialized file version 22, no type tree).
 constexpr std::int64_t kIconData = 50154;   // PS5InputIconData
@@ -44,78 +30,9 @@ constexpr std::int64_t kPs5Atlas = 50444;   // New_PS_ButtonPromptsAtlas
 constexpr std::int64_t kLookInputSprite = 40906;
 constexpr std::int32_t kMonoBehaviourClass = 114, kTextureClass = 28, kSpriteClass = 213;
 constexpr std::int32_t kRgba32 = 4;
-constexpr std::uint32_t kCell = 64;
 constexpr std::size_t kHeaderSize = 48;
 // FNV-1a of the objects the patch reads, so only the analysed game data is patched.
 constexpr std::uint64_t kSourceFingerprint = 0xe4c690956cf2f20f;
-
-struct Icon {
-    const char* token;
-    const char* sprite;
-};
-constexpr Icon kIcons[] = {{"LASUP", "Xbox_LeftStick_Up"}, {"LASDOWN", "Xbox_LeftStick_Down"}, {"LASLEFT", "Xbox_LeftStick_Left"},
-                           {"LASRIGHT", "Xbox_LeftStick_Right"}};
-constexpr std::size_t kIconCount = std::size(kIcons);
-
-std::uint64_t Fnv64(const std::uint8_t* data, std::size_t size, std::uint64_t hash = 0xcbf29ce484222325) {
-    for (std::size_t index = 0; index < size; ++index) hash = (hash ^ data[index]) * 0x100000001b3;
-    return hash;
-}
-
-std::uint64_t Fnv64(const std::string& text) { return Fnv64(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()); }
-
-// TextMeshPro's case-sensitive name hash, which its sprite assets store for every character.
-std::uint32_t TextMeshProHash(const std::string& text) {
-    std::uint32_t hash = 0;
-    for (const char character : text) hash = ((hash << 5) + hash) ^ static_cast<std::uint8_t>(character);
-    return hash;
-}
-
-std::size_t Align(std::size_t value, std::size_t alignment) { return (value + alignment - 1) / alignment * alignment; }
-
-template <typename T> T Get(const Bytes& data, std::size_t at) {
-    Require(at <= data.size() && sizeof(T) <= data.size() - at, "a read goes past the end of the data");
-    T value{};
-    std::memcpy(&value, data.data() + at, sizeof(value));
-    return value;
-}
-
-template <typename T> Bytes Raw(T value) {
-    Bytes bytes(sizeof(value));
-    std::memcpy(bytes.data(), &value, sizeof(value));
-    return bytes;
-}
-
-std::uint64_t BigEndian(const Bytes& data, std::size_t at, std::size_t size) {
-    Require(at <= data.size() && size <= data.size() - at, "a read goes past the end of the data");
-    std::uint64_t value = 0;
-    for (std::size_t index = 0; index < size; ++index) value = (value << 8) | data[at + index];
-    return value;
-}
-
-void SetBigEndian(Bytes& data, std::size_t at, std::size_t size, std::uint64_t value) {
-    for (std::size_t index = size; index-- > 0; value >>= 8) data[at + index] = static_cast<std::uint8_t>(value);
-}
-
-struct Writer {
-    Bytes data;
-    template <typename T> void Put(T value) {
-        const Bytes raw = Raw(value);
-        data.insert(data.end(), raw.begin(), raw.end());
-    }
-    void Floats(std::initializer_list<float> values) {
-        for (const float value : values) Put(value);
-    }
-    void String(const std::string& text) {
-        Put(static_cast<std::uint32_t>(text.size()));
-        data.insert(data.end(), text.begin(), text.end());
-        data.resize(Align(data.size(), 4));
-    }
-    void Pointer(std::int64_t path) {
-        Put(std::int32_t{0});
-        Put(path);
-    }
-};
 
 std::string ReadString(const Bytes& data, std::size_t at, std::size_t* end = nullptr) {
     const auto length = Get<std::uint32_t>(data, at);
@@ -260,10 +177,6 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------------
 // Layouts of the objects the patch reads or changes, read against the analysed data. Each parser consumes its object to the
 // last byte, so a layout that is not the analysed one is refused instead of half understood.
-
-struct Rect {
-    std::int32_t x = 0, y = 0, width = 0, height = 0;
-};
 
 using SpecialIcons = std::vector<std::pair<std::string, std::int64_t>>;
 
@@ -468,11 +381,7 @@ struct Texture {
     Bytes tiled;
 
     // PlayStation 4 1D thin tiling of 4-byte texels: 8x8 micro tiles in row order, each in Morton order.
-    static std::size_t Offset(std::uint32_t x, std::uint32_t y, std::uint32_t width) {
-        std::uint32_t morton = 0;
-        for (std::uint32_t bit = 0; bit < 3; ++bit) morton |= (((x >> bit) & 1u) << (2 * bit)) | (((y >> bit) & 1u) << (2 * bit + 1));
-        return (std::size_t{(y >> 3) * (width >> 3) + (x >> 3)} * 64 + morton) * 4;
-    }
+    static std::size_t Offset(std::uint32_t x, std::uint32_t y, std::uint32_t width) { return TexelOffset(x, y, width); }
     std::uint8_t Texel(std::uint32_t x, std::uint32_t y, int channel) const { return tiled[Offset(x, y, width) + static_cast<std::size_t>(channel)]; }
 };
 
@@ -594,10 +503,6 @@ Inspection Inspect(const AssetFile& file, bool scanSprites) {
 // ---------------------------------------------------------------------------------------------------------------------------
 // The patch.
 
-struct Cell {
-    std::uint32_t x = 0, y = 0;
-};
-
 struct NewSprite {
     const Icon* icon = nullptr;
     std::int64_t id = 0, renderKey = 0;
@@ -613,11 +518,6 @@ struct Plan {
     std::vector<Bytes> spriteObjects;
     std::int64_t xboxSheet = 0;
 };
-
-bool Overlaps(const Rect& a, float bx, float by, float bw, float bh) {
-    return static_cast<float>(a.x) < bx + bw - 0.5f && bx < static_cast<float>(a.x + a.width) - 0.5f && static_cast<float>(a.y) < by + bh - 0.5f &&
-           by < static_cast<float>(a.y + a.height) - 0.5f;
-}
 
 // The 64x64 opaque square of a PlayStation glyph: its rectangle is a little larger.
 Cell LocateSource(const Texture& texture, const Rect& rect, const std::string& name) {
@@ -637,38 +537,6 @@ Cell LocateSource(const Texture& texture, const Rect& rect, const std::string& n
     }
     Recognise(maxX >= minX && maxX - minX + 1 == kCell && maxY - minY + 1 == kCell, "the PlayStation glyph " + name + " is not " + std::to_string(kCell) + " texels square");
     return {minX, minY};
-}
-
-std::int64_t NewRenderKey(const std::string& name, const std::vector<std::int64_t>& used) {
-    for (std::uint64_t salt = 0;; ++salt) {
-        const auto candidate = static_cast<std::int64_t>(static_cast<std::int32_t>(Fnv64("xbox_prompt_icons/key/" + name + "/" + std::to_string(salt))));
-        if (std::find(used.begin(), used.end(), candidate) == used.end()) return candidate;
-    }
-}
-
-struct Edit {
-    std::size_t begin, end;
-    Bytes bytes;
-};
-
-Bytes Splice(const Bytes& object, std::vector<Edit> edits) {
-    std::sort(edits.begin(), edits.end(), [](const Edit& a, const Edit& b) { return a.begin < b.begin || (a.begin == b.begin && a.end < b.end); });
-    Bytes result;
-    std::size_t at = 0;
-    for (const Edit& edit : edits) {
-        Require(edit.begin >= at && edit.end >= edit.begin && edit.end <= object.size(), "overlapping edits");
-        result.insert(result.end(), object.begin() + static_cast<std::ptrdiff_t>(at), object.begin() + static_cast<std::ptrdiff_t>(edit.begin));
-        result.insert(result.end(), edit.bytes.begin(), edit.bytes.end());
-        at = edit.end;
-    }
-    result.insert(result.end(), object.begin() + static_cast<std::ptrdiff_t>(at), object.end());
-    return result;
-}
-
-Bytes StringBytes(const std::string& text) {
-    Writer writer;
-    writer.String(text);
-    return writer.data;
 }
 
 Bytes MakeSprite(const Bytes& object, const SpriteLayout& layout, const NewSprite& sprite) {
@@ -1106,19 +974,39 @@ bool DirectionCellsDrawn(const AssetFile& file, const Inspection& inspection, co
 
 // ---------------------------------------------------------------------------------------------------------------------------
 
-IconSetState InspectIconSet(const IconFiles& files, std::string* why) {
+namespace {
+
+IconSetState InspectPair(const IconFiles& files, std::string* why) {
     try {
         const AssetFile file(files.assets);
         const Inspection inspection = Inspect(file, false);
         if (why != nullptr) *why = inspection.why;
         return inspection.state;
-    } catch (const Unsupported& failure) {
-        if (why != nullptr) *why = failure.what();
-        return IconSetState::kUnrecognised;
     } catch (const std::exception& failure) {
         if (why != nullptr) *why = failure.what();
         return IconSetState::kUnrecognised;
     }
+}
+
+// The set is only as complete as its least complete member; any other mix of states is a partial patch.
+IconSetState Combine(IconSetState pair, IconSetState bundle) {
+    if (pair == IconSetState::kUnrecognised || bundle == IconSetState::kUnrecognised) return IconSetState::kUnrecognised;
+    return pair == bundle ? pair : IconSetState::kPartial;
+}
+
+}  // namespace
+
+IconSetState InspectIconSet(const IconFiles& files, std::string* why) {
+    std::string pairWhy, bundleWhy;
+    const IconSetState pair = InspectPair(files, &pairWhy);
+    if (files.bundle.empty()) {
+        if (why != nullptr) *why = pairWhy;
+        return pair;
+    }
+    const IconSetState bundle = InspectIconBundle(files.bundle, &bundleWhy);
+    const IconSetState state = Combine(pair, bundle);
+    if (why != nullptr) *why = !pairWhy.empty() ? pairWhy : !bundleWhy.empty() ? bundleWhy : (state == IconSetState::kPartial ? "the Xbox prompt set is only partly patched" : "");
+    return state;
 }
 
 bool ReadXboxPrompts(const IconFiles& files, XboxPrompts& prompts) {
@@ -1147,27 +1035,49 @@ bool HasControllerIcons(const IconFiles& files) {
     try {
         const AssetFile file(files.assets);
         const Inspection inspection = Inspect(file, false);
-        return inspection.state == IconSetState::kComplete && DirectionCellsDrawn(file, inspection, files);
+        if (inspection.state != IconSetState::kComplete || !DirectionCellsDrawn(file, inspection, files)) return false;
     } catch (const std::exception&) {
         return false;
     }
+    return files.bundle.empty() || HasBundleIcons(files.bundle);
 }
+
+namespace {
+
+void RemoveOutputs(const IconFiles& out) {
+    RemoveQuietly(out.assets);
+    RemoveQuietly(out.streamed);
+    if (!out.bundle.empty()) RemoveQuietly(out.bundle);
+}
+
+bool SameFile(const fs::path& a, const fs::path& b) {
+    std::error_code error;
+    return fs::exists(b, error) && fs::equivalent(a, b, error);
+}
+
+}  // namespace
 
 IconPatchResult PatchControllerIcons(const IconFiles& source, const IconFiles& out, std::string& report) {
     std::error_code error;
+    bool owned = false;  // the outputs are only ours to remove once they are known not to be the game's own files
     try {
+        const bool withBundle = !source.bundle.empty();
         Require(fs::is_regular_file(source.assets, error) && fs::is_regular_file(source.streamed, error), "the game's icon files do not exist: " + source.assets.string());
-        Require(!(fs::exists(out.assets, error) && fs::equivalent(source.assets, out.assets, error)) && !(fs::exists(out.streamed, error) && fs::equivalent(source.streamed, out.streamed, error)),
-                "an output file is the game's own file");
+        Require(!withBundle || (fs::is_regular_file(source.bundle, error) && !out.bundle.empty()), "the game's icon bundle does not exist: " + source.bundle.string());
+        Require(!SameFile(source.assets, out.assets) && !SameFile(source.streamed, out.streamed) && !(withBundle && SameFile(source.bundle, out.bundle)), "an output file is the game's own file");
+        owned = true;
         AssetFile file(source.assets);
         file.LoadAll();
         Note(report, "Source %s: %llu bytes, %zu objects\n", source.assets.string().c_str(), static_cast<unsigned long long>(file.fileSize()), file.objects().size());
         const Inspection inspection = Inspect(file, true);
-        if (inspection.state == IconSetState::kComplete) {
-            Note(report, "The Xbox prompt set already has the left-stick directions; nothing to prepare\n");
+        const IconSetState bundleState = withBundle ? InspectIconBundle(source.bundle) : inspection.state;
+        if (inspection.state == IconSetState::kComplete && bundleState == IconSetState::kComplete) {
+            Note(report, "The Xbox prompt set already has the left-stick directions and the interaction icons; nothing to prepare\n");
             return IconPatchResult::kComplete;
         }
-        Recognise(inspection.state == IconSetState::kMissing, inspection.why.empty() ? "the Xbox prompt set is only partly patched" : inspection.why);
+        Recognise(bundleState != IconSetState::kUnrecognised, "the game's icon bundle is not the analysed one");
+        Recognise(inspection.state == IconSetState::kMissing && bundleState == IconSetState::kMissing,
+                  inspection.why.empty() ? "the Xbox prompt set is only partly patched" : inspection.why);
         const Plan plan = Analyse(file, source, inspection);
         for (const NewSprite& sprite : plan.sprites) {
             Note(report, "%s: sprite %lld, cell (%u,%u), from PlayStation art at (%u,%u)\n", sprite.icon->token, static_cast<long long>(sprite.id), sprite.cell.x, sprite.cell.y, sprite.source.x, sprite.source.y);
@@ -1176,16 +1086,19 @@ IconPatchResult PatchControllerIcons(const IconFiles& source, const IconFiles& o
         WriteStream(source, plan, out.streamed);
         Verify(file, source, out, plan);
         Note(report, "Prepared %s (%llu bytes) and %s\n", out.assets.string().c_str(), static_cast<unsigned long long>(fs::file_size(out.assets, error)), out.streamed.string().c_str());
+        if (withBundle) {
+            const IconPatchResult bundleResult = PatchIconBundle(source.bundle, out.bundle, report);
+            Recognise(bundleResult != IconPatchResult::kUnsupported, "the game's icon bundle is not the analysed one");
+            Require(bundleResult == IconPatchResult::kPrepared, "the icon bundle could not be prepared");
+        }
         return IconPatchResult::kPrepared;
     } catch (const Unsupported& failure) {
         Note(report, "Not supported: %s\n", failure.what());
-        RemoveQuietly(out.assets);
-        RemoveQuietly(out.streamed);
+        if (owned) RemoveOutputs(out);
         return IconPatchResult::kUnsupported;
     } catch (const std::exception& failure) {
         Note(report, "Failed: %s\n", failure.what());
-        RemoveQuietly(out.assets);
-        RemoveQuietly(out.streamed);
+        if (owned) RemoveOutputs(out);
         return IconPatchResult::kFailed;
     }
 }
@@ -1196,9 +1109,10 @@ IconPatchResult PatchControllerIcons(const IconFiles& source, const IconFiles& o
 namespace {
 
 struct Identity {
-    std::uint64_t assetsSize = 0, assetsTime = 0, streamSize = 0, streamTime = 0;
+    std::uint64_t assetsSize = 0, assetsTime = 0, streamSize = 0, streamTime = 0, bundleSize = 0, bundleTime = 0;
     bool operator==(const Identity& other) const {
-        return assetsSize == other.assetsSize && assetsTime == other.assetsTime && streamSize == other.streamSize && streamTime == other.streamTime;
+        return assetsSize == other.assetsSize && assetsTime == other.assetsTime && streamSize == other.streamSize && streamTime == other.streamTime && bundleSize == other.bundleSize &&
+               bundleTime == other.bundleTime;
     }
 };
 
@@ -1212,6 +1126,12 @@ std::optional<Identity> IdentityOf(const IconFiles& files) {
     identity.streamSize = fs::file_size(files.streamed, error);
     if (error) return std::nullopt;
     identity.streamTime = static_cast<std::uint64_t>(fs::last_write_time(files.streamed, error).time_since_epoch().count());
+    if (error) return std::nullopt;
+    if (!files.bundle.empty()) {
+        identity.bundleSize = fs::file_size(files.bundle, error);
+        if (error) return std::nullopt;
+        identity.bundleTime = static_cast<std::uint64_t>(fs::last_write_time(files.bundle, error).time_since_epoch().count());
+    }
     return error ? std::nullopt : std::optional<Identity>(identity);
 }
 
@@ -1224,8 +1144,10 @@ struct Stamp {
 std::string StampText(const Stamp& stamp) {
     std::ostringstream text;
     text << "controller-icons " << stamp.version << ' ' << stamp.state << '\n'
-         << "source " << stamp.source.assetsSize << ' ' << stamp.source.assetsTime << ' ' << stamp.source.streamSize << ' ' << stamp.source.streamTime << '\n'
-         << "prepared " << stamp.prepared.assetsSize << ' ' << stamp.prepared.assetsTime << ' ' << stamp.prepared.streamSize << ' ' << stamp.prepared.streamTime << '\n';
+         << "source " << stamp.source.assetsSize << ' ' << stamp.source.assetsTime << ' ' << stamp.source.streamSize << ' ' << stamp.source.streamTime << ' ' << stamp.source.bundleSize << ' '
+         << stamp.source.bundleTime << '\n'
+         << "prepared " << stamp.prepared.assetsSize << ' ' << stamp.prepared.assetsTime << ' ' << stamp.prepared.streamSize << ' ' << stamp.prepared.streamTime << ' ' << stamp.prepared.bundleSize
+         << ' ' << stamp.prepared.bundleTime << '\n';
     return text.str();
 }
 
@@ -1235,8 +1157,13 @@ std::optional<Stamp> ReadStamp(const fs::path& path) {
     Stamp stamp;
     std::string tag, source, prepared;
     if (!(in >> tag >> stamp.version >> stamp.state) || tag != "controller-icons") return std::nullopt;
-    if (!(in >> source >> stamp.source.assetsSize >> stamp.source.assetsTime >> stamp.source.streamSize >> stamp.source.streamTime) || source != "source") return std::nullopt;
-    if (!(in >> prepared >> stamp.prepared.assetsSize >> stamp.prepared.assetsTime >> stamp.prepared.streamSize >> stamp.prepared.streamTime) || prepared != "prepared") return std::nullopt;
+    if (!(in >> source >> stamp.source.assetsSize >> stamp.source.assetsTime >> stamp.source.streamSize >> stamp.source.streamTime >> stamp.source.bundleSize >> stamp.source.bundleTime) ||
+        source != "source")
+        return std::nullopt;
+    if (!(in >> prepared >> stamp.prepared.assetsSize >> stamp.prepared.assetsTime >> stamp.prepared.streamSize >> stamp.prepared.streamTime >> stamp.prepared.bundleSize >>
+          stamp.prepared.bundleTime) ||
+        prepared != "prepared")
+        return std::nullopt;
     return stamp;
 }
 
@@ -1252,9 +1179,11 @@ bool WriteStamp(const fs::path& path, const Stamp& stamp) {
     return !error;
 }
 
-IconFiles PreparedFiles(const fs::path& cache) { return {cache / kIconsAssetsName, cache / kIconsStreamName}; }
+IconFiles PreparedFiles(const fs::path& cache) { return {cache / kIconsAssetsName, cache / kIconsStreamName, cache / kIconsBundleName}; }
 
-IconFiles SourceFiles(const fs::path& media) { return {media / kIconsAssetsName, media / kIconsStreamName}; }
+IconFiles SourceFiles(const fs::path& media) {
+    return {media / kIconsAssetsName, media / kIconsStreamName, media / kIconsBundleFolder / kIconsBundleName};
+}
 
 }  // namespace
 
@@ -1317,7 +1246,7 @@ IconPlan PrepareControllerIcons(const fs::path& media, const fs::path& cache, st
     fs::create_directories(cache, error);
     const fs::path stampFile = cache / "controller_icons.stamp";
     const IconFiles prepared = PreparedFiles(cache);
-    const IconFiles temporary{cache / "resources.assets.new", cache / "resources.assets.resS.new"};
+    const IconFiles temporary{cache / "resources.assets.new", cache / "resources.assets.resS.new", cache / "icons.bundle.new"};
     RemoveQuietly(stampFile);
     const IconPatchResult result = PatchControllerIcons(source, temporary, report);
 
@@ -1328,6 +1257,7 @@ IconPlan PrepareControllerIcons(const fs::path& media, const fs::path& cache, st
     if (result == IconPatchResult::kPrepared) {
         fs::rename(temporary.assets, prepared.assets, error);
         if (!error) fs::rename(temporary.streamed, prepared.streamed, error);
+        if (!error) fs::rename(temporary.bundle, prepared.bundle, error);
         const std::optional<Identity> now = IdentityOf(prepared);
         if (!error && now && HasControllerIcons(prepared)) {
             stamp.state = "prepared";
@@ -1339,8 +1269,7 @@ IconPlan PrepareControllerIcons(const fs::path& media, const fs::path& cache, st
             return done;
         }
         report += "Failed: the prepared copies could not be put in place\n";
-        RemoveQuietly(prepared.assets);
-        RemoveQuietly(prepared.streamed);
+        RemoveOutputs(prepared);
     } else if (result == IconPatchResult::kComplete) {
         stamp.state = "complete";
         WriteStamp(stampFile, stamp);
@@ -1352,8 +1281,7 @@ IconPlan PrepareControllerIcons(const fs::path& media, const fs::path& cache, st
         done.note = "the game's icon files are not the analysed ones; they are used as they are";
         return done;
     }
-    RemoveQuietly(temporary.assets);
-    RemoveQuietly(temporary.streamed);
+    RemoveOutputs(temporary);
     done.note = "the icons could not be prepared; the game's own files are used";
     return done;
 }

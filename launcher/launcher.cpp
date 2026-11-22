@@ -1297,7 +1297,7 @@ SosLauncherResult PlayOrExplain(const SosLauncherConfig& config, const LauncherS
 extern "C" void sos_prepare_controller_icons(const char* app0, const char* image_dir, int prompt_style, int build_supported,
                                              SosControllerIcons* icons) {
     using namespace sos;
-    icons->assets[0] = icons->streamed[0] = icons->report[0] = '\0';
+    icons->assets[0] = icons->streamed[0] = icons->bundle[0] = icons->report[0] = '\0';
     if (prompt_style == SOS_PROMPTS_PLAYSTATION || !build_supported || !app0 || !image_dir) return;
     std::string report;
     IconPlan plan;
@@ -1322,10 +1322,11 @@ extern "C" void sos_prepare_controller_icons(const char* app0, const char* image
         report += std::string("the icons could not be prepared: ") + failure.what() + "; the game's own files are used\n";
     }
     if (plan.kind == IconPlanKind::kUsePrepared) {
-        const std::string assets = Utf8(plan.files.assets), streamed = Utf8(plan.files.streamed);
-        if (assets.size() < sizeof(icons->assets) && streamed.size() < sizeof(icons->streamed)) {
+        const std::string assets = Utf8(plan.files.assets), streamed = Utf8(plan.files.streamed), bundle = Utf8(plan.files.bundle);
+        if (assets.size() < sizeof(icons->assets) && streamed.size() < sizeof(icons->streamed) && bundle.size() < sizeof(icons->bundle)) {
             std::snprintf(icons->assets, sizeof(icons->assets), "%s", assets.c_str());
             std::snprintf(icons->streamed, sizeof(icons->streamed), "%s", streamed.c_str());
+            std::snprintf(icons->bundle, sizeof(icons->bundle), "%s", bundle.c_str());
         } else {
             report += "the prepared copies' paths are too long; the game's own files are used\n";
         }

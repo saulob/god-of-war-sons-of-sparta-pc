@@ -234,17 +234,20 @@ int main(int argc, char **argv) {
 
     {
         /* A launcher-prepared copy of one game file is served through an exact path alias; nothing else changes. */
-        char original[512], streamed[512], unrelated[512], prepared[512], prepared_streamed[512], aliased[512];
+        char original[512], streamed[512], unrelated[512], prepared[512], prepared_streamed[512], prepared_bundle[512], aliased[512];
+        static const char kBundleGuest[] = "/app0/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb69.bundle";
         snprintf(original, sizeof(original), "%s\\Media\\resources.assets", app0);
         snprintf(streamed, sizeof(streamed), "%s\\Media\\resources.assets.resS", app0);
         snprintf(unrelated, sizeof(unrelated), "%s\\Media\\resources.assets.bak", app0);
         snprintf(prepared, sizeof(prepared), "%s\\prepared.assets", argv[1]);
         snprintf(prepared_streamed, sizeof(prepared_streamed), "%s\\prepared.resS", argv[1]);
+        snprintf(prepared_bundle, sizeof(prepared_bundle), "%s\\prepared.bundle", argv[1]);
         put(original, "original assets");
         put(streamed, "original streamed");
         put(unrelated, "backup");
         put(prepared, "prepared assets bytes");
         put(prepared_streamed, "prepared streamed bytes!");
+        put(prepared_bundle, "prepared bundle bytes!!");
         check("before an alias the game file is the package file",
               runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0") &&
                   strstr(aliased, "resources.assets"));
@@ -283,13 +286,30 @@ int main(int argc, char **argv) {
               runtime_file_translate("/app0/Media/resources.assets.resS", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared_streamed));
         check("the first alias still holds",
               runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared));
+        check("before its alias the icon bundle is the package file",
+              runtime_file_translate(kBundleGuest, aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0") && strstr(aliased, "0342107720d621839faadc2c6c3deb69.bundle"));
+        check("the icon bundle registers its own alias", runtime_file_alias(kBundleGuest, prepared_bundle) == 0);
+        check("the icon bundle path resolves to its prepared copy", runtime_file_translate(kBundleGuest, aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared_bundle));
+        check("another spelling of the icon bundle path resolves to it too",
+              runtime_file_translate("/app0//Media/StreamingAssets/./aa/PS4/0342107720d621839faadc2c6c3deb69.bundle", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared_bundle));
+        check("the guest reads the prepared bundle bytes", (fd = sce_open(kBundleGuest, G_RD, 0)) >= 3 && rd((int)fd, buffer, sizeof(buffer)) == (int64_t)strlen("prepared bundle bytes!!") &&
+                                                              !memcmp(buffer, "prepared bundle bytes!!", strlen("prepared bundle bytes!!")));
+        posix_close((int)fd);
+        check("another bundle of the same folder is not aliased",
+              runtime_file_translate("/app0/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb6a.bundle", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0") &&
+                  strstr(aliased, "deb6a.bundle"));
+        check("the bundle folder is not aliased", runtime_file_translate("/app0/Media/StreamingAssets/aa/PS4", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("a file below the aliased bundle is not aliased",
+              runtime_file_translate("/app0/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb69.bundle/x", aliased, sizeof(aliased)) == 0 && strstr(aliased, "app0"));
+        check("the earlier aliases still hold after the bundle's",
+              runtime_file_translate("/app0/Media/resources.assets", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared) &&
+                  runtime_file_translate("/app0/Media/resources.assets.resS", aliased, sizeof(aliased)) == 0 && !strcmp(aliased, prepared_streamed));
         char long_host[600];
         memset(long_host, 'a', sizeof(long_host) - 1);
         long_host[sizeof(long_host) - 1] = 0;
         check("a host path that does not fit is refused", runtime_file_alias("/app0/Media/long.assets", long_host) == -1);
-        check("the table has room for four aliases", runtime_file_alias("/app0/Media/z.assets", prepared) == 0 &&
-                                                          runtime_file_alias("/app0/Media/w.assets", prepared) == 0 &&
-                                                          runtime_file_alias("/app0/Media/v.assets", prepared) == -1);
+        check("the table has room for four aliases: the three prepared icon files and one more", runtime_file_alias("/app0/Media/z.assets", prepared) == 0 &&
+                                                                                              runtime_file_alias("/app0/Media/w.assets", prepared) == -1);
     }
     runtime_file_mount_read_only("/savedata0", user);
     check("a read-only mount refuses writes", sce_open("/savedata0/x.bin", G_WR | G_CREAT, 0644) == SCE(30));
