@@ -22,6 +22,8 @@ class FrameCapture {
 public:
     /// VideoOut thread, per flip: frame boundary, presented buffer, trigger file check.
     static void OnFlip(VAddr presented_address);
+    /// Host thread (F5): arms one capture if currently idle.
+    static bool Request();
 
     /// VideoOut: a display buffer the game registered. A pass drawing into one starts a frame
     /// in the GPU command stream (the flip itself runs a frame behind).
@@ -43,8 +45,10 @@ public:
     /// Contents of a bound buffer (first 1 KiB), kept for small passes and a pass's first draw.
     static void Buffer(u64 stage_hash, u32 slot, VAddr address, const void* data, u64 size);
     static void Note(const char* text);
+    static void State(const char* text);
 
 private:
+    static void FinishRecording();
     enum : u32 { Idle, Armed, Recording };
     static inline std::atomic<u32> state{Idle};
     static inline std::atomic<u64> flips{0};

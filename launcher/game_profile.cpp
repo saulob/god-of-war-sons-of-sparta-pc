@@ -2,6 +2,8 @@
 
 #include <string_view>
 
+#include "sos_resolution_sites.h"
+
 namespace sos {
 namespace {
 
@@ -19,15 +21,18 @@ constexpr const char* kUpdate101Files[] = {
     "Media/StreamingAssets/aa/catalog.json",
 };
 
-constexpr SosResolutionSite kResolutionSites[] = {
-    {0x9ab0470, 12, SOS_SITE_WIDTH, {0x80, 0x07, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00}},
-    {0xaa30fd, 22, SOS_SITE_HEIGHT_CALC,
-     {0x43, 0x8d, 0x04, 0xff, 0x47, 0x8d, 0x64, 0xff, 0x0f, 0x44, 0x89, 0xfe, 0x85, 0xc0, 0x44, 0x0f, 0x49, 0xe0, 0x41,
-      0xc1, 0xfc, 0x04}},
-    {0x147c913, 20, SOS_SITE_HEIGHT_CHECK,
-     {0x8d, 0x14, 0xdb, 0x8b, 0xb5, 0x44, 0xfe, 0xff, 0xff, 0xc1, 0xea, 0x04, 0x39, 0xd6, 0x0f, 0x85, 0x50, 0x01, 0x00,
-      0x00}},
-};
+// The Unity player's own sites: the same bytes at the same offsets in both builds.
+#define SOS_UNITY_RESOLUTION_SITES                                                                                      \
+    {0x9ab0470, 12, SOS_SITE_WIDTH, {0x80, 0x07, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00}},         \
+    {0xaa30fd, 22, SOS_SITE_HEIGHT_CALC,                                                                                  \
+     {0x43, 0x8d, 0x04, 0xff, 0x47, 0x8d, 0x64, 0xff, 0x0f, 0x44, 0x89, 0xfe, 0x85, 0xc0, 0x44, 0x0f, 0x49, 0xe0, 0x41,  \
+      0xc1, 0xfc, 0x04}},                                                                                                 \
+    {0x147c913, 20, SOS_SITE_HEIGHT_CHECK,                                                                                \
+     {0x8d, 0x14, 0xdb, 0x8b, 0xb5, 0x44, 0xfe, 0xff, 0xff, 0xc1, 0xea, 0x04, 0x39, 0xd6, 0x0f, 0x85, 0x50, 0x01, 0x00,  \
+      0x00}}
+
+constexpr SosResolutionSite kResolutionSites_1_00[] = {SOS_UNITY_RESOLUTION_SITES, SOS_SET_RESOLUTION_SITES_1_00};
+constexpr SosResolutionSite kResolutionSites_1_01[] = {SOS_UNITY_RESOLUTION_SITES, SOS_SET_RESOLUTION_SITES_1_01};
 
 constexpr char kContentId[] = "UP9000-CUSA57767_00-SONSOFSPARTAPS40";
 
@@ -35,11 +40,11 @@ constexpr GameBuild kGameBuilds[] = {
     {.title_id = "CUSA57767", .content_id = kContentId, .version = "1.00", .folder = "CUSA57767-1.00",
      .eboot_sha256 = "19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31",
      .regional_archive = nullptr, .extra_files = kGameDataFiles, .label = "CUSA57767 1.00 USA", .region = "USA",
-     .layers = kBaseLayers, .skip_intro = true, .resolution_sites = kResolutionSites},
+     .layers = kBaseLayers, .skip_intro = true, .resolution_sites = kResolutionSites_1_00},
     {.title_id = "CUSA57767", .content_id = kContentId, .version = "1.01", .folder = "CUSA57767-1.01",
      .eboot_sha256 = "aafe8a2ab8e55e0044fe371248749026c494a07d6864fbb6a7fa89fe39999d58",
      .regional_archive = nullptr, .extra_files = kUpdate101Files, .label = "CUSA57767 1.01 USA", .region = "USA",
-     .layers = kUpdate101Layers, .skip_intro = true, .resolution_sites = kResolutionSites},
+     .layers = kUpdate101Layers, .skip_intro = true, .resolution_sites = kResolutionSites_1_01},
 };
 
 } // namespace

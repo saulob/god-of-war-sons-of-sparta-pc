@@ -21,6 +21,7 @@
 #include "skip_intro.h"
 #include "sos_skip_intro.h"
 #include "sos_exit_game.h"
+#include "sos_uw_probe.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 #include "trophies/trophy_runtime.h"
@@ -387,8 +388,31 @@ static void note_render_target_values(const SosGameBuild *build, const SosRender
             runtime_redzone_add_volatile(site->offset + 4, 4);
         } else if (site->kind == SOS_SITE_HEIGHT_CALC && height) {
             runtime_redzone_add_volatile(site->offset + 2, 4);
+        } else if (site->kind == SOS_SITE_SET_RESOLUTION) {
+            runtime_redzone_add_volatile(site->offset + 1, 4);
+            runtime_redzone_add_volatile(site->offset + 6, 4);
         }
     }
+}
+
+/* Registers the splash overlay only when the guest's file is the one the patch was made for. */
+static const char *keep_splash_video_shape(void) {
+    char host[1024];
+    if (runtime_file_translate(sos_splash_patch.guest_path, host, sizeof(host)) != 0) return "file not found";
+    FILE *file = fopen(host, "rb");
+    if (!file) return "file not found";
+    unsigned char bytes[sizeof(sos_splash_patch.original)];
+    uint64_t length = 0;
+    int read_ok = fseek(file, 0, SEEK_END) == 0;
+    if (read_ok) {
+        const long end = ftell(file);
+        length = end > 0 ? (uint64_t)end : 0;
+        read_ok = fseek(file, (long)sos_splash_patch.offset, SEEK_SET) == 0 && fread(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
+    }
+    fclose(file);
+    if (!read_ok || !sos_splash_patch_matches(bytes, length)) return "unexpected scene data";
+    const RuntimeFilePatch patch = {sos_splash_patch.offset, sizeof(sos_splash_patch.centred), sos_splash_patch.centred};
+    return runtime_file_overlay(sos_splash_patch.guest_path, length, &patch, 1) == 0 ? NULL : "overlay table full";
 }
 
 /* Unity's Il2cppUserAssemblies keeps direct `jmp rel32` stubs for a few imports (the scePthreadSem*
@@ -799,7 +823,8 @@ int main(int argc, char **argv) {
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
-                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES);
+                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
+                                        SOS_UW_PROBE_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
 #ifdef _WIN32
@@ -823,9 +848,9 @@ int main(int argc, char **argv) {
                                         &requested, error, sizeof(error))) {
                 render_target = requested;
                 note_render_target_values(&game_build, &requested);
-                printf("Patch: render target %dx%d, Pro mode %s, direct memory pool +%llu MiB\n", render_target.width,
-                       render_target.height, render_target.neo ? "on" : "off",
-                       (unsigned long long)(sos_budget_growth(&render_target) >> 20));
+                printf("Patch: render target %dx%d, Pro mode %s, direct memory pool +%llu MiB, %d game resolution requests\n",
+                       render_target.width, render_target.height, render_target.neo ? "on" : "off",
+                       (unsigned long long)(sos_budget_growth(&render_target) >> 20), SOS_SET_RESOLUTION_SITE_COUNT);
             } else {
                 printf("Display: render resolution ignored: %s, game build %s\n", error, game_build.label);
                 resolution_choice = aspect_choice = 0;
@@ -837,6 +862,12 @@ int main(int argc, char **argv) {
                                       sos_aspect_ratios[aspect_choice].key);
         printf("Display: render resolution %dx%d (%s), aspect ratio %s\n", render_target.width, render_target.height,
                sos_resolutions[resolution_choice].key, sos_aspect_ratios[aspect_choice].name);
+        if (sos_render_target_wider_than_16_9(&render_target)) {
+            const char *splash = keep_splash_video_shape();
+            printf("True Ultrawide: Hor+ world view %.2fx the 16:9 width, same vertical view; boot splash video %s%s\n",
+                   sos_render_target_widening(&render_target), splash ? "left as the game draws it: " : "kept at 16:9",
+                   splash ? splash : "");
+        }
     }
     const int prompt_style = sos_controller_prompts_from_file(settings_file);
     char prompt_key[64] = "";
@@ -1074,6 +1105,16 @@ int main(int argc, char **argv) {
                                   exit_message, sizeof(exit_message)))
             sos_exit_game_arm(image, prompt_key, dcpgpu_request_close);
         printf("Exit Game: %s\n", exit_message);
+    }
+    if (sos_render_target_wider_than_16_9(&render_target)) { /* DEBUG_SAULO */
+        char probe_message[200] = "unavailable: not a supported game build";
+        uint8_t *probe_stub = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
+                              SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES +
+                              SOS_EXIT_GAME_STUB_BYTES;
+        const int hooked = prompt_key[0] && sos_uw_probe_install(image, size, prompt_key, probe_stub, SOS_UW_PROBE_STUB_BYTES,
+                                                                 probe_message, sizeof(probe_message));
+        if (hooked) sos_uw_probe_arm(dcpgpu_debug_camera, dcpgpu_debug_f5_serial);
+        printf("DEBUG_SAULO Ultrawide: camera telemetry %s\n", probe_message);
     }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);

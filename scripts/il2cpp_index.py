@@ -160,8 +160,8 @@ class Index:
                         values[meta.string(self.fields[field_index][0])] = first >> 1
         return values
 
-    def field_offset(self, type_name, field_name):
-        type_index = self.type_indices(type_name)[0]
+    def field_offset(self, type_name, field_name, image="Assembly-CSharp.dll"):
+        type_index = self.type_indices(type_name, image)[0]
         t = self.types[type_index]
         table = self.boot.pointer(self.metadata_registration + 0x58)
         base = self.boot.pointer(table + 8 * type_index)

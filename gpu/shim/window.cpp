@@ -13,6 +13,7 @@
 #include "sdl_window.h"
 #include "sos_sdl_compat.h"
 #include "sos_window_fit.h"
+#include "dcp_f5_capture.h"
 #include "dcp_overlay.h"
 #include "dcp_graphics.h"
 #include "dcp_latency_trace.h"
@@ -20,6 +21,7 @@
 #include "dcp_present.h"
 #include "dcp_settings.h"
 #include "dcp_title.h"
+#include "video_core/renderer_vulkan/vk_frame_capture.h"
 #ifdef _WIN32
 #include "video_core/renderer_opengl/gl_angle.h"
 #endif
@@ -43,6 +45,14 @@ namespace {
 void TracePress(const SDL_Event& event) {
     if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)) {
         DcpLatencyTrace::press_ns.store(event.common.timestamp, std::memory_order_relaxed);
+    }
+}
+
+void HandleF5Capture(bool repeat) {
+    static DcpF5Capture::Gate gate;
+    if (gate.TryRequest(repeat, Vulkan::FrameCapture::Request)) {
+        std::printf("DEBUG_SAULO Ultrawide: F5 requested generic frame capture\n");
+        runtime_log_flush();
     }
 }
 
@@ -392,6 +402,7 @@ bool WindowSDL::PollEvents() {
             const bool host_shortcut = event.key.scancode == DcpSettings::Get().window_mode_key ||
                                        event.key.scancode == DcpSettings::Get().menu_key ||
                                        event.key.scancode == SDL_SCANCODE_F1 ||
+                                       event.key.scancode == SDL_SCANCODE_F5 ||
                                        (ui && event.key.key == SDLK_ESCAPE);
             if (event.key.windowID == game_window && DcpCursor::IsGameplayKey(event.key.repeat, host_shortcut)) {
                 cursor.KeyboardActivity();
@@ -459,6 +470,10 @@ bool WindowSDL::PollEvents() {
             ReleaseMouse();
             break;
         case SDL_EVENT_KEY_DOWN: {
+            if (event.key.scancode == SDL_SCANCODE_F5) {
+                HandleF5Capture(event.key.repeat);
+                break;
+            }
             const bool window_shortcut = event.key.scancode == DcpSettings::Get().window_mode_key;
             if (window_shortcut && !event.key.repeat) {
                 ToggleBorderless();

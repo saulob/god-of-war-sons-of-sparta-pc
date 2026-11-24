@@ -97,6 +97,7 @@ set(SOS_RUNTIME_SOURCES
     src/startup_profile.c
     src/sos_skip_intro.c
     src/sos_exit_game.c
+    src/sos_uw_probe.c
     src/runtime_module.c
     src/runtime_history.c
     src/dcp_keys.c

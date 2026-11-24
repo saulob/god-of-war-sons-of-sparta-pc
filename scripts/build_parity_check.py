@@ -241,11 +241,24 @@ def check_exit_game(gate, builds, sources):
         gate.check(sites[version] == sites.get(reference), f"CUSA57767 {version} Exit Game site differs from {reference} in prologue, range lengths or object layout")
 
 
+def resolution_requests(text):
+    """{version: [offset]} of the generated SetResolution sites."""
+    found = {}
+    for version, block in re.findall(r"#define SOS_SET_RESOLUTION_SITES_(\d+_\d+)((?:.*\\\n)*.*)", text):
+        found[version.replace("_", ".")] = re.findall(r"SOS_SET_RESOLUTION_SITE\((0x[0-9a-f]+)u\)", block)
+    return found
+
+
 def check_resolution(gate, builds, sources):
-    gate.start("Render resolution and frame rate")
+    gate.start("Render resolution and True Ultrawide")
     rows = game_profile_rows(sources["launcher/game_profile.cpp"])
-    tables = {rows[b["key"]]["resolution"] if b["key"] in rows else None for b in builds.values()}
-    gate.check(None not in tables and len(tables) == 1, "launcher/game_profile.cpp: every supported build must use the same resolution site table, or one must be added per build")
+    for version, build in sorted(builds.items()):
+        table = rows[build["key"]]["resolution"] if build["key"] in rows else None
+        gate.check(table == f"kResolutionSites_{version.replace('.', '_')}", f"launcher/game_profile.cpp: CUSA57767 {version} must use its own resolution site table")
+    requests = resolution_requests(sources["launcher/sos_resolution_sites.h"])
+    gate.same_builds(set(requests), set(builds), "launcher/sos_resolution_sites.h")
+    for version, offsets in sorted(requests.items()):
+        gate.check(len(offsets) == 7 and len(set(offsets)) == 7, f"launcher/sos_resolution_sites.h: CUSA57767 {version} needs its 7 distinct SetResolution sites")
 
 
 FEATURES = [check_identity, check_skip_intro, check_prompts, check_dialog, check_exit_game, check_resolution]
@@ -257,6 +270,8 @@ OWNERS = {
     "launcher/controller_prompts.c": "Xbox controller prompts", "launcher/controller_prompts_sites.h": "Xbox controller prompts",
     "launcher/prompt_dialog.c": "Settings dialog glyphs", "launcher/prompt_dialog_sites.h": "Settings dialog glyphs",
     "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
+    "launcher/sos_resolution_sites.h": "Render resolution and True Ultrawide",
+    "src/sos_uw_probe.c": "DEBUG_SAULO True Ultrawide capture telemetry (tests/uw_probe_tests.cpp, both builds)",
 }
 # Host code with no build-specific data: one test covers it, not one per build.
 SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save and redzone layers"}
@@ -267,6 +282,7 @@ COVERAGE = [
     ("tests/prompt_dialog_tests.cpp", "names"), ("tests/exit_game_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
     ("scripts/skip_intro_check.py", "names"), ("scripts/title_input_check.py", "names"), ("scripts/map_input_check.py", "names"),
     ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"), ("scripts/exit_game_sites.py", "names"),
+    ("tests/ultrawide_tests.cpp", "inventory"), ("scripts/ultrawide_check.py", "names"),
     ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
 ]
 
@@ -405,7 +421,7 @@ def read_sources():
     sources = {path: read(path) for path in (
         "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "launcher/controller_prompts.c",
         "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
-        "src/sos_exit_game.c", "src/sos_exit_game_sites.h")}
+        "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h")}
     for name in ("EBOOT_SHA256", "IMAGE_FOLDERS"):
         sources["il2cpp:" + name] = ast_assignment("scripts/il2cpp_index.py", name) or {}
     for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
@@ -460,6 +476,9 @@ def self_test():
     expect_failure("1.01 missing from the image tables", mutate=lambda s: s.update({"il2cpp:IMAGE_FOLDERS": {k: v for k, v in s["il2cpp:IMAGE_FOLDERS"].items() if k != "1.01"}}))
     expect_failure("a graphics check that stops iterating the supported builds", mutate=lambda s: s.update({"cov:scripts/graphics_import_check.py": s["cov:scripts/graphics_import_check.py"].replace("PROFILES", "X")}))
     expect_failure("a test that names only 1.00", mutate=lambda s: s.update({"cov:tests/skip_intro_tests.cpp": s["cov:tests/skip_intro_tests.cpp"].replace("1.01", "x")}))
+    expect_failure("1.01 loses a SetResolution site", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITE(0x50f541cu)", "")}))
+    expect_failure("1.01 routed to the 1.00 resolution sites", mutate=lambda s: s.update({"launcher/game_profile.cpp": s["launcher/game_profile.cpp"].replace(".resolution_sites = kResolutionSites_1_01", ".resolution_sites = kResolutionSites_1_00")}))
+    expect_failure("1.01 missing from the generated resolution sites", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITES_1_01", "SOS_SET_RESOLUTION_SITES_X")}))
     expect_failure("the resolution table of 1.01 differs", mutate=lambda s: s.update({"launcher/game_profile.cpp": re.sub(r'(\.version = "1\.01".*?\.resolution_sites = )kResolutionSites', r"\1kOtherSites", s["launcher/game_profile.cpp"], count=1, flags=re.S)}))
 
     good = _synthetic_avplayer()

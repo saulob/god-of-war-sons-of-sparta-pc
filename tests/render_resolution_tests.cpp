@@ -139,7 +139,7 @@ uint32_t Le32(const unsigned char* at) {
 
 void TestSites() {
     const std::vector<SosResolutionSite> sites = Sites();
-    Check(sites.size() == 3, "three verified sites");
+    Check(sites.size() == 3 + SOS_SET_RESOLUTION_SITE_COUNT, "three player sites and the game's resolution requests");
     const size_t size = 0xB000000;
     char error[256];
 
@@ -202,11 +202,18 @@ void TestSites() {
 void TestProfile() {
     const std::span<const sos::GameBuild> builds = sos::SupportedBuilds();
     for (const sos::GameBuild& build : builds) {
-        Check(build.resolution_sites.size() == 3 && !sos::RestrictedToNativeResolution(&build),
+        Check(build.resolution_sites.size() == 3 + SOS_SET_RESOLUTION_SITE_COUNT && !sos::RestrictedToNativeResolution(&build),
               std::string("sites enabled for ") + build.label);
     }
-    Check(builds[0].resolution_sites.data() == builds[1].resolution_sites.data(),
-          "1.01 shares the verified sites: its executable holds the same bytes");
+    bool same_player_sites = true, own_requests = true;
+    for (size_t i = 0; i < builds[0].resolution_sites.size(); ++i) {
+        const SosResolutionSite& a = builds[0].resolution_sites[i];
+        const SosResolutionSite& b = builds[1].resolution_sites[i];
+        if (a.kind != SOS_SITE_SET_RESOLUTION) same_player_sites = same_player_sites && a.offset == b.offset;
+        else own_requests = own_requests && a.offset != b.offset && b.kind == SOS_SITE_SET_RESOLUTION;
+    }
+    Check(same_player_sites, "1.00 and 1.01 share the player's sites: their executables hold the same bytes there");
+    Check(own_requests, "each build has its own resolution requests: the game code moved in 1.01");
     const std::span<const SosResolutionSite> sites = builds[0].resolution_sites;
     Check(sites[0].offset == 0x9ab0470 && sites[1].offset == 0xaa30fd && sites[2].offset == 0x147c913, "site offsets");
 }
@@ -292,13 +299,13 @@ void TestRealImageSafety(const BootImage& image, const sos::GameBuild& build, co
                 bool inside = false;
                 for (const SosResolutionSite& site : sites) {
                     inside = inside || (i >= site.offset && i < size_t(site.offset) + site.length &&
-                                        (site.kind == SOS_SITE_WIDTH || height_sites));
+                                        ((site.kind != SOS_SITE_HEIGHT_CALC && site.kind != SOS_SITE_HEIGHT_CHECK) || height_sites));
                 }
                 changed_outside += inside ? 0 : 1;
             }
             Check(changed_outside == 0, label + ": only the needed sites change");
             for (const SosResolutionSite& site : sites) {
-                if (site.kind == SOS_SITE_WIDTH || height_sites) {
+                if ((site.kind != SOS_SITE_HEIGHT_CALC && site.kind != SOS_SITE_HEIGHT_CHECK) || height_sites) {
                     std::memcpy(patched.data() + site.offset, site.original, site.length);
                 }
             }
@@ -372,7 +379,8 @@ void TestRealImages() {
             all = all && site.offset + site.length <= image.bytes.size() &&
                   !std::memcmp(&image.bytes[site.offset], site.original, site.length);
             const size_t count = site.kind == SOS_SITE_WIDTH ? 1 : CountOccurrences(image.bytes, site.original, site.length);
-            Check(count == 1, name + ": the site's bytes occur once in the executable");
+            const size_t expected = site.kind == SOS_SITE_SET_RESOLUTION ? SOS_SET_RESOLUTION_SITE_COUNT : 1;
+            Check(count == expected, name + ": the site's bytes occur where the table says and nowhere else");
         }
         Check(all, name + ": every site holds its original bytes");
         const SosRenderTarget target = sos_render_target(&sos_resolutions[3], &sos_aspect_ratios[2]);

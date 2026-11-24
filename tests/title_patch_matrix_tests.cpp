@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -115,7 +116,12 @@ void TestBuild(const char* key, const fs::path& boot) {
     Check(std::none_of(hook_bytes.begin(), hook_bytes.end(), [&](uint64_t at) { return skip_bytes.count(at) != 0 || xbox_bytes.count(at) != 0; }),
           name + ": the Automatic hook, the Xbox patch and Skip Intro write different bytes");
     const uint64_t hook_begin = hook->method, hook_end = uint64_t{hook->method} + hook->length;
-    for (const SosResolutionSite& resolution : sos::SupportedBuilds()[0].resolution_sites) {
+    std::span<const SosResolutionSite> resolution_sites;
+    for (const sos::GameBuild& build : sos::SupportedBuilds()) {
+        if (std::string(build.title_id) + "-" + build.version == name) resolution_sites = build.resolution_sites;
+    }
+    Check(!resolution_sites.empty(), name + ": the build has render resolution sites");
+    for (const SosResolutionSite& resolution : resolution_sites) {
         Check(resolution.offset + resolution.length <= hook_begin || resolution.offset >= hook_end,
               name + ": the render resolution site at 0x" + std::to_string(resolution.offset) + " is outside the hooked method");
     }

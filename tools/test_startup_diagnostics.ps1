@@ -42,6 +42,7 @@ try {
         'launcher/game_profile.h',
         'launcher/game_profile.cpp',
         'launcher/sos_resolution.h',
+        'launcher/sos_resolution_sites.h',
         'launcher/utf8.h',
         'launcher/localization/ui_text.h',
         'launcher/localization/ui_text.cpp'

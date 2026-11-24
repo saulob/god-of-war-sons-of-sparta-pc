@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 
+#include "sos_resolution_sites.h"
 #include "trg/settings.h"
 
 extern "C" {
@@ -66,7 +67,7 @@ void FillNops(unsigned char *at, size_t length) {
 }
 
 bool Needed(const SosResolutionSite &site, bool height_sites) {
-    return site.kind == SOS_SITE_WIDTH || height_sites;
+    return site.kind == SOS_SITE_WIDTH || site.kind == SOS_SITE_SET_RESOLUTION || height_sites;
 }
 
 int Fail(char *error, size_t size, const char *what, uint32_t offset) {
@@ -79,6 +80,7 @@ bool Fits(const SosResolutionSite &site) {
     case SOS_SITE_WIDTH: return site.length >= 8;
     case SOS_SITE_HEIGHT_CALC: return site.length >= 9;
     case SOS_SITE_HEIGHT_CHECK: return site.length >= 6;
+    case SOS_SITE_SET_RESOLUTION: return site.length == 17 && site.original[0] == 0xBF && site.original[5] == 0xBE;
     }
     return false;
 }
@@ -95,12 +97,12 @@ int sos_render_target_is_native(const SosRenderTarget *target) {
 
 SosRenderTarget sos_render_target(const SosResolution *resolution, const SosAspectRatio *aspect) {
     const long ratio_width = aspect->width, ratio_height = aspect->height;
-    long width = (long(resolution->height) * ratio_width * 2 + ratio_height) / (2 * ratio_height);
-    long height = resolution->height;
+    const long wanted = (long(resolution->height) * ratio_width * 2 + ratio_height) / (2 * ratio_height);
+    long width = wanted, height = resolution->height;
     bool neo = false;
     for (int pass = 0; pass < 3; ++pass) {
         const long minimum = neo ? kNeoMinWidth : kBaseMinWidth;
-        long clamped = std::clamp(width, minimum, kMaxWidth);
+        long clamped = std::clamp(wanted, minimum, kMaxWidth);
         const long step = WidthStep(clamped, neo);
         clamped = std::min(kMaxWidth, (clamped + step / 2) / step * step);
         width = std::max(clamped, (minimum + step - 1) / step * step);
@@ -115,6 +117,14 @@ SosRenderTarget sos_render_target(const SosResolution *resolution, const SosAspe
         target.display_height = 2160;
     }
     return target;
+}
+
+double sos_render_target_widening(const SosRenderTarget *target) {
+    return double(target->width) * 9.0 / (double(target->height) * 16.0);
+}
+
+int sos_render_target_wider_than_16_9(const SosRenderTarget *target) {
+    return long(target->width) * 9 > long(target->height) * 16 + 16;
 }
 
 uint64_t sos_budget_growth(const SosRenderTarget *target) {
@@ -132,11 +142,15 @@ int sos_apply_render_target(unsigned char *image, uint64_t image_size, const Sos
                             const SosRenderTarget *target, char *error, size_t error_size) {
     const bool height_sites = sos_target_needs_height_sites(target);
     bool has[3] = {false, false, false};
+    size_t requests = 0;
     for (size_t i = 0; i < count; ++i) {
         const SosResolutionSite &site = sites[i];
-        if (site.length > SOS_SITE_MAX_BYTES || site.kind > SOS_SITE_HEIGHT_CHECK || !Fits(site))
+        if (site.length > SOS_SITE_MAX_BYTES || site.kind > SOS_SITE_SET_RESOLUTION || !Fits(site))
             return Fail(error, error_size, "malformed site", site.offset);
-        has[site.kind] = true;
+        if (site.kind == SOS_SITE_SET_RESOLUTION)
+            ++requests;
+        else
+            has[site.kind] = true;
         if (!Needed(site, height_sites)) continue;
         if (uint64_t(site.offset) + site.length > image_size) return Fail(error, error_size, "site outside the image", site.offset);
         if (std::memcmp(image + site.offset, site.original, site.length))
@@ -144,6 +158,8 @@ int sos_apply_render_target(unsigned char *image, uint64_t image_size, const Sos
     }
     if (!has[SOS_SITE_WIDTH] || (height_sites && !(has[SOS_SITE_HEIGHT_CALC] && has[SOS_SITE_HEIGHT_CHECK])))
         return Fail(error, error_size, "site missing for this shape", 0);
+    if (requests != SOS_SET_RESOLUTION_SITE_COUNT)
+        return Fail(error, error_size, "the game's resolution requests are not all known", 0);
     for (size_t i = 0; i < count; ++i) {
         const SosResolutionSite &site = sites[i];
         if (!Needed(site, height_sites)) continue;
@@ -166,6 +182,12 @@ int sos_apply_render_target(unsigned char *image, uint64_t image_size, const Sos
         case SOS_SITE_HEIGHT_CHECK:
             FillNops(at + site.length - 6, 6);
             break;
+        case SOS_SITE_SET_RESOLUTION: {
+            const uint32_t width = uint32_t(target->width), height = uint32_t(target->height);
+            std::memcpy(at + 1, &width, 4);
+            std::memcpy(at + 6, &height, 4);
+            break;
+        }
         }
     }
     return 1;
@@ -182,6 +204,14 @@ SosRenderTarget sos_render_target_from_settings(const char *settings_file, int s
     if (aspect) *aspect = aspect_index;
     if (!resolution_index && !aspect_index) return sos_native_render_target();
     return sos_render_target(&sos_resolutions[resolution_index], &sos_aspect_ratios[aspect_index]);
+}
+
+const SosSplashPatch sos_splash_patch = {SOS_SPLASH_GUEST_PATH, SOS_SPLASH_FILE_LENGTH, SOS_SPLASH_RECT_OFFSET,
+                                         SOS_SPLASH_RECT_ORIGINAL, SOS_SPLASH_RECT_CENTRED};
+
+int sos_splash_patch_matches(const unsigned char *bytes, uint64_t file_length) {
+    return bytes && file_length == sos_splash_patch.file_length &&
+           !std::memcmp(bytes, sos_splash_patch.original, sizeof(sos_splash_patch.original));
 }
 
 } // extern "C"
