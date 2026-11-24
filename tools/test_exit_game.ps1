@@ -68,14 +68,19 @@ try {
         @{ Old = '    if (!atomic_exchange(&g_exit.installed_logged, 1)) puts("Exit Game: title menu installed");
     return 1;'; New = '    return 0;'; What = 'row count stays 5 (toggle hook stops keeping QuitButton active)'; Real = $false }
         @{ Old = 'SOS_EXIT_GAME_SYSV int sos_exit_game_on_confirm(void *anim_event) {
-    if (!g_exit.armed || !is_menu_quit_button(anim_event)) return 0;
+    if (!g_exit.armed) return 0;
+    title_animation_event(anim_event);
+    if (!is_menu_quit_button(anim_event)) return 0;
     request_host_exit();
     return 1;'; New = 'SOS_EXIT_GAME_SYSV int sos_exit_game_on_confirm(void *anim_event) {
-    (void)anim_event;
+    if (!g_exit.armed) return 0;
+    title_animation_event(anim_event);
     return 0;'; What = 'Exit Game confirm fails to intercept QuitButton'; Real = $false }
         @{ Old = '    if (g_exit.host_exit) (void)g_exit.host_exit();'; New = '    (void)g_exit.host_exit;'; What = 'Exit Game confirm does nothing'; Real = $false }
-        @{ Old = '    if (!g_exit.armed || !is_menu_quit_button(anim_event)) return 0;'; New = '    (void)anim_event;
-    if (!g_exit.armed) return 0;'; What = 'non-QuitButton or Back/other button triggers exit'; Real = $false }
+        @{ Old = '    if (!g_exit.armed) return 0;
+    title_animation_event(anim_event);
+    if (!is_menu_quit_button(anim_event)) return 0;'; New = '    if (!g_exit.armed) return 0;
+    title_animation_event(anim_event);'; What = 'non-QuitButton or Back/other button triggers exit'; Real = $false }
         @{ Old = '    {0, "English", "EXIT", "EXIT GAME"},'; New = '    {0, "English", "EXIT", ""},'; What = 'Exit Game text missing in English'; Real = $false }
         @{ Old = '    {4, "Portuguese (Brazil)", "SAIR", "SAIR DO JOGO"},'; New = '    {4, "Portuguese (Brazil)", "SAIR", "EXIT GAME"},'; What = 'wrong Portuguese translation'; Real = $false }
         @{ Old = '    {14, "Japanese", "終了", "ゲームを終了"},'; New = '    {14, "Japanese", "終了", "EXIT GAME"},'; What = 'wrong Japanese translation'; Real = $false }

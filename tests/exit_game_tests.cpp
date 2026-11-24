@@ -151,6 +151,14 @@ int FakeHostExit() {
     return 1;
 }
 
+int g_titleAnimationCancels = 0;
+void* g_titleAnimationCancelled = nullptr;
+
+void SOS_SKIP_INTRO_SYSV FakeCancelTitleAnimation(void* component) {
+    ++g_titleAnimationCancels;
+    g_titleAnimationCancelled = component;
+}
+
 void TestTables() {
     for (const char* key : kBuilds) {
         const std::string name = key;
@@ -241,6 +249,8 @@ void TestHeadlessRuntime() {
     makeNode("MainCategories", "MainCategories", "");
     makeNode("ControlConfigExit", "ExitGame", "MainCategories");
     makeNode("ControlConfigExitText", "Text", "ControlConfigExit");
+    makeNode("TitleIntroAnimation", "IntroState", "");
+    makeNode("TitlePromptAnimation", "WaitForInputPressState", "");
 
     FakeObj locClass, locStatics, locInstance;
     locClass.SetPtr(0xb8, locStatics.ptr());
@@ -322,6 +332,19 @@ void TestHeadlessRuntime() {
     sos_exit_game_on_quit_app();
     sos_exit_game_on_quit_app();
     Check(world.hostExitCalls == 1 && sos_exit_game_requested() == 1, "QuitApplication::Quit requests host exit exactly once");
+
+    // 7. Skip Intro's title guard: the prompt's hide cancels the pending intro animation watchers
+    g_titleAnimationCancels = 0;
+    g_titleAnimationCancelled = nullptr;
+    sos_skip_intro_arm_title(site.native_object_offset, FakeCancelTitleAnimation);
+    sos_skip_intro_arm();
+    Check(sos_skip_intro_watching_title() == 1, "title guard: Skip Intro starts watching the title animations");
+    Check(sos_exit_game_on_confirm(nodes["TitleIntroAnimation"].comp.ptr()) == 0, "title guard: an intro watcher is not a QuitButton animation");
+    Check(sos_exit_game_on_confirm(nodes["TitlePromptAnimation"].comp.ptr()) == 0, "title guard: the prompt's hide is not a QuitButton animation");
+    Check(g_titleAnimationCancels == 1 && g_titleAnimationCancelled == nodes["TitleIntroAnimation"].comp.ptr(),
+          "title guard: hiding the prompt cancels the pending title intro watcher exactly once");
+    Check(sos_skip_intro_watching_title() == 0, "title guard: the guard is over once the prompt is dismissed");
+    Check(world.hostExitCalls == 1, "title guard: title animations never request host exit");
 
     Check(world.badArgs == 0, "all IL2CPP helper calls passed NULL MethodInfo cleanly");
     sos_exit_game_reset();

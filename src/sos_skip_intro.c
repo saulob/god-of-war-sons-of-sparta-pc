@@ -120,6 +120,21 @@ static const SosSkipIntroSite kSites[] = {
     {"CUSA57767-1.01", 168046032u, 0x4fe9ea0, 0x49ba2d0, 0x80aa530, 0x80aa4e0, 0x5297860, 0x5291bc0, 0x4bf10bc, 0x4becf70},
 };
 
+/* Misc.ExecuteEventOnAnimationFinished.CancelCoroutine: the title presentation's watchers are cancelled with it when
+ * the prompt they belong to is dismissed. */
+static const short kCancelCoroutineHead[] = {0x55, 0x48, 0x89, 0xe5, 0x53, 0x50, 0x48, 0x8b, 0x77, 0x58, 0x48, 0x85, 0xf6, 0x74};
+
+typedef struct {
+    const char *build;
+    uint32_t cancel_coroutine;
+    uint32_t native_object_offset;
+} TitleGuardSite;
+
+static const TitleGuardSite kTitleGuard[] = {
+    {"CUSA57767-1.00", 0x4b80960, 0x10},
+    {"CUSA57767-1.01", 0x4b87140, 0x10},
+};
+
 #define PATTERN_LENGTH(p) (sizeof(p) / sizeof(*(p)))
 
 static int matches(const uint8_t *image, uint64_t size, uint64_t at, const short *pattern, size_t count) {
@@ -142,6 +157,12 @@ static int64_t rel8_target(const uint8_t *image, uint64_t at) {
 const SosSkipIntroSite *sos_skip_intro_site(const char *build) {
     for (size_t i = 0; build && i < sizeof(kSites) / sizeof(*kSites); ++i)
         if (!strcmp(build, kSites[i].build)) return &kSites[i];
+    return NULL;
+}
+
+static const TitleGuardSite *title_guard_site(const char *build) {
+    for (size_t i = 0; build && i < sizeof(kTitleGuard) / sizeof(*kTitleGuard); ++i)
+        if (!strcmp(build, kTitleGuard[i].build)) return &kTitleGuard[i];
     return NULL;
 }
 
@@ -193,11 +214,14 @@ static int save_polls_match(const uint8_t *image, uint64_t size, const SosSkipIn
 
 int sos_skip_intro_verify(const uint8_t *image, uint64_t size, const SosSkipIntroSite *site, const char **why) {
     const char *reason = NULL;
+    const TitleGuardSite *guard = site ? title_guard_site(site->build) : NULL;
     const uint64_t c = site ? site->coroutine : 0;
     if (!site)
         reason = "not a supported build";
     else if (size != site->image_size)
         reason = "the image is not the verified size";
+    else if (!guard || !matches(image, size, guard->cancel_coroutine, kCancelCoroutineHead, PATTERN_LENGTH(kCancelCoroutineHead)))
+        reason = "the title animation watcher's cancel coroutine differs";
     else if (!matches(image, size, c, kHead, PATTERN_LENGTH(kHead)) ||
              !matches(image, size, c + kDispatchAt, kDispatch, PATTERN_LENGTH(kDispatch)))
         reason = "the splash screen's start coroutine differs";
@@ -271,8 +295,49 @@ int sos_skip_intro_hook_title(uint8_t *check, uint8_t *stubs) {
 static atomic_int armed;
 static unsigned ticks;
 
+enum { kTitleGuardSlots = 4 };
+static struct {
+    atomic_int watching;
+    uint32_t native_object_offset;
+    SosSkipIntroCancel cancel;
+    void *pending[kTitleGuardSlots];
+    int pending_count;
+} title_guard;
+
+static int title_object_alive(const void *object) {
+    void *native;
+    if (!object || !title_guard.native_object_offset) return 0;
+    memcpy(&native, (const uint8_t *)object + title_guard.native_object_offset, sizeof(native));
+    return native != NULL;
+}
+
+void sos_skip_intro_arm_title(uint32_t native_object_offset, SosSkipIntroCancel cancel) {
+    title_guard.native_object_offset = native_object_offset;
+    title_guard.cancel = cancel;
+}
+
+int sos_skip_intro_watching_title(void) { return atomic_load(&title_guard.watching); }
+
+void sos_skip_intro_watch_title_animation(void *component) {
+    if (!component || !atomic_load(&title_guard.watching)) return;
+    for (int i = 0; i < title_guard.pending_count; ++i)
+        if (title_guard.pending[i] == component) return;
+    if (title_guard.pending_count < kTitleGuardSlots) title_guard.pending[title_guard.pending_count++] = component;
+}
+
+void sos_skip_intro_dismiss_title(void) {
+    if (!atomic_exchange(&title_guard.watching, 0)) return;
+    for (int i = 0; i < title_guard.pending_count; ++i) {
+        void *const component = title_guard.pending[i];
+        if (title_object_alive(component) && title_guard.cancel) title_guard.cancel(component);
+    }
+    title_guard.pending_count = 0;
+}
+
 void sos_skip_intro_arm(void) {
     ticks = 0;
+    title_guard.pending_count = 0;
+    atomic_store(&title_guard.watching, 1);
     atomic_store(&armed, 1);
 }
 
@@ -315,6 +380,8 @@ int sos_skip_intro_apply(uint8_t *image, uint64_t size, const char *build, uint8
         snprintf(message, message_size, "not applied: the title stub is out of reach of the image");
         return 0;
     }
+    const TitleGuardSite *const guard = title_guard_site(build);
+    sos_skip_intro_arm_title(guard->native_object_offset, (SosSkipIntroCancel)(uintptr_t)(image + guard->cancel_coroutine));
     sos_skip_intro_arm();
     memcpy(image + site->init_save_system + kDelayImmediate, kShortDelay, sizeof(kShortDelay));
     uint64_t polls[kMaxPolls];

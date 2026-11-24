@@ -108,7 +108,11 @@ that flag test calls a stub (the design of Odin Sphere's `launcher/skip_intro.c`
 granted once, when the intro has ticked three times (its start coroutine has run) and its main menu is open and not processing the
 load button, which are the conditions `MainMenuState_WaitForInputPress.TickState` needs before it leaves its state; then the stub
 sets the same flag and the game's own switch runs. Every later tick, and every later visit to the title, runs the original test.
-`scripts/title_input_check.py` proves the offsets, the flag and the title's input path from the game code.
+The intro's presentation is a chain of `Misc.ExecuteEventOnAnimationFinished` watchers, which only test that the Animator's
+current clip reached its end, not which clip it is. If the prompt is dismissed before that chain is done, the watchers still
+waiting on the prompt's Animator are cancelled through the game's own `CancelCoroutine`, so the next clip cannot complete them
+and replay the prompt (with its copyright text) over the main menu. `scripts/title_input_check.py` proves the offsets, the flag,
+the title's input path and the cleanup part from the game code.
 
 ## FFmpeg
 

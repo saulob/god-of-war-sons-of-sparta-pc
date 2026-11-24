@@ -260,6 +260,11 @@ void TestRealImage(const char* key, const fs::path& boot) {
     Check(!sos_skip_intro_verify(image.data(), size - 8, site, &why), name + ": another image size is refused");
 
     const uint64_t c = site->coroutine;
+    const uint8_t cancel_head[] = {0x55, 0x48, 0x89, 0xe5, 0x53, 0x50, 0x48, 0x8b, 0x77, 0x58, 0x48, 0x85, 0xf6, 0x74};
+    const auto cancel_at = std::search(image.begin(), image.end(), std::begin(cancel_head), std::end(cancel_head));
+    Check(cancel_at != image.end(), name + ": the title animation watcher's cancel coroutine is in the image");
+    const uint64_t cancel_site =
+        cancel_at != image.end() ? static_cast<uint64_t>(std::distance(image.begin(), cancel_at)) : 0;
     struct Mutation {
         uint64_t at;
         bool tolerated;
@@ -298,6 +303,7 @@ void TestRealImage(const char* key, const fs::path& boot) {
         {site->title_check + 3, false, "the title check's flag offset"},
         {site->title_check - 4, false, "the call before the title check"},
         {site->title_check + 7, false, "the title check's branch target"},
+        {cancel_site + 3, false, "the title animation watcher's cancel coroutine"},
     };
     for (const Mutation& mutation : mutations) {
         const uint8_t original = image[mutation.at];
@@ -500,6 +506,40 @@ void TestTitleStub() {
 void TestTitleStub() { std::printf("  [skip] the title stub is only run on Windows\n"); }
 #endif
 
+std::vector<void*> g_title_cancelled;
+
+void SOS_SKIP_INTRO_SYSV OnTitleAnimationCancelled(void* component) { g_title_cancelled.push_back(component); }
+
+void TestTitleGuard() {
+    alignas(16) uint8_t intro[0x20] = {};
+    alignas(16) uint8_t dead[0x20] = {};
+    void* native = intro;
+    std::memcpy(intro + 0x10, &native, sizeof(native));
+    g_title_cancelled.clear();
+    sos_skip_intro_arm_title(0x10, OnTitleAnimationCancelled);
+    sos_skip_intro_arm();
+    Check(sos_skip_intro_watching_title() == 1, "title guard: armed while the skipped title is on screen");
+    sos_skip_intro_watch_title_animation(intro);
+    sos_skip_intro_watch_title_animation(intro);
+    sos_skip_intro_watch_title_animation(dead);
+    sos_skip_intro_dismiss_title();
+    Check(g_title_cancelled.size() == 1 && g_title_cancelled[0] == intro,
+          "title guard: dismissing the prompt cancels each pending title animation once, and skips destroyed objects");
+    Check(sos_skip_intro_watching_title() == 0, "title guard: it stops watching after the prompt is dismissed");
+    sos_skip_intro_dismiss_title();
+    Check(g_title_cancelled.size() == 1, "title guard: a second dismissal cancels nothing");
+    sos_skip_intro_watch_title_animation(intro);
+    Check(g_title_cancelled.size() == 1, "title guard: no animation is recorded after the dismissal");
+
+    g_title_cancelled.clear();
+    sos_skip_intro_arm_title(0x10, nullptr);
+    sos_skip_intro_arm();
+    sos_skip_intro_watch_title_animation(intro);
+    sos_skip_intro_dismiss_title();
+    Check(g_title_cancelled.empty() && sos_skip_intro_watching_title() == 0,
+          "title guard: without a cancel method it still stops watching and fails safe");
+}
+
 void TestRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
     const struct {
@@ -564,6 +604,7 @@ int main() {
     TestSetting();
     TestBuildGating();
     TestTitleStub();
+    TestTitleGuard();
     TestRealImages();
     TestWiring();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

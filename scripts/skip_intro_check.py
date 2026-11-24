@@ -172,6 +172,18 @@ def check_title_intro(index, title_check, base_tick):
           "nothing calls the intro's TickState directly: only the state machine's virtual tick reaches it")
 
 
+def check_title_guard(index, key):
+    text = (ROOT / "src/sos_skip_intro.c").read_text()
+    row = re.search(r'\{"' + re.escape(key) + r'", (0x[0-9a-f]+), (0x[0-9a-f]+)\}', text)
+    cancel = index.method_address("Misc.ExecuteEventOnAnimationFinished", "CancelCoroutine")
+    check(row is not None and int(row.group(1), 16) == cancel,
+          "the title animation watcher's CancelCoroutine is at the guard table's offset")
+    check(row is not None and int(row.group(2), 16) == 0x10, "the guard reads the il2cpp object's native pointer at +0x10")
+    entry = bytes(index.boot.read(cancel, 14)).hex()
+    check(entry == "554889e5535048" + "8b77584885f674",
+          "CancelCoroutine starts by loading the wait routine at +0x58 and testing it")
+
+
 def names_calls(index, start, length):
     names = index.all_method_names()
     code = bytes(index.boot.read(start, length))
@@ -200,6 +212,7 @@ def check_build(key, version, table):
     check_startup_delay(index, init_save_system, task_delay)
     check_save_polls(index, task_delay, task_delay_other, load_save_task, check_file_exist)
     check_title_intro(index, title_check, base_tick)
+    check_title_guard(index, key)
     splash_start = index.method_address("UiScripts.SplashScreen", "Start")
     check(index.method_at(splash_start) == "UiScripts.SplashScreen::Start", "UiScripts.SplashScreen.Start exists")
 

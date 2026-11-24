@@ -4,8 +4,9 @@ do to that path, from the game's IL2CPP metadata and boot image.
     python scripts/title_input_check.py
 
 Per installed build: MainMenuState_WaitForInputPress takes only raw InputSystem events, the switch out of it needs the menu
-open and idle, the natural end of the intro and the Skip Intro claim write the same byte, and no Xbox prompt site or hooked prompt
-method lies in or is called from the title path. Nothing is executed; exit status 0 when every check passes.
+open and idle, the natural end of the intro and the Skip Intro claim write the same byte, no Xbox prompt site or hooked prompt
+method lies in or is called from the title path, and the title animation watchers the dismissed prompt cancels are the game's
+own CancelCoroutine. Nothing is executed; exit status 0 when every check passes.
 """
 import re
 import struct
@@ -137,6 +138,22 @@ def check_build(version):
     reached = {c for name in path for c in callees(index, *path[name])}
     check(not any(c.split("::")[0] in SITE_TYPES for c in reached),
           "no method of the title path calls a method of a type the Xbox prompt patch or the Automatic hook changes")
+    check_title_guard(index, version)
+
+
+def check_title_guard(index, version):
+    """The watchers the dismissed prompt cancels, and the hook that reports them."""
+    text = (ROOT / "src/sos_skip_intro.c").read_text()
+    row = re.search(r'\{"CUSA57767-' + re.escape(version) + r'", (0x[0-9a-f]+), (0x[0-9a-f]+)\}', text)
+    cancel = index.method_address("Misc.ExecuteEventOnAnimationFinished", "CancelCoroutine")
+    check(row is not None and int(row.group(1), 16) == cancel,
+          "the title guard's cancel method is Misc.ExecuteEventOnAnimationFinished.CancelCoroutine")
+    check(row is not None and int(row.group(2), 16) == 0x10, "the guard reads the il2cpp object's native pointer at +0x10")
+    check(bytes(index.boot.read(cancel, 14)).hex() == "554889e55350488b77584885f674",
+          "CancelCoroutine clears the wait routine it owns at +0x58")
+    exit_game = (ROOT / "src/sos_exit_game.c").read_text(encoding="utf-8")
+    check("sos_skip_intro_watch_title_animation" in exit_game and "sos_skip_intro_dismiss_title" in exit_game,
+          "the animation hook reports the title's watchers and the prompt's dismissal to the guard")
 
 
 def table_row(version):

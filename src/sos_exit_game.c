@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "sos_exit_game_sites.h"
+#include "sos_skip_intro.h"
 
 enum {
     LANG_LAMS_ID = 1,
@@ -439,8 +440,19 @@ SOS_EXIT_GAME_SYSV int sos_exit_game_on_toggle(void *toggler) {
     return 1;
 }
 
+static void title_animation_event(void *anim_event) {
+    if (!sos_skip_intro_watching_title() || !alive(anim_event) || !g_exit.bindings.get_game_object) return;
+    void *const go = g_exit.bindings.get_game_object(anim_event, NULL);
+    if (object_name_is(go, "IntroState"))
+        sos_skip_intro_watch_title_animation(anim_event);
+    else if (object_name_is(go, "WaitForInputPressState"))
+        sos_skip_intro_dismiss_title();
+}
+
 SOS_EXIT_GAME_SYSV int sos_exit_game_on_confirm(void *anim_event) {
-    if (!g_exit.armed || !is_menu_quit_button(anim_event)) return 0;
+    if (!g_exit.armed) return 0;
+    title_animation_event(anim_event);
+    if (!is_menu_quit_button(anim_event)) return 0;
     request_host_exit();
     return 1;
 }

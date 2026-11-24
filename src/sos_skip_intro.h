@@ -51,6 +51,22 @@ int sos_skip_intro_hook_title(uint8_t *check, uint8_t *stubs);
 void sos_skip_intro_arm(void);
 __attribute__((sysv_abi)) int sos_skip_intro_claim(const uint8_t *state);
 
+#if defined(_WIN32)
+#define SOS_SKIP_INTRO_SYSV __attribute__((sysv_abi))
+#else
+#define SOS_SKIP_INTRO_SYSV
+#endif
+typedef void (SOS_SKIP_INTRO_SYSV *SosSkipIntroCancel)(void *component);
+
+/* The title presentation is chained through ExecuteEventOnAnimationFinished watchers, which only test that the
+ * Animator's current clip reached its end. Skip Intro moves the state machine to PRESS ANY BUTTON before that chain is
+ * done, so dismissing the prompt must cancel the watchers still waiting on it; otherwise the next clip on the same
+ * Animator completes them and replays the prompt (and its copyright) over the main menu. */
+void sos_skip_intro_arm_title(uint32_t native_object_offset, SosSkipIntroCancel cancel);
+int sos_skip_intro_watching_title(void);
+void sos_skip_intro_watch_title_animation(void *component);
+void sos_skip_intro_dismiss_title(void);
+
 /* Verifies, then writes the patch and arms the title claim. Writes nothing and returns 0, saying why, when the build or its
  * code is not the verified one. `stubs` has SOS_SKIP_INTRO_STUB_BYTES within a 32-bit jump of the image. */
 int sos_skip_intro_apply(uint8_t *image, uint64_t size, const char *build, uint8_t *stubs, size_t stub_capacity, char *message,
