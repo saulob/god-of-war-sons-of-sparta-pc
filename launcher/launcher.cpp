@@ -132,8 +132,9 @@ constexpr char kSharpenHelp[] =
     "Sharpens the final picture (AMD RCAS). It applies when the window is the size of the render resolution, or "
     "together with FSR 1 in a bigger window.";
 constexpr char kAspectRatioHelp[] =
-    "Sets the shape of the render target and the Window size choices. Shapes other than 16:9 are experimental: the "
-    "game's HUD and menus are laid out for 16:9.";
+    "Sets the shape of the render target and the Window size choices. 21:9 and 32:9 show more of the world at the "
+    "sides with the same vertical view; some 2D scenes may show visual edges of the original backgrounds. "
+    "The HUD and menus keep their proportions. Shapes other than 16:9 are experimental.";
 constexpr char kRenderResolutionHelp[] =
     "The resolution the game renders at. It is separate from the window size: the picture is scaled to the window. "
     "Above 1080p the game runs in its PlayStation 4 Pro mode and needs a powerful graphics card.";

@@ -1074,6 +1074,21 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                           u32(regs.depth_control.depth_write_enable));
             FrameCapture::Note(note);
         }
+        char text[320];
+        const auto& vp = regs.viewports[0];
+        const auto& sc = regs.generic_scissor;
+        const auto& ws = regs.window_scissor;
+        std::snprintf(text, sizeof(text),
+                      "state: area %ux%u vp x %g %g y %g %g clipoff %u scissor gen %d,%d-%d,%d win "
+                      "%d,%d-%d,%d mask %x prim %u depth %u%u func %u stencil %u",
+                      u32(state.width), u32(state.height), vp.xscale, vp.xoffset, vp.yscale,
+                      vp.yoffset, u32(regs.IsClipDisabled()), sc.top_left_x, sc.top_left_y,
+                      sc.bottom_right_x, sc.bottom_right_y, ws.top_left_x, ws.top_left_y,
+                      ws.bottom_right_x, ws.bottom_right_y, regs.color_target_mask.raw,
+                      u32(regs.primitive_type), u32(regs.depth_control.depth_enable),
+                      u32(regs.depth_control.depth_write_enable),
+                      u32(regs.depth_control.depth_func), u32(regs.depth_control.stencil_enable));
+        FrameCapture::State(text);
     }
     DebugState.IncDrawCall();
 

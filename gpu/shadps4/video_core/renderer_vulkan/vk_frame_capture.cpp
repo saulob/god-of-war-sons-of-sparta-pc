@@ -2,6 +2,7 @@
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -9,8 +10,13 @@
 #include <mutex>
 
 #include "common/path_util.h"
+#include "dcp_capture_window.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image_info.h"
+
+namespace {
+std::atomic<u32> g_f5_serial{0};
+} // namespace
 
 namespace Vulkan {
 
@@ -33,6 +39,7 @@ struct Entry {
     std::vector<std::pair<Target, bool>> sampled; ///< textures (false) and storage images (true)
     std::string note;
     std::vector<std::string> buffers; ///< dumped constants, per draw
+    std::vector<std::string> states;  ///< distinct CPU-side draw states of the pass
 };
 
 // GPU thread only.
@@ -51,6 +58,8 @@ void AddBuffers(Entry& entry) {
     pending_buffers.clear();
 }
 bool pass_open = false;
+// DEBUG_SAULO: bounded pass window of one F5 capture.
+constexpr size_t kMaxPasses = 512;
 std::mutex display_mutex;
 std::vector<VAddr> display_buffers;
 // dcp: read on every draw; the game registers a handful of display buffers once.
@@ -131,6 +140,9 @@ void Write(VAddr presented) {
         if (!e.note.empty()) {
             std::fprintf(f, "  note: %s\n", e.note.c_str());
         }
+        for (const auto& st : e.states) {
+            std::fprintf(f, "  %s\n", st.c_str());
+        }
         for (const auto& b : e.buffers) {
             std::fprintf(f, "%s\n", b.c_str());
         }
@@ -154,6 +166,26 @@ void FrameCapture::OnFlip(VAddr presented_address) {
         state.store(Armed, std::memory_order_release);
         std::printf("Frame capture: armed\n");
     }
+}
+
+void FrameCapture::FinishRecording() {
+    Write(last_presented.load(std::memory_order_relaxed));
+    entries.clear();
+    pending_sampled.clear();
+    pending_buffers.clear();
+    pass_open = false;
+    state.store(Idle, std::memory_order_release);
+}
+
+bool FrameCapture::Request() {
+    u32 expected = Idle;
+    if (!state.compare_exchange_strong(expected, Armed, std::memory_order_acq_rel,
+                                       std::memory_order_relaxed)) {
+        return false;
+    }
+    std::printf("Frame capture: armed\n");
+    g_f5_serial.fetch_add(1, std::memory_order_release);
+    return true;
 }
 
 void FrameCapture::Poll() {}
@@ -187,47 +219,44 @@ void FrameCapture::AddDisplayBuffer(VAddr address) {
 void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_colors,
                              const VideoCore::ImageInfo* depth) {
     std::vector<Target> targets;
-    bool display = false;
-    {
-        std::scoped_lock lk{display_mutex};
-        for (u32 i = 0; i < num_colors; ++i) {
-            targets.push_back(colors[i] ? ToTarget(*colors[i]) : Target{});
-            display |= colors[i] && std::ranges::find(display_buffers, colors[i]->guest_address) !=
-                                        display_buffers.end();
-        }
+    for (u32 i = 0; i < num_colors; ++i) {
+        targets.push_back(colors[i] ? ToTarget(*colors[i]) : Target{});
     }
-    // Frame boundaries in the command stream: the pass that writes a display buffer as its only
-    // target (a pass with more targets can draw into a display buffer too).
-    display = display && targets.size() == 1;
-    const bool new_pass = !(pass_open && !entries.empty() && !entries.back().compute &&
-                            entries.back().colors == targets);
-    if (display && new_pass) {
-        if (state.load(std::memory_order_relaxed) == Recording) {
-            Write(last_presented.load(std::memory_order_relaxed));
-            entries.clear();
-            pending_sampled.clear();
-            pending_buffers.clear();
-            state.store(Idle, std::memory_order_release);
-            return;
-        }
+    const auto phase = static_cast<DcpCaptureWindow::Phase>(state.load(std::memory_order_relaxed));
+    const auto step = DcpCaptureWindow::PassStep(phase, entries.size(), kMaxPasses);
+    if (step == DcpCaptureWindow::Step::Skip) {
+        pending_sampled.clear();
+        pending_buffers.clear();
+        return;
+    }
+    if (step == DcpCaptureWindow::Step::Begin) {
         entries.clear();
         pending_sampled.clear();
         pending_buffers.clear();
         pass_open = false;
         state.store(Recording, std::memory_order_release);
     }
-    if (state.load(std::memory_order_relaxed) != Recording) {
-        pending_sampled.clear();
-        pending_buffers.clear();
-        return;
-    }
     const Target d = depth ? ToTarget(*depth) : Target{};
     if (pass_open && !entries.empty() && !entries.back().compute &&
         entries.back().colors == targets && entries.back().depth == d) {
         return;
     }
+    if (step == DcpCaptureWindow::Step::Finish) {
+        FinishRecording();
+        return;
+    }
     entries.push_back({.compute = false, .colors = std::move(targets), .depth = d});
     pass_open = true;
+}
+
+void FrameCapture::State(const char* text) {
+    if (entries.empty() || entries.back().compute || entries.back().states.size() >= 4) {
+        return;
+    }
+    auto& states = entries.back().states;
+    if (std::ranges::find(states, text) == states.end()) {
+        states.emplace_back(text);
+    }
 }
 
 void FrameCapture::Draw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 num_instances) {
@@ -246,6 +275,11 @@ void FrameCapture::Draw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 num_insta
 
 void FrameCapture::Dispatch(u64 cs_hash, u32 x, u32 y, u32 z) {
     if (state.load(std::memory_order_relaxed) != Recording) {
+        pending_sampled.clear();
+        pending_buffers.clear();
+        return;
+    }
+    if (entries.size() >= kMaxPasses) {
         pending_sampled.clear();
         pending_buffers.clear();
         return;
@@ -289,3 +323,14 @@ void FrameCapture::Note(const char* text) {
 }
 
 } // namespace Vulkan
+
+// DEBUG_SAULO: read-only camera telemetry sink (no capture triggers).
+extern "C" void dcpgpu_debug_camera(float x, float y, float ortho) {
+    (void)x;
+    (void)y;
+    (void)ortho;
+}
+
+extern "C" uint32_t dcpgpu_debug_f5_serial(void) {
+    return g_f5_serial.load(std::memory_order_acquire);
+}

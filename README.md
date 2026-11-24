@@ -18,6 +18,10 @@ game and PLAY starts it. The guest entry point is not yet reached in the current
 - Architecture: native relink of the PS4 SELF/ELF modules + shadPS4-derived
   `libSceGnmDriver`/`libSceVideoOut` Vulkan video core (later milestone).
 
+## Display & True Ultrawide
+
+The launcher supports configurable render resolutions, aspect ratios (including 21:9 and 32:9 True Ultrawide Hor+), and frame rate options. True Ultrawide expands the horizontal field of view while preserving the vertical view and HUD proportions; because the original game was authored for 16:9, some 2D scenes may show visual edges of the original backgrounds.
+
 ## Repository layout
 
 | Path | Purpose |
