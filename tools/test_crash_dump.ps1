@@ -42,7 +42,9 @@ try {
         'src/crash_guard.c',
         'src/startup_phase.h',
         'src/startup_phase.c',
-        'src/game_build.h'
+        'src/game_build.h',
+        'src/net/json.h',
+        'src/net/json.cpp'
     )
 
     $newWorkspace = {
@@ -67,7 +69,8 @@ try {
             (Join-Path $Dir 'launcher/bug_report.cpp'),
             (Join-Path $Dir 'launcher/log_scrubber.cpp'),
             (Join-Path $Dir 'launcher/game_profile.cpp'),
-            (Join-Path $Dir 'launcher/localization/ui_text.cpp')
+            (Join-Path $Dir 'launcher/localization/ui_text.cpp'),
+            (Join-Path $Dir 'src/net/json.cpp')
         )
         foreach ($src in $cxxSources) {
             $obj = Join-Path $Dir ([IO.Path]::GetFileNameWithoutExtension($src) + '.o')

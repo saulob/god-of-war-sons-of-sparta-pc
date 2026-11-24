@@ -33,12 +33,14 @@ target_link_libraries(sos_imgui_sdl PUBLIC SDL3::SDL3)
 # Game files (check, PKG unpacking, install, boot image), the trophies (src/trophies) and the settings file: no window
 # needed (tests link only this).
 find_package(ZLIB REQUIRED)
-add_library(sos_launcher_core STATIC boot_image.cpp bug_report.cpp bug_report_http.cpp build_diagnostics.cpp
+add_library(sos_launcher_core STATIC boot_image.cpp bug_report.cpp bug_report_link.cpp build_diagnostics.cpp
     controller_icons.cpp icon_bundle.cpp controller_prompts.c prompt_dialog.c file_browser.cpp
     game_files.cpp
     game_install.cpp game_process.cpp game_profile.cpp header_art.cpp log_scrubber.cpp options.cpp page_icons.cpp paths.cpp
-    pkg_extract.cpp resolution.cpp settings.cpp trophy_content.cpp localization/ui_text.cpp
+    pkg_extract.cpp report_history.cpp resolution.cpp settings.cpp trophy_content.cpp localization/ui_text.cpp
     updater/json.cpp
+    ${PROJECT_SOURCE_DIR}/src/net/json.cpp ${PROJECT_SOURCE_DIR}/src/net/report_link.cpp
+    ${PROJECT_SOURCE_DIR}/src/net/websocket.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_data.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_key.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_pack.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_runtime.cpp
     ${PROJECT_SOURCE_DIR}/src/trophies/trophy_service.cpp ${PROJECT_SOURCE_DIR}/src/trophies/trophy_store.cpp
@@ -48,11 +50,11 @@ target_compile_definitions(sos_launcher_core PUBLIC SOS_PORT_VERSION="${PROJECT_
 target_link_libraries(sos_launcher_core PUBLIC trg_core SDL3::SDL3 sos_keys sos_startup_phase PRIVATE ZLIB::ZLIB)
 # Hashes and ciphers: CNG on Windows, OpenSSL's libcrypto elsewhere.
 if (WIN32)
-    target_sources(sos_launcher_core PRIVATE crypto_win.cpp)
+    target_sources(sos_launcher_core PRIVATE crypto_win.cpp ${PROJECT_SOURCE_DIR}/src/net/websocket_win.cpp)
     target_link_libraries(sos_launcher_core PRIVATE bcrypt winhttp)
 else()
     find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
-    target_sources(sos_launcher_core PRIVATE crypto_openssl.cpp)
+    target_sources(sos_launcher_core PRIVATE crypto_openssl.cpp ${PROJECT_SOURCE_DIR}/src/net/websocket_posix.cpp)
     target_link_libraries(sos_launcher_core PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
 endif()
 
@@ -69,8 +71,8 @@ add_custom_command(OUTPUT ${SOS_PAGE_ICON_SOURCE}
     COMMENT "Embedding the page icons")
 target_sources(sos_launcher_core PRIVATE ${SOS_PAGE_ICON_SOURCE})
 
-add_library(sos_launcher STATIC bug_report_page.cpp host.cpp launcher.cpp package_browser.cpp problem_dialog.cpp shift_key.cpp
-    trophy_page.cpp update_config.cpp
+add_library(sos_launcher STATIC bug_report_page.cpp host.cpp launcher.cpp my_reports.cpp package_browser.cpp problem_dialog.cpp
+    shift_key.cpp trophy_page.cpp update_config.cpp
     updater/github_release.cpp updater/sha256.cpp updater/third_party/miniz/miniz.c
     updater/update_controller.cpp updater/update_http.cpp updater/update_job.cpp updater/update_paths.cpp
     updater/update_platform.cpp updater/update_ui.cpp updater/update_zip.cpp updater/version.cpp)

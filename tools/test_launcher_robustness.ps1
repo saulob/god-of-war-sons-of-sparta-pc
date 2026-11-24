@@ -21,6 +21,7 @@ $keys = 'src/sos_keys.c'
 
 $copy = @(Get-ChildItem -LiteralPath (Join-Path $root 'launcher') -Filter '*.h' | ForEach-Object { "launcher/$($_.Name)" })
 $copy += @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.h' | ForEach-Object { "src/$($_.Name)" })
+$copy += @(Get-ChildItem -LiteralPath (Join-Path $root 'src\net') -Filter '*.h' | ForEach-Object { "src/net/$($_.Name)" })
 $copy += @($keys, 'launcher/host.cpp', $launcher, $page, $dialog, 'launcher/trophy_page.cpp', 'launcher/package_browser.cpp', 'gpu/shim/window.cpp')
 
 $mutations = @(

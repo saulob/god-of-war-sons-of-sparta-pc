@@ -1,11 +1,11 @@
+// The Worker's edge: the private dashboard under /admin (SOS_DASHBOARD_TOKEN as a Bearer header). No Cloudflare import,
+// so Node runs it in the tests.
 import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from './admin_page.js';
-import { dumpDownloadName, isTicket, logDownloadName, readStatusChange } from './reports.js';
-import { digestsMatch, sha256Hex } from './sha256.js';
+import { dumpDownloadName, isTicket, logDownloadName, readStatusChange } from './incidents.js';
+import { sha256Hex } from './sha256.js';
 
-const MIN_TOKEN_CHARS = 16;
 const MAX_STATUS_BODY_CHARS = 8 * 1024;
-const REPORTS_PATH = '/admin/api/reports';
-const METHODS = { report: ['GET', 'DELETE'], report_status: ['POST'] };
+const MIN_TOKEN_CHARS = 16;
 
 const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
@@ -31,27 +31,37 @@ function reply(body, status, type, extra = {}) {
   return new Response(body, { status, headers: { ...SECURITY_HEADERS, 'Content-Type': type, ...extra } });
 }
 
-const json = (value, status = 200, extra = {}) => reply(JSON.stringify(value), status, 'application/json; charset=utf-8', extra);
+const json = (value, status = 200, extra = {}) =>
+  reply(JSON.stringify(value), status, 'application/json; charset=utf-8', extra);
 
+// Compares digests so the time taken does not depend on where the texts differ.
 export function tokenMatches(authorization, token) {
   if (typeof token !== 'string' || token.length < MIN_TOKEN_CHARS) return false;
   const given = typeof authorization === 'string' && authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-  return digestsMatch(sha256Hex(given), sha256Hex(token));
+  const a = sha256Hex(given);
+  const b = sha256Hex(token);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
+const INCIDENTS_PATH = '/admin/api/incidents';
+const METHODS = { incident: ['GET', 'DELETE'], incident_status: ['POST'] };
+
+// The dashboard API behind a path, or null. A report id is checked after the token, before anything reads it.
 function adminApi(pathname) {
-  if (pathname === REPORTS_PATH) return { name: 'reports' };
-  if (pathname.startsWith(`${REPORTS_PATH}/`)) {
-    const [ticket, rest, ...more] = pathname.slice(REPORTS_PATH.length + 1).split('/');
-    if (more.length === 0 && rest === undefined) return { name: 'report', ticket };
-    if (more.length === 0 && rest === 'log') return { name: 'report_log', ticket };
-    if (more.length === 0 && rest === 'dump') return { name: 'report_dump', ticket };
-    if (more.length === 0 && rest === 'status') return { name: 'report_status', ticket };
+  if (pathname === INCIDENTS_PATH) return { name: 'incidents' };
+  if (pathname.startsWith(`${INCIDENTS_PATH}/`)) {
+    const [ticket, rest, ...more] = pathname.slice(INCIDENTS_PATH.length + 1).split('/');
+    if (more.length === 0 && rest === undefined) return { name: 'incident', ticket };
+    if (more.length === 0 && rest === 'log') return { name: 'incident_log', ticket };
+    if (more.length === 0 && rest === 'dump') return { name: 'incident_dump', ticket };
+    if (more.length === 0 && rest === 'status') return { name: 'incident_status', ticket };
   }
   return null;
 }
 
-async function saveReportStatus(request, ticket, store) {
+async function saveIncidentStatus(request, ticket, store) {
   const text = await request.text();
   if (text.length > MAX_STATUS_BODY_CHARS) return json({ error: 'too_large' }, 413);
   let body = null;
@@ -62,10 +72,12 @@ async function saveReportStatus(request, ticket, store) {
   }
   const { change, detail } = readStatusChange(body);
   if (!change) return json({ error: 'bad_request', detail }, 400);
-  const saved = await store.setReportStatus(ticket, change);
+  const saved = await store.setIncidentStatus(ticket, change);
   return saved ? json(saved) : json({ error: 'not_found' }, 404);
 }
 
+// store: { incidents(), incident(ticket), incidentDump(ticket), setIncidentStatus(ticket, change), deleteIncident(ticket) }
+// as promises, used only after the token matched.
 export async function handleAdmin(request, env, store, log = () => {}) {
   const url = new URL(request.url);
   const api = adminApi(url.pathname);
@@ -82,36 +94,34 @@ export async function handleAdmin(request, env, store, log = () => {}) {
   }
   if (api.ticket !== undefined && !isTicket(api.ticket)) return json({ error: 'bad_request', detail: 'invalid report id' }, 400);
   try {
-    if (api.name === 'reports') return json(await store.reports());
-    if (api.name === 'report_status') return await saveReportStatus(request, api.ticket, store);
+    if (api.name === 'incidents') return json(await store.incidents());
+    if (api.name === 'incident_status') return await saveIncidentStatus(request, api.ticket, store);
     if (request.method === 'DELETE') {
-      return await store.deleteReport(api.ticket) ? json({ deleted: api.ticket }) : json({ error: 'not_found' }, 404);
+      return (await store.deleteIncident(api.ticket)) ? json({ deleted: api.ticket }) : json({ error: 'not_found' }, 404);
     }
-    const report = await store.report(api.ticket);
-    if (!report) return json({ error: 'not_found' }, 404);
-    if (api.name === 'report') return json(report);
-    if (api.name === 'report_dump') {
-      const dump = await store.reportDump(api.ticket);
+    const incident = await store.incident(api.ticket);
+    if (!incident) return json({ error: 'not_found' }, 404);
+    if (api.name === 'incident') return json(incident);
+    if (api.name === 'incident_dump') {
+      const dump = await store.incidentDump(api.ticket);
       if (!dump) return json({ error: 'not_found' }, 404);
-      return reply(dump.bytes, 200, 'application/octet-stream', {
-        'Content-Disposition': `attachment; filename="${dumpDownloadName(report)}"`,
-      });
+      return reply(dump.bytes, 200, 'application/octet-stream',
+        { 'Content-Disposition': `attachment; filename="${dumpDownloadName(incident)}"` });
     }
-    return reply(report.log_text, 200, 'text/plain; charset=utf-8', {
-      'Content-Disposition': `attachment; filename="${logDownloadName(report)}"`,
-    });
+    return reply(incident.log_text, 200, 'text/plain; charset=utf-8',
+      { 'Content-Disposition': `attachment; filename="${logDownloadName(incident)}"` });
   } catch (error) {
-    log(`admin: storage unavailable: ${error?.message ?? error}`);
+    log(`admin: store unavailable: ${error?.message ?? error}`);
     return json({ error: 'unavailable' }, 502);
   }
 }
 
-export function internalAdminRoute(request) {
+// The Durable Object's internal report routes; a WebSocket upgrade is never one, whatever its path.
+export function internalIncidentRoute(request) {
+  if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') return null;
   const { pathname } = new URL(request.url);
-  if (pathname === '/internal/reports') return { kind: 'list' };
-  const [ticket, rest, ...more] = pathname.startsWith('/internal/reports/')
-    ? pathname.slice('/internal/reports/'.length).split('/')
-    : [];
+  if (pathname === '/incidents') return { kind: 'list' };
+  const [ticket, rest, ...more] = pathname.startsWith('/incidents/') ? pathname.slice('/incidents/'.length).split('/') : [];
   if (!isTicket(ticket) || more.length > 0) return null;
   if (rest === undefined) return { kind: request.method === 'DELETE' ? 'delete' : 'one', ticket };
   if (rest === 'dump' && request.method === 'GET') return { kind: 'dump', ticket };

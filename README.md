@@ -44,8 +44,8 @@ expose equivalent functionality.
   button prompts and prepared Xbox glyphs, plus optional `user/gamecontrollerdb.txt` overrides.
 - **Save Data & Trophies:** Native save data with atomic commit and backup support, plus full trophy tracking
   (`NPWR58134_00`, 36 trophies) viewable in the launcher.
-- **Launcher & Updater:** Built-in installer, settings, controls, trophies, bug report log scrubber, and
-  release updater.
+- **Launcher & Updater:** Built-in installer, settings, controls, trophies, a Bug Report page with a
+  privacy scrubber, optional crash dump and My reports, and a release updater.
 
 ## Hermes Mode
 
@@ -78,6 +78,26 @@ The port is portable by default:
 - **Saves:** Stored under `user/data/savedata/` (with atomic swaps and backup copies).
 - **Settings:** Stored in `user/sons_of_sparta.ini`.
 
+## Bug Reports
+
+The launcher's **Bug Report** page sends one gameplay log, your description and, when the **Attach crash report**
+box is ticked, the matching crash dump. The box is offered for a session with a valid paired dump; clear it to send
+the log alone. The log is scrubbed before either the preview or the report is built: user and computer names,
+private folders, addresses and secrets become placeholders, while crash and GPU diagnostics stay. The preview shows
+exactly the package that is sent.
+
+Every report returns a **Report ID** and a private receipt. The receipt stays in `user/bug_reports.json` and is
+never shown in the report, the log or the dashboard. **My reports** on the same page checks the status, shows
+developer replies, offers the player test answer (`Yes, fixed` / `No, still happening`) when a fix awaits it,
+and can resend a crash dump that failed to upload. It needs no account and no online gameplay.
+
+The service is the standalone Sons Cloudflare Worker at
+`wss://sons-of-sparta-bug-report.saulobenigno.workers.dev/ws`, with a SQLite Durable Object under
+`server/bug-report`. A clean installation works without any endpoint configuration. `SOS_BUG_REPORT_URL` and
+`user/bug_report_url.txt` remain available as development or local overrides. The private `/admin` dashboard
+needs the dashboard token; players never do. See [docs/BUG_REPORT.md](docs/BUG_REPORT.md) for the protocol,
+privacy model, deployment and overrides.
+
 ## Adding to Steam (Non-Steam Game)
 
 Adding the port to Steam does not require bundling or moving original game files:
@@ -99,9 +119,11 @@ Adding the port to Steam does not require bundling or moving original game files
   initialization. Keep **Allow overlay programs** off unless needed.
 - **Linux / Steam Deck:** Live runtime gameplay is experimental in v0.1.0. If FUSE is unavailable on your
   system, the AppImage automatically falls back to extract-and-run.
-- **Reporting issues:** Enable **Detailed logging** on the launcher's **About** page if needed, reproduce the
-  issue, and attach the relevant log from `logs/` (with personal paths scrubbed) when filing an issue at
-  https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues.
+- **Reporting issues:** Use the launcher's **Bug Report** page (see [docs/BUG_REPORT.md](docs/BUG_REPORT.md)):
+  choose the log of the session that failed, describe what happened and, if a crash dump was written, attach it.
+  The log and preview are scrubbed in the launcher. A release build already points at the production service; if
+  the service cannot be reached, the page says so, keeps your text and never claims the report was sent. You can
+  also open the report ID later from **My reports**.
 
 ## Building from Source
 
@@ -134,6 +156,7 @@ See [docs/LINUX.md](docs/LINUX.md) for full Linux build and AppImage details.
 | `tools/` | Build, headless test, and local release packaging scripts (Windows & Linux) |
 | `scripts/` | Build parity, graphics/PRX import preflight, lifecycle, and patch verification gates |
 | `tests/` | Headless unit and mutation test suites |
+| `server/bug-report/` | Standalone Cloudflare Worker, SQLite Durable Object, admin dashboard and tests |
 | `packaging/` | Application icons, Linux desktop/AppRun/AppStream metadata, packaged README, and licenses |
 | `assets/launcher/` | Launcher icons and sponsor heart artwork (`icons/SOURCES.md`) |
 | `docs/` | Platform, import, and engineering documentation |

@@ -10,7 +10,7 @@
 #include <utility>
 
 #include "bug_report.h"
-#include "bug_report_http.h"
+#include "bug_report_link.h"
 
 namespace sos {
 
@@ -38,11 +38,11 @@ struct SessionHooks {
 inline SessionHooks DefaultSessionHooks() {
     SessionHooks hooks;
     hooks.file = [](const BugReportServiceConfig& config, const BugReportPackage& package, const BugReportProgressSink& progress) {
-        return FileBugReport(config, package, nullptr, progress);
+        return FileBugReport(config, package, {}, progress);
     };
     hooks.upload = [](const BugReportServiceConfig& config, const std::string& ticket, const std::string& receipt,
                       const CrashDump& dump, const BugReportProgressSink& progress) {
-        return UploadCrashDump(config, ticket, receipt, dump, nullptr, progress);
+        return UploadCrashDump(config, ticket, receipt, dump, {}, progress);
     };
     hooks.run = [](std::function<void()> job) { std::thread(std::move(job)).detach(); };
     return hooks;
@@ -142,6 +142,7 @@ public:
     }
 
     bool DumpUploaded() const { return result_ && result_->crash == CrashUpload::kUploaded; }
+    const std::optional<BugReportReceipt>& Result() const { return result_; }
 
 private:
     struct Work {
@@ -237,6 +238,14 @@ inline ReportCard CardFor(const ReportView& view, bool dump_uploaded) {
         case BugReportOutcome::kUnreachable:
             card.title = "Cannot reach the report service";
             card.detail = "Check your connection and press Send report again; your text is kept.";
+            break;
+        case BugReportOutcome::kNotConfigured:
+            card.title = "The report service is not configured";
+            card.detail = "This build has no report service address. See docs/BUG_REPORT.md.";
+            break;
+        case BugReportOutcome::kInvalidEndpoint:
+            card.title = "The report service address is invalid";
+            card.detail = "Check user/bug_report_url.txt or SOS_BUG_REPORT_URL; see docs/BUG_REPORT.md.";
             break;
         case BugReportOutcome::kRefused:
             card.title = "The report was not accepted";

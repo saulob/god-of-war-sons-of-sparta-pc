@@ -73,7 +73,8 @@ void WarningText(trg::Ui& ui, const char* text) {
 
 } // namespace
 
-BugReportPage::BugReportPage(Places places) : places_(std::move(places)) {}
+BugReportPage::BugReportPage(Places places)
+    : places_(std::move(places)), my_reports_(places_.user_dir / kReportHistoryFile, places_.user_dir) {}
 
 void BugReportPage::Draw(trg::Ui& ui, const ReportFacts& facts) {
     if (!logs_found_) FindLogs();
@@ -82,6 +83,16 @@ void BugReportPage::Draw(trg::Ui& ui, const ReportFacts& facts) {
     if (CheckDraft(description_, !logs_.empty()) != problem_) problem_ = DraftProblem::kNone;
     AccentText(ui, kPrivacyHeadline);
     ui.Paragraph(kPrivacyNote);
+    if (my_reports_.HasUpdates()) {
+        const bool reply = my_reports_.HasNewReply();
+        if (ui.ButtonRow(reply ? "A report has a new reply" : "A report has an update",
+                         reply ? "The developer replied to one of your reports."
+                               : "Its status changed since you last looked.",
+                         "Show")) {
+            my_reports_.ShowUpdate();
+        }
+    }
+    form_top_ = ImGui::GetCursorPosY();
     ui.Heading("1. Report the problem");
     DrawDescription(ui, sending);
     ui.Heading("2. Choose one game log");
@@ -91,6 +102,9 @@ void BugReportPage::Draw(trg::Ui& ui, const ReportFacts& facts) {
     ui.Heading("4. Send");
     DrawSend(ui, facts, sending);
     ui.EndRows();
+    my_reports_.Draw(ui, facts);
+    ui.EndRows();
+    if (my_reports_.TakeNewReportRequest()) ImGui::SetScrollY(form_top_);
 }
 
 void BugReportPage::FindLogs() {
@@ -103,6 +117,12 @@ void BugReportPage::Collect() {
     const Collected collected = session_.Collect();
     if (collected == Collected::kNothing) return;
     bring_result_into_view_ = true;
+    if (collected == Collected::kDelivery) {
+        const auto& sent = session_.Result();
+        if (sent && sent->outcome == BugReportOutcome::kSent && sent_package_) {
+            sent_report_remembered_ = my_reports_.Remember(*sent_package_, *sent);
+        }
+    }
     const ReportPhase phase = session_.View().phase;
     if (collected == Collected::kDelivery && (phase == ReportPhase::kSent || phase == ReportPhase::kSentDumpFailed)) {
         description_[0] = '\0';
@@ -151,6 +171,8 @@ void BugReportPage::Send(const ReportFacts& facts) {
     if (session_.busy() || !AcceptDraft()) return;
     std::shared_ptr<const BugReportPackage> package = previewed_ ? previewed_ : BuildPackage(facts);
     if (!package) return;
+    sent_report_remembered_ = true;
+    sent_package_ = package;
     if (session_.Submit(std::move(package), ResolveBugReportConfig(places_.user_dir))) bring_result_into_view_ = true;
 }
 
@@ -288,6 +310,8 @@ void BugReportPage::DrawResult(trg::Ui& ui) {
             ImGui::SetClipboardText(view.ticket.c_str());
             ui.SetStatus("Report ID copied.");
         }
+        if (!sent_report_remembered_)
+            ui.Help("The report was sent, but it could not be added to My reports on this PC.");
     }
     switch (card.dump) {
     case DumpLine::kNone:

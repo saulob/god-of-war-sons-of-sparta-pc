@@ -652,7 +652,7 @@ void TestNoOnlineBackend() {
     }
     const std::vector<std::string> forbidden = {"online_page", "online_client", "online_view", "OnlinePage", "kOnline",
                                                 "online.svg", "Connection test", "PlayNeedsTest", "lobby", "Lobby",
-                                                "IncidentPage", "MyReports", "workers.dev", "Worker URL"};
+                                                "IncidentPage", "Worker URL"};
     for (const fs::path& path : SourceFiles(kRoot / "launcher")) {
         const std::string name = Relative(path);
         if (name.find("launcher/third_party/") == 0 || name.find("launcher/updater/third_party/") == 0) {
@@ -663,6 +663,10 @@ void TestNoOnlineBackend() {
             Check(!Contains(text, word), name + " has no " + word);
         }
     }
+    Check(Contains(ReadFile(kRoot / "launcher" / "bug_report_page.h"), "MyReports"),
+          "the Bug Report page includes My reports");
+    Check(Contains(ReadFile(kRoot / "launcher" / "bug_report_link.h"), "ResolveBugReportConfig"),
+          "one endpoint resolver configures the report service");
 }
 
 void TestNoAlienationLeftovers() {

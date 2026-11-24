@@ -16,6 +16,11 @@ __pycache__/
 *.log
 *.part
 
+# Wrangler local state and secrets: never tracked
+server/bug-report/.wrangler/
+server/bug-report/node_modules/
+server/bug-report/.dev.vars
+
 # Shader and pipeline caches, package metadata caches, should they land outside user/ or cache/
 *.spv
 *.pipeline_cache

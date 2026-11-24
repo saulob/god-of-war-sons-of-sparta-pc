@@ -237,29 +237,6 @@ void NoteCrash(GameLog& log, std::optional<std::time_t> now) {
     }
 }
 
-void AppendJsonEscaped(std::string& out, std::string_view value) {
-    out += '"';
-    for (unsigned char c : value) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                out += buf;
-            } else {
-                out += char(c);
-            }
-            break;
-        }
-    }
-    out += '"';
-}
-
 #ifdef _WIN32
 std::string WindowsVersionText() {
     using GetVersion = LONG(WINAPI*)(OSVERSIONINFOW*);
@@ -709,24 +686,22 @@ std::string BugReportPreviewText(const BugReportPackage& package) {
     return out;
 }
 
-std::string BugReportRequestJson(const BugReportPackage& package) {
-    std::string out = "{";
-    bool first = true;
-    for (const BugReportField& field : package.fields) {
-        if (!first) out += ',';
-        first = false;
-        AppendJsonEscaped(out, field.key);
-        out += ':';
-        AppendJsonEscaped(out, field.value);
-    }
+net::Json BugReportRequestBody(const BugReportPackage& package) {
+    net::Json body = net::Json::Object();
+    for (const BugReportField& field : package.fields) body.set(field.key, field.value);
     if (package.crash_dump) {
-        out += ",\"dump_file\":";
-        AppendJsonEscaped(out, package.crash_dump->name);
-        out += ",\"dump_bytes\":";
-        out += std::to_string(package.crash_dump->bytes);
+        body.set("dump_file", package.crash_dump->name);
+        body.set("dump_bytes", int64_t(package.crash_dump->bytes));
     }
-    out += '}';
-    return out;
+    return body;
+}
+
+std::string BugReportRequestJson(const BugReportPackage& package) { return BugReportRequestBody(package).dump(); }
+
+BugReportPackage SentReportOf(const net::Json& report) {
+    BugReportPackage package;
+    for (const FieldName& name : kFieldNames) package.fields.push_back({name.key, name.label, report[name.key].as_string()});
+    return package;
 }
 
 } // namespace sos

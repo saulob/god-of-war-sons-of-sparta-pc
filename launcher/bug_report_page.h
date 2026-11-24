@@ -8,8 +8,9 @@
 #include <vector>
 
 #include "bug_report.h"
-#include "bug_report_http.h"
+#include "bug_report_link.h"
 #include "bug_report_session.h"
+#include "my_reports.h"
 #include "trg/launcher.h"
 
 namespace sos {
@@ -60,6 +61,10 @@ private:
     bool description_active_ = false;
     bool attach_crash_report_ = false;
     bool bring_result_into_view_ = false;
+    bool sent_report_remembered_ = true;
+    std::shared_ptr<const BugReportPackage> sent_package_;
+    float form_top_ = 0.0f;
+    MyReports my_reports_;
 };
 
 } // namespace sos

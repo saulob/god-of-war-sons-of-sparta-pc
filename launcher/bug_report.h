@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "log_scrubber.h"
+#include "net/json.h"
 
 namespace sos {
 
@@ -128,6 +129,10 @@ std::optional<BugReportPackage> BuildBugReportPackage(std::string_view descripti
                                                       std::optional<std::time_t> now = std::nullopt);
 
 std::string BugReportPreviewText(const BugReportPackage& package);
+net::Json BugReportRequestBody(const BugReportPackage& package);
 std::string BugReportRequestJson(const BugReportPackage& package);
+
+// The stored report as the same fields a preview shows.
+BugReportPackage SentReportOf(const net::Json& report);
 
 } // namespace sos

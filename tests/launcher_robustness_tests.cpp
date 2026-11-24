@@ -1,6 +1,7 @@
 // Launcher robustness on the production helpers: placement and its diagnostics, startup stages and the show gate, Escape
 // ownership, and the Bug Report session and its card, with synthetic displays and time. No window, GPU, network, launcher
 // or game.
+#include <algorithm>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -608,8 +609,10 @@ void TestReport() {
         Check(!without.RetryDump(config), "a report that had no dump has nothing to retry");
     }
     {
-        const BugReportOutcome failures[] = {BugReportOutcome::kUnreachable, BugReportOutcome::kRefused, BugReportOutcome::kServiceError,
-                                             BugReportOutcome::kRecentLimit, BugReportOutcome::kDailyLimit};
+        const BugReportOutcome failures[] = {BugReportOutcome::kUnreachable, BugReportOutcome::kNotConfigured,
+                                             BugReportOutcome::kInvalidEndpoint, BugReportOutcome::kRefused,
+                                             BugReportOutcome::kServiceError, BugReportOutcome::kRecentLimit,
+                                             BugReportOutcome::kDailyLimit};
         std::vector<std::string> titles;
         bool ok = true;
         for (const BugReportOutcome outcome : failures) {
@@ -628,9 +631,15 @@ void TestReport() {
             script.Finish();
         }
         Check(ok, "a failed submission is an attention card without ticket, and the report can be sent again");
-        bool distinct = titles[0] != titles[1] && titles[1] != titles[2] && titles[0] != titles[2] && titles[3] != titles[4];
-        Check(distinct, "unreachable, refused and service errors are told apart from each other and from the limits");
-        Check(!Has(titles[0] + titles[1] + titles[2], "HTTP") && !Has(titles[0] + titles[1] + titles[2], "status"), "failure text carries no raw service output");
+        bool distinct = titles[0] != titles[1] && titles[1] != titles[2] && titles[0] != titles[2] &&
+                        titles[3] != titles[4] && titles[4] != titles[5] && titles[3] != titles[5] && titles[5] != titles[6];
+        Check(distinct, "unreachable, not configured, invalid, refused and service errors are told apart from each other and from the limits");
+        Check(std::find(titles.begin(), titles.end(), "The report service is not configured") != titles.end(),
+              "a build without an endpoint says it is not configured instead of claiming it cannot connect");
+        Check(std::find(titles.begin(), titles.end(), "The report service address is invalid") != titles.end(),
+              "a malformed endpoint is named as an invalid address");
+        Check(!Has(titles[0] + titles[1], "HTTP") && !Has(titles[0] + titles[1], "status"),
+              "failure text carries no raw service output");
     }
     {
         Script script;
