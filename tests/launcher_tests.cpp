@@ -178,9 +178,9 @@ bool Teal(int rgb) {
 
 void TestPalette() {
     using namespace sos::palette;
-    const int primary[] = {kAccent, kAccentHot, kActionPressed, kActionEdge, kActionLink, kSponsor, kSponsorHot,
-                           kSponsorActive, kSponsorLink, kOnAction, kBackground, kPanel, kFrame, kFrameHot, kFrameActive,
-                           kPopup, kRowBorder, kPanelBorder, kText, kDim, kHeaderEdge, kHeaderGlow, kHeaderMid, kHeaderBottom};
+    const int primary[] = {kAccent, kAccentHot, kActionPressed, kActionEdge, kActionLink, kOnAction, kBackground, kPanel,
+                           kFrame, kFrameHot, kFrameActive, kPopup, kRowBorder, kPanelBorder, kText, kDim, kHeaderEdge,
+                           kHeaderGlow, kHeaderMid, kHeaderBottom};
     for (const int colour : primary) {
         Check(!Teal(colour), "no teal in the launcher palette");
         Check(((colour >> 16) & 255) >= (colour & 255), "palette colours are warm");
@@ -192,8 +192,31 @@ void TestPalette() {
     Check(channel(kAccentHot, 16) > channel(kAccent, 16) && channel(kAccentHot, 8) > channel(kAccent, 8), "hover is a brighter gold");
     Check(channel(kActionPressed, 16) < channel(kAccent, 16) && channel(kActionPressed, 8) < channel(kAccent, 8), "pressed is darker");
     Check(channel(kBackground, 16) < 40 && channel(kBackground, 0) < 20, "background is very dark brown");
-    Check(channel(kSponsor, 16) > 2 * channel(kSponsor, 8), "sponsor button is deep red");
     Check(channel(kOnAction, 16) < 80, "text on the gold action is dark brown");
+}
+
+void TestSponsorPalette() {
+    const std::string theme = ReadFile(kRoot / "third_party" / "trg-launcher" / "include" / "trg" / "launcher.h");
+    for (const char* colour : {"ImVec4 sponsor = ImVec4(0.79f, 0.18f, 0.50f, 1.0f);",
+                               "ImVec4 sponsor_hot = ImVec4(0.88f, 0.27f, 0.59f, 1.0f);",
+                               "ImVec4 sponsor_active = ImVec4(0.68f, 0.14f, 0.43f, 1.0f);",
+                               "ImVec4 sponsor_link = ImVec4(0.92f, 0.40f, 0.68f, 1.0f);"}) {
+        Check(Contains(theme, colour), std::string("Dragon sponsor colour: ") + colour);
+    }
+    const std::string trg = ReadFile(kRoot / "third_party" / "trg-launcher" / "src" / "launcher.cpp");
+    for (const char* usage : {"PushStyleColor(ImGuiCol_Button, theme.sponsor);",
+                              "PushStyleColor(ImGuiCol_ButtonHovered, theme.sponsor_hot);",
+                              "PushStyleColor(ImGuiCol_ButtonActive, theme.sponsor_active);",
+                              "AddRectFilled(min, ImVec2(min.x + block, min.y + block), Col(t.sponsor), 10 * s);",
+                              "Col(t.sponsor_link), shown.c_str(), sponsor.url);",
+                              "SponsorButton(\"##sponsor_card\", sponsor, t,",
+                              "SponsorButton(\"##sponsor_footer\", sponsor, config_.theme,"}) {
+        Check(Contains(trg, usage), std::string("Sponsor control uses the Dragon colour: ") + usage);
+    }
+    Check(!Contains(ReadFile(kRoot / "launcher" / "launcher.cpp"), "theme.sponsor"),
+          "sponsor colours are not overridden by the launcher theme");
+    Check(!Contains(ReadFile(kRoot / "launcher" / "launcher_theme.h"), "sponsor"),
+          "launcher palette does not carry sponsor colours");
 }
 
 unsigned Be32(const std::string& data, size_t at) {
@@ -535,7 +558,6 @@ void TestLauncherSource() {
     has("c.sponsor = {\"Sponsor on GitHub\", kSponsorUrl, sponsor_icon_};", "footer Sponsor on GitHub configured");
     has("c.save_on_play = false;", "Save and Play are separate");
     has("WithAction(\n        kAccent, Hex(palette::kActionEdge), Hex(palette::kActionLink))", "Midnight theme with palette actions");
-    has("theme.sponsor = Hex(palette::kSponsor);", "sponsor button follows the palette");
     has("c.branding.fade_into_page = false;", "header does not fade into the page");
     has("{\"PC PORT   \\xC2\\xB7   \", \"\"}", "subtitle: PC PORT");
     has("{\"v\" SOS_PORT_VERSION \"   \\xC2\\xB7   \", \"\"}", "subtitle: version");
@@ -703,6 +725,7 @@ int main() {
     TestIcons();
     TestSponsorAsset();
     TestPalette();
+    TestSponsorPalette();
     TestActionEdge();
     TestVersion();
     TestApplicationIcon();

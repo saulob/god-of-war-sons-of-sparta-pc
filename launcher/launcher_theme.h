@@ -28,11 +28,6 @@ inline constexpr int kDim = 0xB39B80;
 inline constexpr int kWarning = 0x782E1A;
 inline constexpr int kWarningDot = 0xFF734D;
 
-inline constexpr int kSponsor = 0x8E2823;
-inline constexpr int kSponsorHot = 0xA83630;
-inline constexpr int kSponsorActive = 0x6E1F1B;
-inline constexpr int kSponsorLink = 0xE7C27A;
-
 inline constexpr int kHeaderEdge = 0x0C0705;
 inline constexpr int kHeaderGlow = 0x4A2A14;
 inline constexpr int kHeaderMid = 0x2E1A0E;

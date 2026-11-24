@@ -191,10 +191,6 @@ trg::Theme LauncherTheme() {
     theme.warn = Hex(palette::kWarning);
     theme.warn_dot = Hex(palette::kWarningDot);
     theme.action_edge_width = palette::kActionEdgeWidth;
-    theme.sponsor = Hex(palette::kSponsor);
-    theme.sponsor_hot = Hex(palette::kSponsorHot);
-    theme.sponsor_active = Hex(palette::kSponsorActive);
-    theme.sponsor_link = Hex(palette::kSponsorLink);
     return theme;
 }
 
