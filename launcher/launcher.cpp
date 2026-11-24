@@ -143,6 +143,9 @@ constexpr char kControllerPromptsHelp[] =
     "Xbox always show that set. Only the symbols change, not the controls. Applies at the next game start.";
 constexpr char kFrameCounterHelp[] = "Shows the new game frames a second and the time between them in a corner of the game.";
 constexpr char kSkipIntroHelp[] = "Skips the startup logos and video; the game continues to the title screen as usual.";
+constexpr char kUnlockHermesModeHelp[] =
+    "Unlocks Hermes Mode from the beginning, without completing the campaign or entering the secret code. Existing saves "
+    "are not modified.";
 constexpr char kAntiAliasingHelp[] =
     "SMAA smooths jagged edges on the finished picture, at a small cost in performance.";
 constexpr char kAnisotropyHelp[] =
@@ -685,8 +688,6 @@ private:
         case PageId::kGameplay:
             return {name, "Frame rate, readouts and startup options.", [this](trg::Ui& ui) { PageGameplay(ui); },
                     nullptr, nullptr};
-        case PageId::kCheats:
-            return {name, "", [](trg::Ui&) {}, nullptr, nullptr};
         case PageId::kControls:
             return {name, "Controller and keyboard.", [this](trg::Ui& ui) { PageControls(ui); }, nullptr, nullptr};
         case PageId::kTrophies:
@@ -1009,6 +1010,7 @@ private:
         if (build_ && build_->skip_intro) {
             ui.Toggle("Skip Intro", kSkipIntroHelp, kSkipIntroKey, false, "Off", "On");
         }
+        ui.Toggle("Unlock Hermes Mode", kUnlockHermesModeHelp, kUnlockHermesModeKey, false, "Off", "On");
         if (kSeparateGameProcessAvailable) {
             ui.Toggle("Allow overlay programs", kAllowOverlayProgramsHelp, kAllowOverlayProgramsKey, false, "Off", "On");
         }

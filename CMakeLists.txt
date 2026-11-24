@@ -96,6 +96,7 @@ set(SOS_RUNTIME_SOURCES
     src/redzone_cache.c
     src/startup_profile.c
     src/sos_skip_intro.c
+    src/sos_hermes_unlock.c
     src/sos_exit_game.c
     src/sos_uw_probe.c
     src/runtime_module.c

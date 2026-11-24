@@ -10,6 +10,7 @@
 
 #include "controller_prompts.h"
 #include "game_profile.h"
+#include "sos_hermes_unlock.h"
 #include "trg/settings.h"
 
 namespace sos {
@@ -44,6 +45,8 @@ inline constexpr char kShowResolutionTitleKey[] = "show_resolution_title";
 inline constexpr char kShowFrameCounterKey[] = "show_fps";
 // Cuts the startup video; the title screen follows. Read when the game starts.
 inline constexpr char kSkipIntroKey[] = "skip_intro";
+// Offers the game's original Hermes Mode without its campaign or cheat-code unlock. Read when the game starts.
+inline constexpr char kUnlockHermesModeKey[] = SOS_HERMES_UNLOCK_KEY;
 // Keeps the run log of normal sessions; crash logs are kept whatever it says.
 inline constexpr char kDetailedLoggingKey[] = "detailed_logging";
 // Windows, on: Play starts the game as a separate process that overlay programs can attach to (game_process.h).

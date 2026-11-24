@@ -74,15 +74,15 @@ std::vector<fs::path> SourceFiles(const fs::path& folder) {
 std::string Relative(const fs::path& path) { return path.lexically_relative(kRoot).generic_string(); }
 
 void TestPages() {
-    const std::vector<std::string> expected = {"Play",     "Display",  "Graphics",   "Gameplay", "Cheats",
+    const std::vector<std::string> expected = {"Play",     "Display",  "Graphics",   "Gameplay",
                                                "Controls", "Trophies", "Bug Report", "About"};
     std::vector<std::string> actual;
     for (const PageId page : kPageOrder) {
         actual.emplace_back(PageName(page));
     }
-    Check(actual == expected, "page order is Play, Display, Graphics, Gameplay, Cheats, Controls, Trophies, Bug Report, About");
+    Check(actual == expected, "page order is Play, Display, Graphics, Gameplay, Controls, Trophies, Bug Report, About");
     Check(std::count(actual.begin(), actual.end(), "Online") == 0, "no Online page");
-    Check(std::count(actual.begin(), actual.end(), "Cheats") == 1, "Cheats page present");
+    Check(std::count(actual.begin(), actual.end(), "Cheats") == 0, "Cheats page absent");
     Check(std::count(actual.begin(), actual.end(), "Bug Report") == 1, "Bug Report page present");
     Check(std::count(actual.begin(), actual.end(), "Trophies") == 1, "Trophies page present");
 }
@@ -332,6 +332,7 @@ void TestSettings() {
         LauncherSettings settings(file);
         Check(settings.GetBool(kShowLauncherKey, true), "Show this launcher defaults to on");
         Check(settings.Get(kFrameRateKey, "60") == "60", "frame rate defaults to 60");
+        Check(!settings.GetBool(kUnlockHermesModeKey, false), "Unlock Hermes Mode defaults to off");
         settings.Set(kDisplayModeKey, "borderless");
         settings.SetBool(kVSyncKey, false);
         settings.SetInt(kSharpenStrengthKey, 40);
@@ -339,6 +340,7 @@ void TestSettings() {
         settings.Set(kLauncherXKey, "10");
         Check(settings.Save(), "settings save");
     }
+    Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 0, "Hermes Mode early unlock defaults off when the key is absent");
     const std::string text = ReadFile(file);
     Check(Contains(text, "display_mode = borderless") || Contains(text, "display_mode=borderless"), "display mode written");
     Check(Contains(text, "vsync = 0") || Contains(text, "vsync=0"), "booleans are written as 0/1");
@@ -356,6 +358,7 @@ void TestSettings() {
         settings.ResetToDefaults();
         Check(settings.Get(kDisplayModeKey, "windowed") == "windowed", "reset puts display mode back");
         Check(settings.Get(kFrameRateKey, "60") == "60", "reset puts frame rate back");
+        Check(settings.Get(kUnlockHermesModeKey, "") == "0", "reset puts Hermes Mode early unlock back off");
         Check(settings.Get(kLauncherXKey) == "10" && settings.Get(kLauncherYKey) == "20", "reset keeps the launcher placement");
         Check(settings.Save(), "reset settings save");
     }
@@ -380,13 +383,17 @@ void TestSettings() {
     Check(!IsValidSetting(kFrameRateKey, "75"), "frame rate 75 is not offered");
 
     std::set<std::string> managed;
+    std::string hermes_default;
     for (const ManagedSetting& setting : ManagedSettings()) {
         managed.insert(std::string(setting.key));
+        if (setting.key == kUnlockHermesModeKey) hermes_default = setting.default_value;
     }
+    Check(hermes_default == "0", "the managed Hermes Mode default is off");
     for (const char* key : {kShowLauncherKey, kDisplayModeKey, kWindowWidthKey, kWindowHeightKey, kMonitorKey, kVSyncKey,
                             kPresentationKey, kUpscaleKey, kSharpenKey, kSharpenStrengthKey, kGraphicsCardKey,
                             kAntiAliasingKey, kAnisotropyKey, kFrameRateKey, kShowFpsTitleKey, kShowResolutionTitleKey,
-                            kShowFrameCounterKey, kSkipIntroKey, kDetailedLoggingKey, kAllowOverlayProgramsKey, kLauncherXKey,
+                            kShowFrameCounterKey, kSkipIntroKey, kUnlockHermesModeKey, kDetailedLoggingKey,
+                            kAllowOverlayProgramsKey, kLauncherXKey,
                             kLauncherYKey, kLauncherWidthKey, kLauncherHeightKey, kLauncherMaximizedKey,
                             kLauncherFullscreenKey}) {
         Check(managed.count(key) == 1, std::string("managed setting: ") + key);
@@ -426,6 +433,28 @@ void TestSettings() {
     }
     Check(sos_detailed_logging(Utf8(file).c_str()) == 0, "detailed logging off is read by the loader");
     Check(sos_detailed_logging(nullptr) == 1, "detailed logging without a file is on");
+    Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 0, "saved Hermes Mode off is read by the loader");
+    {
+        LauncherSettings settings(file);
+        settings.SetBool(kUnlockHermesModeKey, false);
+        settings.Save();
+    }
+    Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 0, "Hermes Mode early unlock off is read by the loader");
+    {
+        const LauncherSettings settings(file);
+        Check(!settings.GetBool(kUnlockHermesModeKey, false), "saved Hermes Mode off is read back by the launcher");
+    }
+    {
+        LauncherSettings settings(file);
+        settings.SetBool(kUnlockHermesModeKey, true);
+        settings.Save();
+    }
+    Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 1, "Hermes Mode early unlock on is read by the loader");
+    {
+        const LauncherSettings settings(file);
+        Check(settings.GetBool(kUnlockHermesModeKey, false), "saved Hermes Mode on is read back by the launcher");
+    }
+    Check(sos_hermes_unlock_from_file(nullptr) == 0, "Hermes Mode early unlock without a file is off");
 
     Check(LauncherWanted(false, false, false, true), "an unready game always shows the launcher");
     Check(LauncherWanted(true, true, false, false), "Show this launcher on shows it");
@@ -535,12 +564,18 @@ void TestLauncherSource() {
     has("\"Off\", \"SMAA\"", "Anti-aliasing off/SMAA");
     has("{{\"0\", \"Game\"}, {\"2\", \"2x\"}, {\"4\", \"4x\"}, {\"8\", \"8x\"}, {\"16\", \"16x\"}}", "Texture filtering choices");
     for (const char* label : {"\"Frame rate\"", "\"Frame rate in title\"", "\"Render resolution in title\"", "\"Frame counter\"",
-                              "\"Skip Intro\"", "\"Allow overlay programs\""}) {
+                              "\"Skip Intro\"", "\"Unlock Hermes Mode\"", "\"Allow overlay programs\""}) {
         has(label, std::string("Gameplay page row ") + label);
     }
     has("for (const int fps : {30, 60, 90, 120, 144, 165, 240, 0})", "frame rate choices");
     has("ui.Toggle(\"Frame counter\", kFrameCounterHelp, kShowFrameCounterKey, false, \"Hidden\", \"Shown\")", "Frame counter toggle");
     has("build_ && build_->skip_intro", "Skip Intro only where the build supports it");
+    has("ui.Toggle(\"Unlock Hermes Mode\", kUnlockHermesModeHelp, kUnlockHermesModeKey, false, \"Off\", \"On\")",
+        "Unlock Hermes Mode toggle defaults off");
+    const size_t skip_intro = source.find("ui.Toggle(\"Skip Intro\"");
+    const size_t hermes = source.find("ui.Toggle(\"Unlock Hermes Mode\"");
+    const size_t overlay = source.find("ui.Toggle(\"Allow overlay programs\"");
+    Check(skip_intro != std::string::npos && skip_intro < hermes && hermes < overlay, "Hermes follows Skip Intro in Gameplay");
     Check(!Contains(source, "Asian Menu Buttons") && !Contains(source, "Local co-op") && !Contains(source, "kAsianMenuButtons"),
           "Controls has no Asian Menu Buttons or Local co-op");
     Check(!Contains(source, "Not available") && !Contains(source, "Unavailable"), "no unavailable rows");
@@ -559,7 +594,11 @@ void TestLauncherSource() {
                               "ui.StatusCard", "ui.TaskProgress(install_)", "\"Ready to play\"", "BuildMetadataText(*build_)"}) {
         has(label, std::string("Play page ") + label);
     }
-    has("case PageId::kCheats:\n            return {name, \"\", [](trg::Ui&) {}", "Cheats page has no blurb and no body");
+    Check(!Contains(source, "PageId::kCheats") && !Contains(source, "\"Cheats\""), "Cheats page and label are absent");
+    Check(!Contains(ReadFile(kRoot / "launcher" / "options.h"), "kCheats") &&
+              !Contains(ReadFile(kRoot / "launcher" / "page_icons.cpp"), "kCheats") &&
+              !Contains(ReadFile(kRoot / "launcher" / "page_icons.cpp"), "cheats.svg"),
+          "Cheats page id and icon are absent");
     has("bug_report_page_->Draw(ui, facts)", "Bug Report page draws the bug report page");
     has("trophy_page_->Draw(ui)", "Trophies page draws the trophy page");
     has("trg::update::UpdateController", "updater is part of the launcher");
@@ -570,7 +609,16 @@ void TestLauncherSource() {
     for (size_t at = source.find("case PageId::k"); at != std::string::npos; at = source.find("case PageId::k", at + 1)) {
         ++pages;
     }
-    Check(pages >= 9, "every page is built");
+    Check(pages >= 8, "every page is built");
+}
+
+void TestDocumentation() {
+    const std::string readme = ReadFile(kRoot / "README.md");
+    Check(Contains(readme, "## Hermes Mode"), "README has a Hermes Mode section");
+    Check(Contains(readme, "Unlock Hermes Mode") && Contains(readme, "speedrun mode"),
+          "README explains the Hermes Mode option and the original mode");
+    Check(Contains(readme, "disabled by default"), "README states the Hermes Mode option is off by default");
+    Check(Contains(readme, "cannot be changed afterward"), "README states the save's mode is fixed");
 }
 
 void TestNoOnlineBackend() {
@@ -664,6 +712,7 @@ int main() {
     TestGameProcess();
     TestProfile();
     TestLauncherSource();
+    TestDocumentation();
     TestNoOnlineBackend();
     TestNoAlienationLeftovers();
     TestTrgPatchSet();

@@ -20,6 +20,7 @@
 #include "sos_launcher.h"
 #include "skip_intro.h"
 #include "sos_skip_intro.h"
+#include "sos_hermes_unlock.h"
 #include "sos_exit_game.h"
 #include "sos_uw_probe.h"
 #include "controller_prompts.h"
@@ -822,6 +823,7 @@ int main(int argc, char **argv) {
     }
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
+    const int hermes_unlock_wanted = sos_hermes_unlock_from_file(settings_file);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
                                         SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
                                         SOS_UW_PROBE_STUB_BYTES);
@@ -1064,6 +1066,13 @@ int main(int argc, char **argv) {
             sos_skip_intro_apply(image, size, skip_key, image + round_page(size), stub_area, skip_message, sizeof(skip_message));
             printf("Skip Intro: %s\n", skip_message);
         }
+    }
+    if (hermes_unlock_wanted) {
+        char hermes_message[200] = "unavailable: not a supported game build";
+        if (prompt_key[0]) sos_hermes_unlock_apply(image, size, prompt_key, hermes_message, sizeof(hermes_message));
+        printf("Hermes Mode: %s\n", hermes_message);
+    } else {
+        printf("Hermes Mode: early unlock off; the game's own availability is kept\n");
     }
     if (prompt_style == SOS_PROMPTS_AUTOMATIC && prompt_key[0]) {
         char hook_message[200];
