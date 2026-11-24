@@ -204,6 +204,12 @@ void Write(std::string_view log_class, Level level, const char* file, int line, 
             New = "    if (wake) {`n        m_cond.notify_one();`n    }"
         },
         @{
+            Name = 'GPU completion interrupts coalesce into one sticky event'
+            File = $equeueCpp
+            Old = "                } else if (filter == OrbisKernelEvent::Filter::GraphicsCore) {`n                    event.TriggerCompletion(trigger_data);`n                } else {"
+            New = "                } else {"
+        },
+        @{
             Name = 'GnmDriver IRQ handler captures raw pointer via [=] instead of handle eq'
             File = $gnmEqH
             Old = "        [eq, id](Platform::InterruptId irq) -> bool {"

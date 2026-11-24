@@ -337,6 +337,8 @@ bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
                 } else if (filter == OrbisKernelEvent::Filter::Timer ||
                            filter == OrbisKernelEvent::Filter::HrTimer) {
                     event.TriggerTimer();
+                } else if (filter == OrbisKernelEvent::Filter::GraphicsCore) {
+                    event.TriggerCompletion(trigger_data);
                 } else {
                     event.Trigger(trigger_data);
                 }
@@ -353,21 +355,32 @@ bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
 
 int EqueueInternal::GetTriggeredEvents(OrbisKernelEvent* ev, int num) {
     int count = 0;
-    for (auto it = m_events.begin(); it != m_events.end();) {
-        if (it->IsTriggered()) {
-            ev[count++] = it->event;
-            if (it->event.flags & OrbisKernelEvent::Flags::Clear) {
-                it->Clear();
-            }
-            if (it->event.flags & OrbisKernelEvent::Flags::OneShot) {
+    for (auto it = m_events.begin(); it != m_events.end() && count < num;) {
+        if (!it->IsTriggered()) {
+            ++it;
+            continue;
+        }
+        if (it->event.filter == OrbisKernelEvent::Filter::GraphicsCore) {
+            const bool clears = (it->event.flags & OrbisKernelEvent::Flags::Clear) != 0;
+            do {
+                ev[count++] = it->event;
+                if (!clears || !it->ConsumeCompletion()) {
+                    break;
+                }
+            } while (count < num);
+            if ((it->event.flags & OrbisKernelEvent::Flags::OneShot) && !it->IsTriggered()) {
                 it = m_events.erase(it);
             } else {
                 ++it;
             }
-
-            if (count == num) {
-                break;
-            }
+            continue;
+        }
+        ev[count++] = it->event;
+        if (it->event.flags & OrbisKernelEvent::Flags::Clear) {
+            it->Clear();
+        }
+        if (it->event.flags & OrbisKernelEvent::Flags::OneShot) {
+            it = m_events.erase(it);
         } else {
             ++it;
         }

@@ -1581,6 +1581,70 @@ void TestLiveSubscriptionsNoRegression() {
     Check(EqueueTestHooks::WaitDestroyed(eq_multi), "T14: eq_multi destroyed");
 }
 
+// TEST 15: every GPU completion interrupt stays available to a later wait
+void TestGpuCompletionCountNotCoalesced() {
+    using Platform::InterruptId;
+    using Platform::IrqC;
+    EqueueTestHooks::ResetHooks();
+
+    OrbisKernelEqueue eq = 0;
+    OrbisKernelEqueue eq_other = 0;
+    Check(sceKernelCreateEqueue(&eq, "t15_eop") == ORBIS_OK, "T15: create EOP equeue");
+    Check(sceKernelCreateEqueue(&eq_other, "t15_eop_other") == ORBIS_OK,
+          "T15: create second EOP equeue");
+
+    const u64 eop_id = static_cast<u64>(InterruptId::GfxEop);
+    Check(Libraries::GnmDriver::RegisterGnmEqEvent(eq, eop_id, reinterpret_cast<void*>(0x1500)) ==
+              ORBIS_OK,
+          "T15: register first GfxEop");
+    Check(Libraries::GnmDriver::RegisterGnmEqEvent(eq_other, eop_id,
+                                                   reinterpret_cast<void*>(0x1501)) == ORBIS_OK,
+          "T15: register second GfxEop");
+
+    OrbisKernelEvent ev{};
+    int out = 0;
+    OrbisKernelUseconds zero = 0;
+
+    IrqC::Instance()->Signal(InterruptId::GfxEop);
+    IrqC::Instance()->Signal(InterruptId::GfxEop);
+    Check(sceKernelWaitEqueue(eq, &ev, 1, &out, &zero) == ORBIS_OK && out == 1,
+          "T15: first completion delivered");
+    out = 0;
+    Check(sceKernelWaitEqueue(eq, &ev, 1, &out, &zero) == ORBIS_OK && out == 1,
+          "T15: second completion survives coalescing");
+    out = 0;
+    Check(sceKernelWaitEqueue(eq, &ev, 1, &out, &zero) == ORBIS_KERNEL_ERROR_ETIMEDOUT && out == 0,
+          "T15: no duplicate completion");
+
+    out = 0;
+    Check(sceKernelWaitEqueue(eq_other, &ev, 1, &out, &zero) == ORBIS_OK && out == 1,
+          "T15: second queue received its first completion");
+    out = 0;
+    Check(sceKernelWaitEqueue(eq_other, &ev, 1, &out, &zero) == ORBIS_OK && out == 1,
+          "T15: second queue received its second completion");
+    out = 0;
+    Check(sceKernelWaitEqueue(eq_other, &ev, 1, &out, &zero) == ORBIS_KERNEL_ERROR_ETIMEDOUT &&
+              out == 0,
+          "T15: second queue has no extra completion");
+
+    IrqC::Instance()->Signal(InterruptId::GfxEop);
+    out = 0;
+    Check(sceKernelWaitEqueue(eq, &ev, 1, &out, &zero) == ORBIS_OK && out == 1,
+          "T15: one interrupt still yields exactly one completion");
+    out = 0;
+    Check(sceKernelWaitEqueue(eq, &ev, 1, &out, &zero) == ORBIS_KERNEL_ERROR_ETIMEDOUT && out == 0,
+          "T15: a single interrupt is not duplicated");
+
+    Check(Libraries::GnmDriver::UnregisterGnmEqEvent(eq, eop_id) == ORBIS_OK,
+          "T15: unregister first GfxEop");
+    Check(Libraries::GnmDriver::UnregisterGnmEqEvent(eq_other, eop_id) == ORBIS_OK,
+          "T15: unregister second GfxEop");
+    Check(sceKernelDeleteEqueue(eq) == ORBIS_OK, "T15: delete first equeue");
+    Check(sceKernelDeleteEqueue(eq_other) == ORBIS_OK, "T15: delete second equeue");
+    Check(EqueueTestHooks::WaitDestroyed(eq), "T15: first equeue destroyed");
+    Check(EqueueTestHooks::WaitDestroyed(eq_other), "T15: second equeue destroyed");
+}
+
 } // namespace
 
 int main() {
@@ -1599,6 +1663,7 @@ int main() {
     TestIrqStaleCleanup();
     TestExplicitRemoveVsAutoCleanup();
     TestLiveSubscriptionsNoRegression();
+    TestGpuCompletionCountNotCoalesced();
 
     std::printf("equeue-lifetime: %d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

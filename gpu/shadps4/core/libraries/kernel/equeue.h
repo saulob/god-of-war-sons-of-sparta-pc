@@ -92,6 +92,7 @@ struct EqueueEvent {
 
     void Clear() {
         is_triggered = false;
+        pending_completions = 0;
         event.fflags = 0;
         event.data = 0;
     }
@@ -99,6 +100,29 @@ struct EqueueEvent {
     void Trigger(void* data) {
         is_triggered = true;
         event.data = reinterpret_cast<uintptr_t>(data);
+    }
+
+    // GPU completions are counting: several EOP interrupts may arrive before the
+    // guest waits again, and every one must remain available to a later wait.
+    void TriggerCompletion(void* data) {
+        is_triggered = true;
+        event.data = reinterpret_cast<uintptr_t>(data);
+        if (pending_completions != 0xffffffffu) {
+            ++pending_completions;
+        }
+    }
+
+    // Consumes one queued completion; returns false once the last one was taken.
+    bool ConsumeCompletion() {
+        if (pending_completions == 0) {
+            return false;
+        }
+        if (--pending_completions == 0) {
+            is_triggered = false;
+            event.fflags = 0;
+            event.data = 0;
+        }
+        return true;
     }
 
     void TriggerUser(void* data) {
@@ -139,6 +163,7 @@ struct EqueueEvent {
 
 private:
     bool is_triggered = false;
+    u32 pending_completions = 0;
 };
 
 class EqueueInternal {
