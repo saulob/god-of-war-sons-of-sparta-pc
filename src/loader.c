@@ -23,7 +23,6 @@
 #include "sos_skip_intro.h"
 #include "sos_hermes_unlock.h"
 #include "sos_exit_game.h"
-#include "sos_uw_probe.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 #include "trophies/trophy_runtime.h"
@@ -43,6 +42,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <signal.h>
+#include <ucontext.h>
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -181,9 +181,9 @@ static void log_cpu(void) {
     if (isa_missing_sets(host, 0, sets, sizeof(sets))) printf("CPU: missing %s, which cannot be emulated\n", sets);
 }
 
-#ifdef _WIN32
 static int gpu_enabled;
 static uint64_t image_size;
+#ifdef _WIN32
 static int current_module = -1;
 
 static void crash_detail(EXCEPTION_POINTERS *info) {
@@ -319,6 +319,61 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
         }
     }
     return patched;
+}
+#else
+static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
+    if (sig == SIGSEGV && si) {
+        const uintptr_t fault_address = (uintptr_t)si->si_addr;
+        if (runtime_memory_wait_carve(fault_address)) return;
+        const int64_t cost = sos_cost_begin();
+        if (gpu_enabled && dcpgpu_handle_fault(uc_void, si->si_addr)) {
+            sos_cost_end(SOS_COST_GPU_FAULT, cost, 1);
+            return;
+        }
+        if (runtime_fault_recover) {
+            sigjmp_buf *buffer = runtime_fault_recover;
+            runtime_fault_recover = NULL;
+            siglongjmp(*buffer, 1);
+        }
+    }
+    if (sig == SIGILL && uc_void && image) {
+        ucontext_t *uc = (ucontext_t *)uc_void;
+        const uint64_t rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+        if ((uintptr_t)rip - (uintptr_t)image < image_size) {
+            static const int map[16] = {
+                REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
+                REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15
+            };
+            uint64_t gpr[16];
+            for (int i = 0; i < 16; ++i) gpr[i] = (uint64_t)uc->uc_mcontext.gregs[map[i]];
+            uint64_t flags = (uint64_t)uc->uc_mcontext.gregs[REG_EFL];
+            uint8_t xmm[16][16];
+            const int has_fp = uc->uc_mcontext.fpregs != NULL;
+            if (has_fp) memcpy(xmm, uc->uc_mcontext.fpregs->_xmm, sizeof(xmm));
+            const int64_t cost = sos_cost_begin();
+            const size_t length = isa_emulate((const uint8_t *)(uintptr_t)rip, rip, gpr, &flags, has_fp ? xmm : NULL);
+            if (length) {
+                sos_cost_end(SOS_COST_EMULATED, cost, 1);
+                for (int i = 0; i < 16; ++i) uc->uc_mcontext.gregs[map[i]] = (greg_t)gpr[i];
+                if (has_fp) memcpy(uc->uc_mcontext.fpregs->_xmm, xmm, sizeof(xmm));
+                uc->uc_mcontext.gregs[REG_EFL] = (greg_t)flags;
+                uc->uc_mcontext.gregs[REG_RIP] = (greg_t)(rip + length);
+                return;
+            }
+        }
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void install_posix_fault_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = posix_fault_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
 }
 #endif
 
@@ -631,6 +686,8 @@ int main(int argc, char **argv) {
     signal(SIGABRT, abort_signal);
     _set_invalid_parameter_handler(invalid_parameter);
     _set_purecall_handler(purecall);
+#else
+    install_posix_fault_handlers();
 #endif
 
     log_cpu();
@@ -825,12 +882,11 @@ int main(int argc, char **argv) {
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
     const int hermes_unlock_wanted = sos_hermes_unlock_from_file(settings_file);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
-                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
-                                        SOS_UW_PROBE_STUB_BYTES);
+                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
-#ifdef _WIN32
     image_size = size;
+#ifdef _WIN32
     sos_crash_guard_set_guest((uintptr_t)image, size);
 #endif
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
@@ -1114,16 +1170,6 @@ int main(int argc, char **argv) {
                                   exit_message, sizeof(exit_message)))
             sos_exit_game_arm(image, prompt_key, dcpgpu_request_close);
         printf("Exit Game: %s\n", exit_message);
-    }
-    if (sos_render_target_wider_than_16_9(&render_target)) { /* DEBUG_SAULO */
-        char probe_message[200] = "unavailable: not a supported game build";
-        uint8_t *probe_stub = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
-                              SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES +
-                              SOS_EXIT_GAME_STUB_BYTES;
-        const int hooked = prompt_key[0] && sos_uw_probe_install(image, size, prompt_key, probe_stub, SOS_UW_PROBE_STUB_BYTES,
-                                                                 probe_message, sizeof(probe_message));
-        if (hooked) sos_uw_probe_arm(dcpgpu_debug_camera, dcpgpu_debug_f5_serial);
-        printf("DEBUG_SAULO Ultrawide: camera telemetry %s\n", probe_message);
     }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);

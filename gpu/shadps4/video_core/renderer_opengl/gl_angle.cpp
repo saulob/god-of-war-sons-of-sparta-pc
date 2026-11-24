@@ -93,7 +93,7 @@ void ExitAngleUnavailable(const char* reason) {
         "The Direct3D 11 renderer could not start.\n\n" + cause +
         "\n\nIt needs libEGL.dll and libGLESv2.dll next to the game, and a graphics card with Direct3D feature "
         "level 10_1 or newer. Choose another renderer in the launcher to play.";
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dragon's Crown Pro", message.c_str(), nullptr);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "God of War: Sons of Sparta PC", message.c_str(), nullptr);
     std::_Exit(1);
 }
 

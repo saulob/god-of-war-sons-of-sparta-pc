@@ -849,7 +849,7 @@ void runtime_thread_signal_scan(int (*visit)(RuntimeThreadSignals *,void *native
 #ifdef _WIN32
         void *native=t->native;
 #else
-        void *native=NULL;
+        void *native=t->ready || t->host_owned ? (void *)&t->host : NULL;
 #endif
         if (visit(&t->signals,native)) wake_waiter(t);
     }
@@ -860,12 +860,11 @@ RuntimeThreadSignals *runtime_thread_signals(void *handle) {
     return t ? &t->signals : NULL;
 }
 void *runtime_thread_native_handle(void *handle) {
-#ifdef _WIN32
     GuestThread *t=handle ? find_live_thread(handle) : runtime_thread_current();
+#ifdef _WIN32
     return t ? t->native : NULL;
 #else
-    (void)handle;
-    return NULL;
+    return t && (t->ready || t->host_owned) ? (void *)&t->host : NULL;
 #endif
 }
 static ABI int32_t thread_get_id(void) { return current ? current->unique_id : 0; }

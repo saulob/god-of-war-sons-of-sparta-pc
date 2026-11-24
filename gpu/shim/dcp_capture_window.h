@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// DEBUG_SAULO: bounded pass window of one F5 frame capture.
+// Bounded pass window for frame capture.
 #pragma once
 
 #include <cstddef>

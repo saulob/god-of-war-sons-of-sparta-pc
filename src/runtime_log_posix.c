@@ -140,6 +140,11 @@ int runtime_log_start(const char *dir, const char *file, char *path, size_t size
     return redirected;
 }
 
+int runtime_log_continue(const char *file, char *path, size_t size) {
+    if (!file || access(file, F_OK) != 0) return 0;
+    return runtime_log_start(NULL, file, path, size);
+}
+
 void runtime_log_release(void) {}
 
 void runtime_log_flush(void) {

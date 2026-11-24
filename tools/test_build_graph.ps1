@@ -95,8 +95,7 @@ try {
     $cases = @(
         @{ File = Join-Path $gpu 'shadps4\video_core\renderer_vulkan\vk_frame_capture.cpp'; What = 'vk_frame_capture.cpp' },
         @{ File = Join-Path $gpu 'shadps4\video_core\renderer_vulkan\vk_frame_capture.h'; What = 'vk_frame_capture.h' },
-        @{ File = Join-Path $gpu 'shim\dcp_capture_window.h'; What = 'dcp_capture_window.h' },
-        @{ File = Join-Path $gpu 'shim\dcp_f5_capture.h'; What = 'dcp_f5_capture.h' }
+        @{ File = Join-Path $gpu 'shim\dcp_capture_window.h'; What = 'dcp_capture_window.h' }
     )
     foreach ($case in $cases) {
         $item = Get-Item -LiteralPath $case.File

@@ -285,7 +285,6 @@ OWNERS = {
     "launcher/prompt_dialog.c": "Settings dialog glyphs", "launcher/prompt_dialog_sites.h": "Settings dialog glyphs",
     "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
     "launcher/sos_resolution_sites.h": "Render resolution and True Ultrawide",
-    "src/sos_uw_probe.c": "DEBUG_SAULO True Ultrawide capture telemetry (tests/uw_probe_tests.cpp, both builds)",
 }
 # Host code with no build-specific data: one test covers it, not one per build.
 SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save and redzone layers"}

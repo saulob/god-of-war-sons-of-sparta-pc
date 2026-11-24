@@ -18,7 +18,7 @@ $tc = Resolve-Toolchain 'auto'
 $exe = Join-Path $temp 'test_redzone.exe'
 $src = Join-Path $root 'src'
 & (Join-Path $tc.Bin 'clang.exe') '--target=x86_64-w64-mingw32' '-std=gnu11' '-Wall' '-Wextra' '-Werror' '-O2' '-D_WIN32_WINNT=0x0A00' `
-    '-I' $src '-DREDZONE_SOURCE="runtime_redzone.c"' (Join-Path $PSScriptRoot 'redzone_tests.c') `
+    '-I' $src (Get-StringDefine 'REDZONE_SOURCE' 'runtime_redzone.c') (Join-Path $PSScriptRoot 'redzone_tests.c') `
     (Join-Path $src 'isa_emulate.c') (Join-Path $src 'redzone_analysis.c') (Join-Path $src 'redzone_cache.c') `
     '-L' (Join-Path (Split-Path $tc.Bin) 'lib') '-lZydis' '-lZycore' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the red-zone test' }

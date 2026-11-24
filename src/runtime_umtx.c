@@ -44,15 +44,30 @@ static int cas32(void *addr, uint32_t *expected, uint32_t desired) {
 }
 
 /* Waits on `addr` while the 32-bit word still reads `expect`, with an optional FreeBSD timespec. */
-static int wait_on(void *addr, uint32_t expect, const void *timeout, int absolute) {
+static int wait_on(void *addr, uint32_t expect, const void *timeout, int absolute, uint32_t clock_id) {
     Queue *q = queue_for(addr);
     struct timespec deadline;
     int has_deadline = 0;
     if (timeout) {
         const int64_t *ts = timeout;
         if (absolute) {
-            deadline.tv_sec = (time_t)ts[0];
-            deadline.tv_nsec = (long)ts[1];
+            if (clock_id == 4 /* FreeBSD CLOCK_MONOTONIC */ || clock_id == 11 || clock_id == 12) {
+                struct timespec mono, real;
+                clock_gettime(CLOCK_MONOTONIC, &mono);
+                clock_gettime(CLOCK_REALTIME, &real);
+                int64_t diff_sec = ts[0] - (int64_t)mono.tv_sec;
+                int64_t diff_nsec = ts[1] - (int64_t)mono.tv_nsec;
+                if (diff_nsec < 0) { --diff_sec; diff_nsec += 1000000000L; }
+                if (diff_sec < 0) {
+                    deadline = real;
+                } else {
+                    deadline.tv_sec = real.tv_sec + (time_t)diff_sec;
+                    deadline.tv_nsec = real.tv_nsec + (long)diff_nsec;
+                }
+            } else {
+                deadline.tv_sec = (time_t)ts[0];
+                deadline.tv_nsec = (long)ts[1];
+            }
         } else {
             clock_gettime(CLOCK_REALTIME, &deadline);
             deadline.tv_sec += (time_t)ts[0];
@@ -85,7 +100,7 @@ static ABI int32_t umtx_mutex_lock(void *obj, uint32_t owner) {
     for (;;) {
         uint32_t expected = 0;
         if (cas32(obj, &expected, owner)) return 0;
-        wait_on(obj, expected, NULL, 0);
+        wait_on(obj, expected, NULL, 0, 0);
     }
 }
 static ABI int32_t umtx_mutex_trylock(void *obj, uint32_t owner) {
@@ -101,7 +116,7 @@ static ABI int32_t umtx_mutex_unlock(void *obj) {
 static ABI int32_t umtx_cmp_rel(void *obj, uint32_t current, uint32_t delta, const void *timeout) {
     uint32_t expected = current;
     if (cas32(obj, &expected, current + delta)) return 0;
-    wait_on(obj, expected, timeout, 0);
+    wait_on(obj, expected, timeout, 0, 0);
     return 0;
 }
 
@@ -113,7 +128,7 @@ static ABI int32_t sem_wait_op(void *sem) {
     for (;;) {
         uint32_t value = load32(value_addr);
         if ((int32_t)value > 0 && cas32(value_addr, &value, value - 1)) return 0;
-        wait_on(value_addr, 0, NULL, 0);
+        wait_on(value_addr, 0, NULL, 0, 0);
     }
 }
 static ABI int32_t sem_trywait_op(void *sem) {
@@ -244,8 +259,10 @@ static ABI int32_t umtx_op(void *obj, int op, uint64_t val, void *uaddr1, void *
     case UMTX_OP_MUTEX_WAIT: case UMTX_OP_MUTEX_WAIT_PRIVATE:
     {
         /* uaddr1 is the size of a struct _umtx_time at uaddr2 (timespec, flags, clock id) or zero for a plain timespec. */
-        const uint32_t *flags = uaddr1 && uaddr2 ? (const uint32_t *)((const unsigned char *)uaddr2 + 16) : NULL;
-        return wait_on(obj, (uint32_t)(val & 0xffffffffu), uaddr2, flags && (*flags & 1)) ? GUEST_ETIMEDOUT : 0;
+        const size_t tsize = (size_t)(uintptr_t)uaddr1;
+        const uint32_t *flags = tsize >= 20 && uaddr2 ? (const uint32_t *)((const unsigned char *)uaddr2 + 16) : NULL;
+        const uint32_t clock_id = tsize >= 24 && uaddr2 ? *(const uint32_t *)((const unsigned char *)uaddr2 + 20) : 0;
+        return wait_on(obj, (uint32_t)(val & 0xffffffffu), uaddr2, flags && (*flags & 1), clock_id) ? GUEST_ETIMEDOUT : 0;
     }
     case UMTX_OP_WAKE: case UMTX_OP_WAKE_PRIVATE: case UMTX_OP_MUTEX_WAKE: case UMTX_OP_MUTEX_WAKE_PRIVATE:
         wake_on(obj, (int)val);

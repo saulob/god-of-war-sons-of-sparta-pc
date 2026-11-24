@@ -86,7 +86,7 @@ bool RunsOnGles() {
     std::printf("%s: %s\n", name.c_str(), message.c_str());
     std::fflush(stdout);
     runtime_log_flush();
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dragon's Crown Pro",
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "God of War: Sons of Sparta PC",
                              ("The " + name + " renderer could not start.\n\n" + message).c_str(),
                              nullptr);
     std::_Exit(1);

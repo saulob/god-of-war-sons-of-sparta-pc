@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.saulob.sons_of_sparta_pc</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <name>God of War: Sons of Sparta PC</name>
+  <summary>Native PC port of God of War: Sons of Sparta (bring your own game package)</summary>
+  <description>
+    <p>
+      Native PC port of God of War: Sons of Sparta (CUSA57767 1.00 and 1.01 USA).
+      No original game files are included; install from your own legally obtained PS4 package in the launcher.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.saulob.sons_of_sparta_pc.desktop</launchable>
+  <url type="homepage">https://github.com/saulob/god-of-war-sons-of-sparta-pc</url>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

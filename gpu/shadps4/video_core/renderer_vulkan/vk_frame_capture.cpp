@@ -14,10 +14,6 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image_info.h"
 
-namespace {
-std::atomic<u32> g_f5_serial{0};
-} // namespace
-
 namespace Vulkan {
 
 namespace {
@@ -58,7 +54,6 @@ void AddBuffers(Entry& entry) {
     pending_buffers.clear();
 }
 bool pass_open = false;
-// DEBUG_SAULO: bounded pass window of one F5 capture.
 constexpr size_t kMaxPasses = 512;
 std::mutex display_mutex;
 std::vector<VAddr> display_buffers;
@@ -184,7 +179,6 @@ bool FrameCapture::Request() {
         return false;
     }
     std::printf("Frame capture: armed\n");
-    g_f5_serial.fetch_add(1, std::memory_order_release);
     return true;
 }
 
@@ -323,14 +317,3 @@ void FrameCapture::Note(const char* text) {
 }
 
 } // namespace Vulkan
-
-// DEBUG_SAULO: read-only camera telemetry sink (no capture triggers).
-extern "C" void dcpgpu_debug_camera(float x, float y, float ortho) {
-    (void)x;
-    (void)y;
-    (void)ortho;
-}
-
-extern "C" uint32_t dcpgpu_debug_f5_serial(void) {
-    return g_f5_serial.load(std::memory_order_acquire);
-}

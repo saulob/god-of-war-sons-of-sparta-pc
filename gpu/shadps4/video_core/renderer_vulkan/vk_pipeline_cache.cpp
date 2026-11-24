@@ -753,6 +753,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         return nullptr;
     }
+    if (has_last_graphics_key && last_graphics_key == sel.graphics_key) {
+        return last_graphics_pipeline;
+    }
     if (AsyncCompilation() && !sel.regs->stage_enable.hs_en && !EmulatorSettings.IsShaderCollect()) {
         const auto found = graphics_pipelines.find(sel.graphics_key);
         if (found != graphics_pipelines.end()) {
@@ -813,7 +816,13 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         }
         sel.fetch_shader.reset();
     }
-    return it->second.get();
+    const GraphicsPipeline* result = it->second.get();
+    if (result) {
+        has_last_graphics_key = true;
+        last_graphics_key = sel.graphics_key;
+        last_graphics_pipeline = result;
+    }
+    return result;
 }
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGamePipeline(
@@ -1316,6 +1325,8 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
         }
     }
     if (module_related_pipelines.contains(module)) {
+        has_last_graphics_key = false;
+        last_graphics_pipeline = nullptr;
         auto& pipeline_keys = module_related_pipelines[module];
         for (auto& key : pipeline_keys) {
             if (std::holds_alternative<GraphicsPipelineKey>(key)) {

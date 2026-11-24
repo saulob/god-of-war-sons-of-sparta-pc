@@ -86,16 +86,16 @@ static vk::FormatFeatureFlags2 FormatFeatureFlags(const vk::ImageUsageFlags usag
 }
 
 UniqueImage::~UniqueImage() {
-    if (image) {
-        vmaDestroyImage(allocator, image, allocation);
-    }
+    Destroy();
 }
 
 void UniqueImage::Destroy() {
     if (image) {
+        device_image_bytes.fetch_sub(size_bytes, std::memory_order_relaxed);
         vmaDestroyImage(allocator, image, allocation);
         image = vk::Image{};
         allocation = {};
+        size_bytes = 0;
     }
 }
 
@@ -131,10 +131,19 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image, &allocation,
                                 &alloc_info);
     }
+    if (result != VK_SUCCESS) {
+        LOG_CRITICAL(Render_Vulkan,
+                     "Failed allocating image {}x{}x{} (format {}, {} MiB in device images): {}",
+                     image_ci.extent.width, image_ci.extent.height, image_ci.extent.depth,
+                     vk::to_string(image_ci.format),
+                     device_image_bytes.load(std::memory_order_relaxed) >> 20,
+                     vk::to_string(vk::Result{result}));
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
+    device_image_bytes.fetch_add(size_bytes, std::memory_order_relaxed);
 }
 
 Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,

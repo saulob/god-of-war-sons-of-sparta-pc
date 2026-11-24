@@ -22,7 +22,11 @@
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -194,8 +198,8 @@ HttpResponse SendWinHttp(const HttpRequest& request) {
 HttpResponse SendPosixHttp(const HttpRequest& request) {
     HttpResponse response;
     const ParsedUrl parsed = ParseUrl(request.url);
-    if (!parsed.valid || parsed.https) {
-        response.error = parsed.https ? "https requires TLS backend" : "invalid url";
+    if (!parsed.valid) {
+        response.error = "invalid url";
         return response;
     }
     struct addrinfo hints{}, *res = nullptr;
@@ -207,6 +211,13 @@ HttpResponse SendPosixHttp(const HttpRequest& request) {
         return response;
     }
     int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd >= 0 && request.timeout_ms > 0) {
+        struct timeval tv{};
+        tv.tv_sec = request.timeout_ms / 1000;
+        tv.tv_usec = (request.timeout_ms % 1000) * 1000;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
     if (fd < 0 || connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
         if (fd >= 0) close(fd);
         freeaddrinfo(res);
@@ -214,14 +225,61 @@ HttpResponse SendPosixHttp(const HttpRequest& request) {
         return response;
     }
     freeaddrinfo(res);
+
+    SSL_CTX* ssl_ctx = nullptr;
+    SSL* ssl = nullptr;
+    const auto cleanup = [&]() {
+        if (ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            ssl = nullptr;
+        }
+        if (ssl_ctx) {
+            SSL_CTX_free(ssl_ctx);
+            ssl_ctx = nullptr;
+        }
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
+    };
+    if (parsed.https) {
+        ssl_ctx = SSL_CTX_new(TLS_client_method());
+        if (!ssl_ctx || SSL_CTX_set_default_verify_paths(ssl_ctx) != 1) {
+            cleanup();
+            response.error = "tls init failed";
+            return response;
+        }
+        SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, nullptr);
+        ssl = SSL_new(ssl_ctx);
+        if (!ssl) {
+            cleanup();
+            response.error = "tls session failed";
+            return response;
+        }
+        SSL_set_tlsext_host_name(ssl, parsed.host.c_str());
+        X509_VERIFY_PARAM* param = SSL_get0_param(ssl);
+        if (X509_VERIFY_PARAM_set1_host(param, parsed.host.c_str(), parsed.host.size()) != 1) {
+            cleanup();
+            response.error = "tls hostname setup failed";
+            return response;
+        }
+        SSL_set_fd(ssl, fd);
+        if (SSL_connect(ssl) != 1) {
+            cleanup();
+            response.error = "tls handshake failed";
+            return response;
+        }
+    }
+
     std::string head = request.method + " " + parsed.path + " HTTP/1.1\r\nHost: " + parsed.host +
                        "\r\nConnection: close\r\nContent-Length: " + std::to_string(request.body.size()) + "\r\n";
     for (const auto& [k, v] : request.headers) head += k + ": " + v + "\r\n";
     head += "\r\n";
-    const auto send_all = [fd](const void* data, size_t len) {
+    const auto send_all = [&](const void* data, size_t len) {
         const char* p = static_cast<const char*>(data);
         while (len > 0) {
-            const ssize_t n = send(fd, p, len, 0);
+            const ssize_t n = ssl ? SSL_write(ssl, p, int(std::min<size_t>(len, 16384))) : send(fd, p, len, 0);
             if (n <= 0) return false;
             p += n;
             len -= size_t(n);
@@ -229,19 +287,19 @@ HttpResponse SendPosixHttp(const HttpRequest& request) {
         return true;
     };
     if (!send_all(head.data(), head.size()) || (!request.body.empty() && !send_all(request.body.data(), request.body.size()))) {
-        close(fd);
+        cleanup();
         response.error = "send failed";
         return response;
     }
     std::string raw;
     char buf[4096];
     for (;;) {
-        const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        const ssize_t n = ssl ? SSL_read(ssl, buf, sizeof(buf)) : recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) break;
         if (raw.size() + size_t(n) > kMaxResponseBytes) break;
         raw.append(buf, size_t(n));
     }
-    close(fd);
+    cleanup();
     const size_t sep = raw.find("\r\n\r\n");
     if (sep == std::string::npos) {
         response.error = "bad response";

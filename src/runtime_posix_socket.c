@@ -257,7 +257,11 @@ static ABI int32_t guest_accept(int fd,void *address,uint32_t *length) {
     HostSocket s=get_socket(fd);
     if (s==HOST_SOCKET_INVALID) return fail_errno(ENOTSOCK);
     struct sockaddr_storage native;
+#ifdef _WIN32
     int native_length=sizeof(native);
+#else
+    socklen_t native_length=sizeof(native);
+#endif
     HostSocket accepted=accept(s,address ? (struct sockaddr *)&native : NULL,address ? &native_length : NULL);
     if (accepted==HOST_SOCKET_INVALID) return fail_socket();
     int new_fd=-1;

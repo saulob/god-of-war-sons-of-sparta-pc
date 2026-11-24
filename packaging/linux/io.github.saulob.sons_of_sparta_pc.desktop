@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=God of War: Sons of Sparta PC
+Comment=Native PC port of God of War: Sons of Sparta (bring your own game package)
+Exec=AppRun
+Icon=sons-of-sparta-pc
+Categories=Game;ActionGame;
+Keywords=God of War;Sons of Sparta;Action;Platformer;
+Terminal=false
+StartupWMClass=sons_of_sparta
+Actions=Launcher;
+
+[Desktop Action Launcher]
+Name=Show launcher
+Exec=AppRun --launcher

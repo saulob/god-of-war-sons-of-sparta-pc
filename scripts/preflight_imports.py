@@ -186,7 +186,7 @@ def main(argv=None):
             print(f"missing prepared build: {root}", file=sys.stderr)
             failures += 1
             continue
-        modules = args.module or ([p for p in root.rglob("*.prx")] if args.all else list((root / "Media" / "Plugins").glob("*.prx")))
+        modules = [root / m for m in args.module] or ([p for p in root.rglob("*.prx")] if args.all else list((root / "Media" / "Plugins").glob("*.prx")))
         if not args.all and not args.module:
             modules = [root / "Media" / "Plugins" / "SaveData.prx"]
         shared = {"libc", "libkernel", "libSceLibcInternal"}

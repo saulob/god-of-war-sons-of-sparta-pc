@@ -21,6 +21,13 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fno-omit-frame-pointer>")
+add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=>")
+if (NOT WIN32)
+    # Non-PIE: host heap and TLS handed to guest code must stay below 1 TiB.
+    set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fno-pie>")
+    add_link_options(-no-pie)
+endif()
 
 if (NOT PROJECT_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
     message(FATAL_ERROR "project VERSION must start with MAJOR.MINOR.PATCH")
@@ -99,7 +106,6 @@ set(SOS_RUNTIME_SOURCES
     src/sos_skip_intro.c
     src/sos_hermes_unlock.c
     src/sos_exit_game.c
-    src/sos_uw_probe.c
     src/runtime_module.c
     src/runtime_history.c
     src/dcp_keys.c
@@ -124,7 +130,7 @@ else()
     set(SOS_PLATFORM_SOURCES src/runtime_log_posix.c src/runtime_session_log.c)
 endif()
 
-add_executable(sons_of_sparta src/loader.c ${SOS_RUNTIME_SOURCES} ${SOS_PLATFORM_SOURCES})
+add_executable(sons_of_sparta WIN32 src/loader.c ${SOS_RUNTIME_SOURCES} ${SOS_PLATFORM_SOURCES})
 target_include_directories(sons_of_sparta PRIVATE src launcher ${CMAKE_BINARY_DIR}/generated)
 target_compile_options(sons_of_sparta PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Werror>)
 if (WIN32)

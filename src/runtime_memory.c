@@ -594,6 +594,7 @@ static int host_protect(uintptr_t address, uint64_t size, int prot) {
 static void host_discard(uint64_t phys, uint64_t size) {
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
 }
+int runtime_memory_wait_carve(uintptr_t address) { (void)address; return 0; }
 #endif
 /* Called before the GPU, audio or guest threads start, while a failure can still be reported. */
 int runtime_memory_prepare(void) {

@@ -63,10 +63,6 @@ uint64_t dcpgpu_latency_press_ns(void);
 void dcpgpu_ultrawide_side_mask(int wanted);
 /* One title menu update (the menu cursor, -1 when the scene is not the title's); presenter telemetry. */
 void dcpgpu_debug_title_tick(int cursor);
-
-/* DEBUG_SAULO: read-only camera telemetry from CinemachineBrain.PushStateToUnityCamera. */
-void dcpgpu_debug_camera(float x, float y, float ortho);
-uint32_t dcpgpu_debug_f5_serial(void);
 #ifdef __cplusplus
 }
 #endif

@@ -510,6 +510,7 @@ static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const 
     pthread_mutex_lock(&lock);
     int slot=slot_of(point);
     if (slot<0) { pthread_mutex_unlock(&lock); return ERR_NOT_MOUNTED; }
+    if (!slots[slot].writable) { pthread_mutex_unlock(&lock); return ERR_BAD_MOUNTED; }
     Param p; read_param(slots[slot].meta,&p);
     switch (type) {
     case 0: if (size<sizeof(Param)) goto bad; memcpy(&p,buffer,sizeof(p)); break;     /* ALL */
@@ -703,6 +704,8 @@ static ABI int32_t save_delete(const Delete *d) {
     remove_tree(meta);
     sibling(host,WORK_SUFFIX,leftover,sizeof(leftover));
     if (is_dir(leftover)) remove_tree(leftover);
+    sibling(host,BACKUP_SUFFIX,leftover,sizeof(leftover));
+    if (is_dir(leftover)) remove_tree(leftover);
     pthread_mutex_unlock(&lock);
     printf("Runtime: save data '%s' deleted\n",d->dir->data);
     return 0;
@@ -733,15 +736,24 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
         size_t n=strlen(e->d_name);
         if (e->d_name[0]=='.' || n>=32 || ends_with(e->d_name,".sce_sys") || internal_name(e->d_name)) continue;
         if (cond->dir && cond->dir->data[0] && !like(e->d_name,cond->dir->data)) continue;
-        if (count==capacity) { capacity=capacity ? capacity*2 : 16; entries=realloc(entries,capacity*sizeof(*entries)); }
+        if (count==capacity) {
+            size_t next_cap=capacity ? capacity*2 : 16;
+            Entry *grown=realloc(entries,next_cap*sizeof(*entries));
+            if (!grown) { if (d) closedir(d); free(entries); return ERR_INTERNAL; }
+            entries=grown; capacity=next_cap;
+        }
         snprintf(entries[count].name,32,"%s",e->d_name);
         char meta[680]; snprintf(meta,sizeof(meta),"%s/%s.sce_sys",base,e->d_name);
         read_param(meta,&entries[count].param);
         ++count;
     }
     if (d) closedir(d);
-    sort_key=cond->key; sort_order=cond->order;
-    if (count) qsort(entries,count,sizeof(*entries),compare);
+    if (count) {
+        pthread_mutex_lock(&lock);
+        sort_key=cond->key; sort_order=cond->order;
+        qsort(entries,count,sizeof(*entries),compare);
+        pthread_mutex_unlock(&lock);
+    }
     result->hits=(uint32_t)count;
     uint32_t set=count<result->names_capacity ? (uint32_t)count : result->names_capacity;
     for (uint32_t i=0;i<set;++i) {

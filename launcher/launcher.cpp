@@ -319,7 +319,9 @@ enum class Outcome { kRunning, kPlay, kQuit };
 class LauncherApp {
 public:
     LauncherApp(const SosLauncherConfig& config, LauncherSettings& settings, GamePaths paths, GameCheck check)
-        : config_(config), settings_(settings), paths_(std::move(paths)), files_(check.state), build_(check.build) {}
+        : config_(config), settings_(settings), paths_(std::move(paths)), files_(check.state), build_(check.build) {
+        RefreshInstalledUpdates();
+    }
 
     bool game_process_started() const { return game_process_started_; }
 
@@ -340,6 +342,7 @@ public:
         if (!FinishInterruptedRemovals(RootsOf(paths_))) {
             Log("an interrupted update removal could not be finished yet");
         }
+        RefreshInstalledUpdates();
         placement_ = PlacementTracker(host_.Restored());
         fonts_ = trg::LoadSystemFonts(trg::layout::kTextBody);
         sponsor_icon_ = LoadSponsorIcon(host_);
@@ -551,10 +554,15 @@ private:
         return false;
     }
 
+    void RefreshInstalledUpdates() {
+        has_installed_updates_ = build_ && !InstalledUpdatesOf(RootsOf(paths_), build_->title_id).empty();
+    }
+
     void Recheck() {
         const GameCheck check = CheckAndLog(paths_);
         files_ = check.state;
         build_ = check.build;
+        RefreshInstalledUpdates();
     }
 
     // A build without verified render resolution sites runs at its native 16:9 size.
@@ -729,7 +737,7 @@ private:
                 BrowseAndInstall(PackageKind::kUpdate);
             }
             ImGui::EndDisabled();
-            if (build_ && !InstalledUpdatesOf(RootsOf(paths_), build_->title_id).empty()) {
+            if (build_ && has_installed_updates_) {
                 const std::string question = std::string(Tr("Remove installed updates?")) + "\n\n" +
                                              Tr("This removes installed game updates for ") + build_->title_id +
                                              Tr(" and returns the game to its base version.") + "\n" +
@@ -1175,6 +1183,7 @@ private:
     std::string install_failure_text_;
     bool skip_finish_save_ = false;
     bool game_process_started_ = false;
+    bool has_installed_updates_ = false;
 };
 
 SosLauncherResult ExplainInWindow(const char* topic, const char* cause, const char* advice) {

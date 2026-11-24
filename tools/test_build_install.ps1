@@ -83,7 +83,7 @@ try {
 
     Write-Step 'Case 4: complete installation with a stale image'
     foreach ($name in $script:ImageFiles) {
-        (Get-Item -LiteralPath (Join-Path $images 'CUSA57767-1.00' $name)).LastWriteTimeUtc = $markerTime.AddMinutes(-1)
+        (Get-Item -LiteralPath (Join-Path (Join-Path $images 'CUSA57767-1.00') $name)).LastWriteTimeUtc = $markerTime.AddMinutes(-1)
     }
     Check (-not (Test-ImageCurrent $fullView (Join-Path $images 'CUSA57767-1.00') @())) 'a stale image needs only --prepare-image'
     New-Image 'CUSA57767-1.00' $markerTime.AddMinutes(1) -BadMagic

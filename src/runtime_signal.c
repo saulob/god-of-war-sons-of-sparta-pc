@@ -1,5 +1,6 @@
 /* Guest signals and libkernel_unity exception handlers, after shadPS4's kernel exception.cpp and Pthread signal
  * delivery. A signal queued for a thread is delivered on that thread: Windows interrupts it with a special user APC. */
+#define _GNU_SOURCE
 #include "runtime.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +8,9 @@
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <signal.h>
+#include <ucontext.h>
 #endif
 
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000) | (n)))
@@ -15,8 +19,9 @@ enum { SIG_HUP = 1, SIG_ILL = 4, SIG_FPE = 8, SIG_KILL = 9, SIG_BUS = 10, SIG_SE
        SIG_THR = 32 };
 enum { E_SRCH = 3, E_NOMEM = 12, E_INVAL = 22, E_AGAIN = 35 };
 enum { GUEST_SIG_BLOCK = 1, GUEST_SIG_UNBLOCK = 2, GUEST_SIG_SETMASK = 3 };
-enum { SA_ONSTACK = 0x1, SA_RESETHAND = 0x4, SA_SIGINFO = 0x40, SA_NODEFER = 0x10, SA_RESTART = 0x2 };
-enum { SS_ONSTACK = 1, SS_DISABLE = 4, MIN_ALT_STACK = 2048 };
+enum { GUEST_SA_ONSTACK = 0x1, GUEST_SA_RESETHAND = 0x4, GUEST_SA_SIGINFO = 0x40, GUEST_SA_NODEFER = 0x10,
+       GUEST_SA_RESTART = 0x2 };
+enum { GUEST_SS_ONSTACK = 1, GUEST_SS_DISABLE = 4, MIN_ALT_STACK = 2048 };
 #define SIGHANDLER_DEFAULT 0
 #define SIGHANDLER_IGNORE 1
 
@@ -109,7 +114,15 @@ static void import_context(Ucontext *uc, void *native) {
     m->r14 = c->R14; m->r15 = c->R15; m->rdi = c->Rdi; m->rsi = c->Rsi; m->rbp = c->Rbp; m->rbx = c->Rbx;
     m->rdx = c->Rdx; m->rax = c->Rax; m->rcx = c->Rcx; m->rsp = c->Rsp; m->rip = c->Rip; m->rflags = c->EFlags;
 #else
-    (void)uc; (void)native;
+    if (!native) return;
+    const ucontext_t *c = native;
+    const greg_t *g = c->uc_mcontext.gregs;
+    Mcontext *m = &uc->mcontext;
+    m->r8 = (uint64_t)g[REG_R8]; m->r9 = (uint64_t)g[REG_R9]; m->r10 = (uint64_t)g[REG_R10]; m->r11 = (uint64_t)g[REG_R11];
+    m->r12 = (uint64_t)g[REG_R12]; m->r13 = (uint64_t)g[REG_R13]; m->r14 = (uint64_t)g[REG_R14]; m->r15 = (uint64_t)g[REG_R15];
+    m->rdi = (uint64_t)g[REG_RDI]; m->rsi = (uint64_t)g[REG_RSI]; m->rbp = (uint64_t)g[REG_RBP]; m->rbx = (uint64_t)g[REG_RBX];
+    m->rdx = (uint64_t)g[REG_RDX]; m->rax = (uint64_t)g[REG_RAX]; m->rcx = (uint64_t)g[REG_RCX]; m->rsp = (uint64_t)g[REG_RSP];
+    m->rip = (uint64_t)g[REG_RIP]; m->rflags = (uint64_t)g[REG_EFL];
 #endif
 }
 static void export_context(const Ucontext *uc, void *native) {
@@ -120,7 +133,15 @@ static void export_context(const Ucontext *uc, void *native) {
     c->R14 = m->r14; c->R15 = m->r15; c->Rdi = m->rdi; c->Rsi = m->rsi; c->Rbp = m->rbp; c->Rbx = m->rbx;
     c->Rdx = m->rdx; c->Rax = m->rax; c->Rcx = m->rcx; c->Rsp = m->rsp; c->Rip = m->rip;
 #else
-    (void)uc; (void)native;
+    if (!native) return;
+    ucontext_t *c = native;
+    greg_t *g = c->uc_mcontext.gregs;
+    const Mcontext *m = &uc->mcontext;
+    g[REG_R8] = (greg_t)m->r8; g[REG_R9] = (greg_t)m->r9; g[REG_R10] = (greg_t)m->r10; g[REG_R11] = (greg_t)m->r11;
+    g[REG_R12] = (greg_t)m->r12; g[REG_R13] = (greg_t)m->r13; g[REG_R14] = (greg_t)m->r14; g[REG_R15] = (greg_t)m->r15;
+    g[REG_RDI] = (greg_t)m->rdi; g[REG_RSI] = (greg_t)m->rsi; g[REG_RBP] = (greg_t)m->rbp; g[REG_RBX] = (greg_t)m->rbx;
+    g[REG_RDX] = (greg_t)m->rdx; g[REG_RAX] = (greg_t)m->rax; g[REG_RCX] = (greg_t)m->rcx; g[REG_RSP] = (greg_t)m->rsp;
+    g[REG_RIP] = (greg_t)m->rip;
 #endif
 }
 
@@ -140,10 +161,10 @@ static void dispatch(RuntimeThreadSignals *t, int sig, Siginfo *info, Ucontext *
     read_mask(t, &old);
     now = old;
     for (int i = 0; i < 4; ++i) now.bits[i] |= action.mask.bits[i];
-    if (!(action.flags & SA_NODEFER)) now.bits[(sig - 1) >> 5] |= 1u << ((sig - 1) & 31);
+    if (!(action.flags & GUEST_SA_NODEFER)) now.bits[(sig - 1) >> 5] |= 1u << ((sig - 1) & 31);
     write_mask(t, &now);
-    if (action.flags & SA_RESETHAND) memset(&actions[sig - 1], 0, sizeof(actions[sig - 1]));
-    if (action.flags & SA_SIGINFO) ((SigactionHandler)action.handler)(sig, info, uc);
+    if (action.flags & GUEST_SA_RESETHAND) memset(&actions[sig - 1], 0, sizeof(actions[sig - 1]));
+    if (action.flags & GUEST_SA_SIGINFO) ((SigactionHandler)action.handler)(sig, info, uc);
     else ((SignalHandler)action.handler)(sig);
     write_mask(t, &old);
     __atomic_add_fetch(&returned, 1, __ATOMIC_RELAXED);
@@ -186,7 +207,8 @@ void runtime_signal_deliver_pending(void) {
     RtlCaptureContext(&context);
     dispatch_pending(&context, 0);
 #else
-    dispatch_pending(NULL, 0);
+    ucontext_t context;
+    dispatch_pending(getcontext(&context) == 0 ? &context : NULL, 0);
 #endif
 }
 
@@ -212,6 +234,36 @@ static LONG queue_apc(void *native) {
     __atomic_add_fetch(status ? &apc_failures : &apcs_queued, 1, __ATOMIC_RELAXED);
     return status;
 }
+#else
+static int preempt_signal_num(void) { return SIGRTMIN + 1; }
+static void posix_preempt_handler(int sig, siginfo_t *si, void *uc_void) {
+    (void)sig; (void)si;
+    ucontext_t *uc = (ucontext_t *)uc_void;
+    if (!uc || !runtime_is_guest_code((uintptr_t)uc->uc_mcontext.gregs[REG_RIP])) {
+        __atomic_add_fetch(&apcs_in_host, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    __atomic_add_fetch(&apcs_entered, 1, __ATOMIC_RELAXED);
+    dispatch_pending(uc, 1);
+}
+static void ensure_preempt_handler(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    if (!__atomic_load_n(&apcs_queued, __ATOMIC_RELAXED)) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = posix_preempt_handler;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(preempt_signal_num(), &sa, NULL);
+    }
+    (void)once;
+}
+static int queue_posix_preempt(void *native) {
+    ensure_preempt_handler();
+    const int rc = pthread_kill(*(const pthread_t *)native, preempt_signal_num());
+    __atomic_add_fetch(rc ? &apc_failures : &apcs_queued, 1, __ATOMIC_RELAXED);
+    return rc;
+}
 #endif
 
 static pthread_mutex_t pump_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -223,7 +275,7 @@ static int pump_visit(RuntimeThreadSignals *t, void *native) {
 #ifdef _WIN32
     if (native) queue_apc(native);
 #else
-    (void)native;
+    if (native) queue_posix_preempt(native);
 #endif
     return 1;
 }
@@ -264,7 +316,9 @@ static int wake_thread(void *handle) {
     const LONG status = queue_apc(native);
     return status ? E_SRCH : 0;
 #else
-    return 0;
+    void *native = runtime_thread_native_handle(handle);
+    if (!native) return 0;
+    return queue_posix_preempt(native) ? E_SRCH : 0;
 #endif
 }
 
@@ -332,7 +386,7 @@ static ABI int32_t sig_action(int sig, const Sigaction *act, Sigaction *old) {
 }
 static ABI uintptr_t sig_signal(int sig, uintptr_t handler) {
     if (!valid_signal(sig)) { fail(E_INVAL); return (uintptr_t)-1; }
-    Sigaction act = {handler, in_set(&interrupt_set, sig) == 1 ? 0 : SA_RESTART, {{0}}}, old;
+    Sigaction act = {handler, in_set(&interrupt_set, sig) == 1 ? 0 : GUEST_SA_RESTART, {{0}}}, old;
     if (sig_action(sig, &act, &old)) return (uintptr_t)-1;
     return old.handler;
 }
@@ -341,12 +395,12 @@ static ABI int32_t sig_altstack(const AltStack *stack, AltStack *old) {
     if (!t) return fail(E_INVAL);
     if (old) *old = (AltStack){t->alt_stack, t->alt_size, (int32_t)t->alt_flags, 0};
     if (!stack) return 0;
-    if (stack->flags & ~(SS_ONSTACK | SS_DISABLE)) return fail(E_INVAL);
-    if ((stack->flags & SS_ONSTACK) && !(t->alt_flags & SS_ONSTACK)) return fail(E_INVAL);
-    if (!(stack->flags & SS_DISABLE) && stack->size < MIN_ALT_STACK) return fail(E_NOMEM);
+    if (stack->flags & ~(GUEST_SS_ONSTACK | GUEST_SS_DISABLE)) return fail(E_INVAL);
+    if ((stack->flags & GUEST_SS_ONSTACK) && !(t->alt_flags & GUEST_SS_ONSTACK)) return fail(E_INVAL);
+    if (!(stack->flags & GUEST_SS_DISABLE) && stack->size < MIN_ALT_STACK) return fail(E_NOMEM);
     t->alt_stack = stack->stack;
     t->alt_size = stack->size;
-    t->alt_flags = (uint32_t)(stack->flags & SS_DISABLE ? stack->flags : stack->flags & ~SS_ONSTACK);
+    t->alt_flags = (uint32_t)(stack->flags & GUEST_SS_DISABLE ? stack->flags : stack->flags & ~GUEST_SS_ONSTACK);
     return 0;
 }
 static ABI int32_t sig_pending(Sigset *set) {
@@ -409,7 +463,7 @@ static ABI int32_t install_exception_handler(int32_t sig, ExceptionHandler handl
     if (!exception_signal_allowed(sig)) return ERR(E_INVAL);
     if (exception_callbacks[sig - 1]) return ERR(E_AGAIN);
     exception_callbacks[sig - 1] = handler;
-    const Sigaction act = {(uintptr_t)exception_trampoline, SA_SIGINFO | SA_RESTART, {{0}}};
+    const Sigaction act = {(uintptr_t)exception_trampoline, GUEST_SA_SIGINFO | GUEST_SA_RESTART, {{0}}};
     actions[sig - 1] = act;
     return 0;
 }

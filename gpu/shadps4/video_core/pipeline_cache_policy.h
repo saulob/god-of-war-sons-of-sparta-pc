@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -95,12 +96,23 @@ inline bool WriteFileAtomically(const std::filesystem::path& file,
         }
     }
     std::error_code error;
-    std::filesystem::rename(temp, file, error);
-    if (error) {
+    for (int attempt = 0;; ++attempt) {
+        error.clear();
+        std::filesystem::rename(temp, file, error);
+        if (!error) {
+            return true;
+        }
+#ifdef _WIN32
+        if (attempt < 20) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+#else
+        (void)attempt;
+#endif
         std::filesystem::remove(temp, error);
         return false;
     }
-    return true;
 }
 
 /// The GPU and driver the cache was written on.

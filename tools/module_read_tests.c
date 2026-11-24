@@ -17,6 +17,7 @@ int runtime_log_printf(const char *format, ...) {
 FILE *sos_stderr_stream(void) { return stdout; }
 void runtime_log_exit_request(const char *api, int status, uintptr_t caller) { (void)api; (void)status; (void)caller; }
 void runtime_log_flush(void) {}
+const char *sos_startup_phase_current(void) { return "test"; }
 void runtime_describe_guest_address(uintptr_t address, char *out, size_t size) { (void)address; snprintf(out, size, "test"); }
 uint64_t runtime_add_module_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align) { (void)data; (void)filesz; (void)memsz; (void)align; return 0; }
 void runtime_remove_module_tls(uint64_t module) { (void)module; }

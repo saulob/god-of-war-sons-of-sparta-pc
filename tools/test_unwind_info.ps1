@@ -29,6 +29,7 @@ int runtime_log_printf(const char *format, ...) {
 FILE *sos_stderr_stream(void) { return stdout; }
 void runtime_log_exit_request(const char *api, int status, uintptr_t caller) { (void)api; (void)status; (void)caller; }
 void runtime_log_flush(void) {}
+const char *sos_startup_phase_current(void) { return "test"; }
 void runtime_describe_guest_address(uintptr_t address, char *out, size_t size) { (void)address; snprintf(out, size, "test"); }
 uint64_t runtime_add_module_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align) { (void)data; (void)filesz; (void)memsz; (void)align; return 0; }
 void runtime_remove_module_tls(uint64_t module) { (void)module; }
@@ -184,7 +185,8 @@ $clang = Join-Path $tc.Bin 'clang.exe'
 $exe = Join-Path $temp 'test.exe'
 & $clang '--target=x86_64-w64-mingw32' '-std=c11' '-Wall' '-Wextra' '-Werror' '-D_WIN32_WINNT=0x0A00' '-DNTDDI_VERSION=0x0A000007' `
     '-I' (Join-Path $root 'src') '-I' (Join-Path $root 'launcher') '-I' (Join-Path $root 'gpu\shim') `
-    $source (Join-Path $root 'src\runtime_module.c') (Join-Path $PSScriptRoot 'startup_profile_stubs.c') (Join-Path $root 'src\runtime_stop.c') '-pthread' '-o' $exe
+    $source (Join-Path $root 'src\runtime_module.c') (Join-Path $PSScriptRoot 'startup_profile_stubs.c') `
+    (Join-Path $root 'src\runtime_stop.c') '-pthread' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the unwind info test' }
 $env:PATH = "$($tc.Bin);$env:PATH"
 & $exe

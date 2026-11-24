@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "runtime.h"
 #include "runtime_log.h"
 #include "startup_phase.h"
@@ -383,7 +384,7 @@ static ABI __attribute__((noreturn)) void unresolved_import(uint32_t id) {
     char caller[320];
     runtime_describe_guest_address((uintptr_t)__builtin_return_address(0),caller,sizeof(caller));
     fprintf(stderr,"STOP: unresolved dynamic import %s (%s) called from %s; phase=%s, module operation=%s\n",
-            name,runtime_import_name(name),caller,runtime_module_operation(),module_operation);
+            name,runtime_import_name(name),caller,sos_startup_phase_current(),runtime_module_operation());
     runtime_log_flush();
     runtime_exit(20);
 }
@@ -902,6 +903,7 @@ static int readable_run(uintptr_t at,uintptr_t end,uintptr_t *run_end) {
 }
 #endif
 static int32_t rd_s32(const unsigned char *p) { int32_t v; memcpy(&v,p,4); return v; }
+#ifdef _WIN32
 static int eh_table_valid(uintptr_t hdr,uintptr_t lo,uintptr_t hi) {
     const unsigned char *h=(const unsigned char *)hdr;
     if (h[0]!=1 || h[1]!=0x1b || h[2]!=0x03 || h[3]!=0x3b) return 0;
@@ -917,6 +919,7 @@ static int eh_table_valid(uintptr_t hdr,uintptr_t lo,uintptr_t hi) {
     }
     return 1;
 }
+#endif
 /* The tables are found by their .eh_frame_hdr signature inside the module's readable pages. */
 static void find_unwind_tables(LoadedModule *m) {
 #ifdef _WIN32

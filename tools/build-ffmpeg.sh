@@ -10,7 +10,7 @@ to_unix() { if command -v cygpath >/dev/null; then cygpath -u "$1"; else printf 
 
 prefix=$(to_unix "${1:?usage: tools/build-ffmpeg.sh PREFIX [WORK]}")
 pin=$root/gpu/ffmpeg.txt
-field() { awk -v key="$1" '$1 == key { $1 = ""; sub(/^ /, ""); print }' "$pin"; }
+field() { awk -v key="$1" '{ gsub(/\r/, "") } $1 == key { $1 = ""; sub(/^ /, ""); print }' "$pin"; }
 version=$(field version) url=$(field url) sha256=$(field sha256)
 [[ -n $version && $url == https://* && $sha256 =~ ^[0-9a-f]{64}$ ]] || die "$pin needs version, an https url and sha256"
 case $(uname -s) in

@@ -1,0 +1,23 @@
+#!/bin/sh
+# AppImage entry point. The AppImage mount is read-only: game/, user/ and logs/ stay next to the
+# AppImage file (or under $XDG_DATA_HOME/SonsOfSpartaPC if that folder is read-only; SOS_PORTABLE_DIR overrides).
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+# Bundled libraries resolve through DT_RPATH ($ORIGIN/../lib). libstdc++ and libgcc_s in usr/lib/compat
+# are loaded only when the host libraries are older than GLIBCXX_3.4.@GLIBCXX_NEED@ / GCC_@GCC_NEED@.
+host_has() {
+    [ -n "$1" ] && [ -r "$1" ] || return 1
+    newest=$(grep -a -o -E "$2[0-9]+" "$1" 2>/dev/null | sed "s/^$2//" | sort -n | tail -1)
+    [ -n "$newest" ] && [ "$newest" -ge "$3" ]
+}
+find_library() {
+    for dir in /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /lib64 /usr/local/lib; do
+        [ -r "$dir/$1" ] && { readlink -f -- "$dir/$1"; return; }
+    done
+}
+if ! host_has "$(find_library libstdc++.so.6)" 'GLIBCXX_3\.4\.' @GLIBCXX_NEED@ ||
+   ! host_has "$(find_library libgcc_s.so.1)" 'GCC_' @GCC_NEED@; then
+    export LD_LIBRARY_PATH="$here/usr/lib/compat${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+exec "$here/usr/bin/sons_of_sparta" "$@"

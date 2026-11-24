@@ -12,8 +12,7 @@ int runtime_log_create(const char *dir, const char *file, char *path, size_t siz
 /* Sends stdout and stderr to that log and echoes them to the standard output the process started with, if any. */
 int runtime_log_start(const char *dir, const char *file, char *path, size_t size);
 
-/* Windows: the same for the existing log file, appended to; the game process continues the launcher's log. 0 when the
- * file does not exist. */
+/* Appends to the existing log file, so the game process continues the launcher's log. 0 when the file does not exist. */
 int runtime_log_continue(const char *file, char *path, size_t size);
 
 /* Appends to the run log with Win32 file APIs, bypassing stdio; 0 before the log exists.
