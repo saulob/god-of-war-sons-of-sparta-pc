@@ -16,11 +16,15 @@ function Initialize-GpuBuildDirectory {
 function Invoke-GpuProductionBuild([string[]]$Targets = @('dcpgpu_link_smoke')) {
     $tc = Resolve-Toolchain 'auto'
     $env:PATH = "$($tc.Bin);$env:PATH"
-    if (-not (Initialize-GpuBuildDirectory)) { Write-Host '  [fail] CMake configuration failed'; return $false }
-    foreach ($target in $Targets) {
-        Write-Host "  building target $target"
-        & ninja -C $script:GpuBuildDir $target
-        if ($LASTEXITCODE -ne 0) { Write-Host "  [fail] target $target did not compile or link (output above)"; return $false }
+    $lock = Enter-BuildLock $script:GpuBuildDir
+    try {
+        if (-not (Initialize-GpuBuildDirectory)) { Write-Host '  [fail] CMake configuration failed'; return $false }
+        foreach ($target in $Targets) {
+            Write-Host "  building target $target"
+            & ninja -C $script:GpuBuildDir $target | Out-Host
+            if ($LASTEXITCODE -ne 0) { Write-Host "  [fail] target $target did not compile or link (output above)"; return $false }
+        }
     }
+    finally { Exit-BuildLock $lock }
     return $true
 }

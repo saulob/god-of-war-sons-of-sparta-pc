@@ -61,23 +61,32 @@ try {
     $ffmpegPrefix = Sync-FFmpeg
     $ffmpeg = $ffmpegPrefix.Replace('\', '/')
 
-    if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
-        Write-Step 'Cleaning build\cmake'
-        Remove-Item -LiteralPath $buildDir -Recurse -Force
+    $buildLock = Enter-BuildLock $buildDir
+    try {
+        if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
+            Write-Step 'Cleaning build\cmake'
+            Remove-Item -LiteralPath $buildDir -Recurse -Force
+        }
+        $cache = Join-Path $buildDir 'CMakeCache.txt'
+        $configured = (Test-Path -LiteralPath (Join-Path $buildDir 'build.ninja')) -and (Test-Path -LiteralPath $cache) -and
+            (Select-String -Path $cache -SimpleMatch "CMAKE_BUILD_TYPE:STRING=$config" -Quiet)
+        # Another FFmpeg prefix needs a fresh configuration: pkg-config results stay cached otherwise.
+        $sameFFmpeg = $configured -and (Select-String -Path $cache -SimpleMatch "DCP_FFMPEG_PREFIX:PATH=$ffmpeg" -Quiet)
+        if (-not $configured -or -not $sameFFmpeg) {
+            Write-Step 'Configuring'
+            Invoke-Native cmake @('-S', $root, '-B', $buildDir, '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$config", '-DCMAKE_C_COMPILER=clang', "-DDCP_FFMPEG_PREFIX=$ffmpeg", '--fresh')
+            if ($LASTEXITCODE -ne 0) { Stop-Tool 'CMake configuration failed' }
+        }
+        if ($Run) {
+            Write-Step 'Forcing GPU production rebuild for -Run'
+            Remove-GpuProductionArtifacts $buildDir
+        }
+        Write-Step 'Building'
+        Invoke-Native ninja @('-C', $buildDir, 'sons_of_sparta')
+        $buildResult = $LASTEXITCODE
     }
-    $cache = Join-Path $buildDir 'CMakeCache.txt'
-    $configured = (Test-Path -LiteralPath (Join-Path $buildDir 'build.ninja')) -and (Test-Path -LiteralPath $cache) -and
-        (Select-String -Path $cache -SimpleMatch "CMAKE_BUILD_TYPE:STRING=$config" -Quiet)
-    # Another FFmpeg prefix needs a fresh configuration: pkg-config results stay cached otherwise.
-    $sameFFmpeg = $configured -and (Select-String -Path $cache -SimpleMatch "DCP_FFMPEG_PREFIX:PATH=$ffmpeg" -Quiet)
-    if (-not $configured -or -not $sameFFmpeg) {
-        Write-Step 'Configuring'
-        Invoke-Native cmake @('-S', $root, '-B', $buildDir, '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$config", '-DCMAKE_C_COMPILER=clang', "-DDCP_FFMPEG_PREFIX=$ffmpeg", '--fresh')
-        if ($LASTEXITCODE -ne 0) { Stop-Tool 'CMake configuration failed' }
-    }
-    Write-Step 'Building'
-    Invoke-Native ninja @('-C', $buildDir, 'sons_of_sparta')
-    if ($LASTEXITCODE -ne 0) { Stop-Tool 'Build failed' }
+    finally { Exit-BuildLock $buildLock }
+    if ($buildResult -ne 0) { Stop-Tool 'Build failed' }
     if (-not (Test-Path -LiteralPath $loader)) { Stop-Tool "Missing $loader" }
     Install-FFmpegRuntime $ffmpegPrefix (Split-Path $loader -Parent)
 

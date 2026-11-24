@@ -115,6 +115,35 @@ filter Out-BuildLog {
     Write-BuildLogLine $line
 }
 
+# Serialize Ninja builds that share build\cmake\clang64 (tools\build.ps1 and test helpers).
+function Enter-BuildLock([string]$BuildDir) {
+    $key = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($BuildDir.ToLowerInvariant()))).Replace('-', '')
+    $mutex = New-Object System.Threading.Mutex($false, "Global\sos_build_$key")
+    try { $acquired = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+    if (-not $acquired) {
+        Write-Host '  Another build of this directory is running; waiting for it to finish...'
+        try { $acquired = $mutex.WaitOne([TimeSpan]::FromMinutes(30)) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+    }
+    if (-not $acquired) { Stop-Tool 'Another build of this directory did not finish within 30 minutes.' }
+    return $mutex
+}
+
+function Exit-BuildLock($Mutex) {
+    if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Dispose() }
+}
+
+# -Run builds start from no dcpgpu objects, library or loader, so the GPU code that runs is always the current source.
+# A file that cannot be deleted (a running game) throws; the build never goes on to launch an old executable.
+function Remove-GpuProductionArtifacts([string]$BuildDir) {
+    $objects = Join-Path $BuildDir 'gpu\CMakeFiles\dcpgpu.dir'
+    if (Test-Path -LiteralPath $objects) {
+        Get-ChildItem -LiteralPath $objects -Force | Remove-Item -Recurse -Force -ErrorAction Stop
+    }
+    foreach ($file in (Join-Path $BuildDir 'gpu\libdcpgpu.a'), (Join-Path $BuildDir 'bin\sons_of_sparta.exe')) {
+        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
+    }
+}
+
 # Runs a native tool with stdout and stderr merged into the console and the build log. The tool's exit code stays in
 # $LASTEXITCODE for the caller; nothing here changes it.
 function Invoke-Native([string]$File, [string[]]$Arguments = @()) {
