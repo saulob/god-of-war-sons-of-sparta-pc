@@ -1,16 +1,18 @@
 /* Guest threads on host pthreads. Each guest thread owns a FreeBSD-style TCB
  * (variant II: static TLS below the TCB). The loader rewrites the eboot's
- * `mov rax, fs:[0]` into `mov rax, gs:[0]`, so GS base = guest TCB while glibc
- * keeps FS. Priorities/affinity are recorded, not enforced by a PS4 scheduler.
- * Windows: GS is the TEB and cannot be moved. The guest TCB lives in a TLS slot of the TEB
- * instead, and the loader rewrites the load to `mov rax, gs:[0x1480+8*slot]` (TlsSlots),
- * the same 9-byte instruction with another displacement. */
+ * `mov rax, fs:[0]` and `mov rax, fs:[0x10]` into `mov rax, gs:[...]`, so the
+ * guest TCB and its thread handle stay reachable while the host owns FS. On
+ * Windows GS is the TEB and cannot be moved. The guest TCB and thread handle live
+ * in two TEB TLS slots reserved once at loader startup, and each load is rewritten
+ * to its slot. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_entry.h"
 #include "startup_profile.h"
 #include "startup_phase.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
@@ -63,9 +65,12 @@ typedef struct GuestThread {
     int cancel_pending;
     int cancel_state;
     void *cleanup;
-    pthread_mutex_t wait_lock;
     void (*wake)(void *, void *);
     void *wake_first, *wake_second;
+    uint64_t guest_pthread_pad;
+    /* The 1.01 cancellation helper reads the guest pthread handle at +0xd0..+0xdc. */
+    uint32_t guest_cancel_enable, guest_cancel_pending, guest_cancel_point, guest_cancel_async;
+    pthread_mutex_t wait_lock;
     const char *wait_point;
     uintptr_t wait_object;
     uint64_t wait_since_ms;
@@ -84,6 +89,10 @@ typedef struct GuestThread {
 #endif
     struct GuestThread *next;
 } GuestThread;
+_Static_assert(offsetof(GuestThread, guest_cancel_enable) == 0xd0, "guest pthread cancellation fields at +0xd0");
+_Static_assert(offsetof(GuestThread, guest_cancel_pending) == 0xd4, "guest pthread cancellation fields at +0xd4");
+_Static_assert(offsetof(GuestThread, guest_cancel_point) == 0xd8, "guest pthread cancellation fields at +0xd8");
+_Static_assert(offsetof(GuestThread, guest_cancel_async) == 0xdc, "guest pthread cancellation fields at +0xdc");
 
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed=PTHREAD_COND_INITIALIZER; /* with `lock`: a thread finished or a cancellation was requested */
@@ -125,17 +134,60 @@ void runtime_set_main_tls(const void *data,uint64_t filesz,uint64_t memsz,uint64
 static uint64_t tls_offset(void) { return (tls_memsz+tls_align-1)&~(tls_align-1); }
 #ifdef _WIN32
 /* TEB TlsSlots[64] start at gs:0x1480; slots 64+ live elsewhere and cannot be used. */
+#ifdef SOS_TLS_TEST
+DWORD sos_test_tls_alloc(void);
+BOOL sos_test_tls_free(DWORD);
+#define TLS_ALLOC() sos_test_tls_alloc()
+#define TLS_FREE(index) sos_test_tls_free(index)
+#else
+#define TLS_ALLOC() TlsAlloc()
+#define TLS_FREE(index) TlsFree(index)
+#endif
 static DWORD tls_slot=TLS_OUT_OF_INDEXES;
-uint32_t runtime_thread_tcb_offset(void) {
-    if (tls_slot==TLS_OUT_OF_INDEXES) {
-        tls_slot=TlsAlloc();
-        if (tls_slot>=64) { fprintf(stderr,"STOP: no TEB TLS slot below 64 (got %lu)\n",tls_slot); runtime_exit(21); }
+static DWORD thread_slot=TLS_OUT_OF_INDEXES;
+static INIT_ONCE tls_once=INIT_ONCE_STATIC_INIT;
+static int tls_state;
+static const char *tls_failed_role;
+static DWORD tls_failed_index;
+static BOOL CALLBACK reserve_tls_slots(PINIT_ONCE once,PVOID parameter,PVOID *context) {
+    (void)once; (void)parameter; (void)context;
+    const DWORD tcb=TLS_ALLOC();
+    if (tcb==TLS_OUT_OF_INDEXES || tcb>=64) {
+        tls_failed_role="guest TCB"; tls_failed_index=tcb; tls_state=-1;
+        return TRUE;
     }
+    const DWORD thread=TLS_ALLOC();
+    if (thread==TLS_OUT_OF_INDEXES || thread>=64) {
+        TLS_FREE(tcb);
+        tls_failed_role="guest thread"; tls_failed_index=thread; tls_state=-1;
+        return TRUE;
+    }
+    tls_slot=tcb; thread_slot=thread; tls_state=1;
+    printf("Runtime: reserved guest TCB TEB TLS slots %lu and %lu\n",(unsigned long)tcb,(unsigned long)thread);
+    return TRUE;
+}
+void runtime_thread_reserve_tls(void) {
+    InitOnceExecuteOnce(&tls_once,reserve_tls_slots,NULL,NULL);
+    if (tls_state==1) return;
+    fprintf(stderr,"STOP: %s TEB TLS slot index %lu is not inline (<64)\n",
+            tls_failed_role ? tls_failed_role : "guest",(unsigned long)tls_failed_index);
+    runtime_exit(21);
+}
+uint32_t runtime_thread_tcb_offset(void) {
+    runtime_thread_reserve_tls();
     return 0x1480+8*(uint32_t)tls_slot;
 }
+uint32_t runtime_thread_thread_offset(void) {
+    runtime_thread_reserve_tls();
+    return 0x1480+8*(uint32_t)thread_slot;
+}
 static void set_gs(void *base) {
-    runtime_thread_tcb_offset();
-    if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); runtime_exit(21); }
+    runtime_thread_reserve_tls();
+    if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: guest TCB TlsSetValue failed (%lu)\n",GetLastError()); runtime_exit(21); }
+}
+static void set_thread_slot(void *thread) {
+    runtime_thread_reserve_tls();
+    if (!TlsSetValue(thread_slot,thread)) { fprintf(stderr,"STOP: guest thread TlsSetValue failed (%lu)\n",GetLastError()); runtime_exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
 #define tls_block_free(block) _aligned_free(block)
@@ -178,6 +230,7 @@ static void attach(GuestThread *t) {
     current_stack_bounds(&t->stack_low,&t->stack_high);
 #ifdef _WIN32
     DuplicateHandle(GetCurrentProcess(),GetCurrentThread(),GetCurrentProcess(),&t->native,0,FALSE,DUPLICATE_SAME_ACCESS);
+    set_thread_slot(t);
 #endif
     set_gs(tcb);
     current=t;
@@ -621,10 +674,13 @@ static void *host_start(void *p) {
     /* A creator that got the handle may signal the thread at once: it is announced only once it can take the signal. */
     pthread_mutex_lock(&lock); t->ready=1; pthread_cond_broadcast(&changed); pthread_mutex_unlock(&lock);
     runtime_signal_deliver_pending();
-    if (!exit_setjmp(t)) t->result=t->entry(t->argument);
+    if (!exit_setjmp(t)) t->result=sos_guest_enter((void *)t->entry,t->argument,NULL,NULL);
     run_thread_dtors(t);
     runtime_thread_keys_cleanup();
     runtime_module_tls_release();
+#ifdef _WIN32
+    set_thread_slot(NULL);
+#endif
     set_gs(NULL);
     tls_block_free(t->tls_block);
     t->tls_block=NULL; t->tcb=NULL;

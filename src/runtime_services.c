@@ -358,7 +358,7 @@ static ABI int32_t msg_result(unsigned char *out) { return dialog_result(1,out,0
 #define SAVE_MODE_LIST 1
 #define SAVE_RESULT_CANCELED 1
 static struct {
-    uint32_t mode, result;
+    uint32_t mode, result, progress;
     void *user_data;
     char dirs[32][32];
     int dir_count, has_new, choosing;
@@ -438,7 +438,18 @@ static ABI int32_t save_status(void) {
 }
 static ABI int32_t save_term(void) { return dialog_term(2); }
 static ABI int32_t save_close(void) { return dialog_close(2); }
-static ABI int32_t save_progress(uint32_t target, uint32_t rate) { (void)rate; return dialog_progress(2,target); }
+static ABI int32_t save_progress(uint32_t target, uint32_t rate) {
+    if (target) return DIALOG_PARAM_INVALID;
+    if (dialogs[2].status!=DIALOG_RUNNING) return DIALOG_NOT_RUNNING;
+    save_dialog.progress=rate;
+    return 0;
+}
+static ABI int32_t save_progress_inc(uint32_t target, uint32_t delta) {
+    if (target) return DIALOG_PARAM_INVALID;
+    if (dialogs[2].status!=DIALOG_RUNNING) return DIALOG_NOT_RUNNING;
+    save_dialog.progress=delta>UINT32_MAX-save_dialog.progress ? UINT32_MAX : save_dialog.progress+delta;
+    return 0;
+}
 /* OrbisSaveDataDialogResult: mode, result, buttonId, dirName* @16, param* @24, userData @32. */
 static ABI int32_t save_result(unsigned char *out) {
     int32_t r=dialog_result(2,out,4);
@@ -1427,7 +1438,8 @@ static const RuntimeExport exports[]={
     {"sceSaveDataDialogInitialize",save_init}, {"sceSaveDataDialogOpen",save_open},
     {"sceSaveDataDialogUpdateStatus",save_status}, {"sceSaveDataDialogTerminate",save_term},
     {"sceSaveDataDialogGetStatus",save_status}, {"sceSaveDataDialogClose",save_close},
-    {"sceSaveDataDialogProgressBarSetValue",save_progress}, {"sceSaveDataDialogGetResult",save_result},
+    {"sceSaveDataDialogProgressBarSetValue",save_progress}, {"sceSaveDataDialogProgressBarInc",save_progress_inc},
+    {"sceSaveDataDialogGetResult",save_result},
     {"sceSaveDataDialogIsReadyToDisplay",save_ready},
     {"sceNpProfileDialogInitialize",profile_init}, {"sceNpProfileDialogOpen",profile_open},
     {"sceNpProfileDialogUpdateStatus",profile_status}, {"sceNpProfileDialogTerminate",profile_term},

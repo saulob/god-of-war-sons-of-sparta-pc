@@ -1,6 +1,6 @@
 // The Xbox left-stick glyphs, the interaction icons and their cache, on the game's own files: the analysed CUSA57767 1.00
-// resources.assets, resources.assets.resS and Addressables icon bundle when they are installed. The files are only read; the
-// prepared copies are made in a temporary folder.
+// resources.assets, resources.assets.resS and Addressables icon bundle, plus the 1.01 prepared copies, when installed. The files
+// are only read; the prepared copies are made in a temporary folder.
 // No game, launcher or window is started.
 #include <algorithm>
 #include <chrono>
@@ -999,8 +999,12 @@ int main() {
     const fs::path other = root / "game" / "prepared" / "CUSA57767-1.01" / "Media";
     if (fs::is_regular_file(other / kIconsAssetsName) && fs::is_regular_file(other / kIconsStreamName)) {
         const fs::path work = TempRoot();
-        const IconPlan plan = PlanControllerIcons(other, work / "cache");
-        Check(plan.kind != IconPlanKind::kUsePrepared || HasControllerIcons(plan.files), "1.01: the source is either prepared, complete or refused, never half used");
+        const fs::path cache = work / "cache";
+        const IconPlan planned = PlanControllerIcons(other, cache);
+        Check(planned.kind != IconPlanKind::kUsePrepared || HasControllerIcons(planned.files), "1.01: the source is either prepared, complete or refused, never half used");
+        std::string report;
+        const IconPlan plan = PrepareControllerIcons(other, cache, report);
+        Check(plan.kind == IconPlanKind::kUsePrepared && HasControllerIcons(plan.files), "1.01: the Xbox directions and interaction icons are prepared from its own data");
         std::error_code error;
         fs::remove_all(work, error);
     } else {

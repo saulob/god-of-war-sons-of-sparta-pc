@@ -15,7 +15,7 @@ namespace sos {
 
 // Changes when the prepared files would differ, so copies made by an older version are made again. The launcher's own size
 // or version is not part of the cache identity.
-inline constexpr int kControllerIconsPatchVersion = 2;
+inline constexpr int kControllerIconsPatchVersion = 3;
 
 inline constexpr char kIconsAssetsName[] = "resources.assets";
 inline constexpr char kIconsStreamName[] = "resources.assets.resS";

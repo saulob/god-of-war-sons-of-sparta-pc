@@ -1,4 +1,4 @@
-# Headless test of the Xbox prompt icons on the game's own files (CUSA57767 1.00, when installed): resources.assets with
+# Headless test of the Xbox prompt icons on the game's own files (CUSA57767 1.00 and 1.01, when installed): resources.assets with
 # resources.assets.resS and the Addressables icon bundle InputOverseer reads its icons from. Detecting the missing LASUP, LASDOWN,
 # LASLEFT and LASRIGHT and the missing interaction icons (Button South/East/North Mask), preparing them from the game's own artwork
 # into complete copies, validating the copies down to the glyph pixels, partial and unknown sources, the cache and its invalidation
@@ -68,6 +68,7 @@ try {
         @{ File = 'icon_common.h'; Old = '{"Button North Mask Filled", -1}'; New = '{"Button North Mask Filled", kNorth}'; What = 'the marker fill uses a button glyph instead of its disc'; Only = 'bundle' }
         @{ File = 'icon_bundle.cpp'; Old = 'constexpr std::uint64_t kSourceFingerprint = 0x190d4048fbb3675d;'; New = 'constexpr std::uint64_t kSourceFingerprint = 0x190d4048fbb3675e;'; What = 'the bundle fingerprint no longer matches the analysed data'; Only = 'bundle' }
         @{ File = 'icon_bundle.cpp'; Old = '    bool owned = false;  // the output is only ours'; New = '    bool owned = true;  // the output is only ours'; What = 'a refused output is removed even when it is the source'; Only = 'bundle' }
+        @{ File = 'controller_icons.cpp'; Old = 'constexpr std::size_t kMonoBehaviourHeader = 28;'; New = 'constexpr std::size_t kMonoBehaviourHeader = 27;'; What = 'the icon fingerprint skips the wrong MonoBehaviour header size'; Only = '' }
         @{ File = 'controller_icons.cpp'; Old = '    return files.bundle.empty() || HasBundleIcons(files.bundle);'; New = '    return true;'; What = 'the bundle is not part of a valid prepared set'; Only = '' }
         @{ File = 'controller_icons.cpp'; Old = '    if (!files.bundle.empty()) {
         identity.bundleSize'; New = '    if (false) {

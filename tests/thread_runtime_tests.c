@@ -12,6 +12,19 @@
 #define CANCELED ((void *)1)
 #define SELF_LIMIT_MS 3000
 
+/* runtime_thread.c is compiled with SOS_TLS_TEST, so a high index is deterministic. */
+static int tls_simulation;
+static volatile LONG tls_alloc_calls;
+DWORD sos_test_tls_alloc(void) {
+    const LONG call=InterlockedIncrement(&tls_alloc_calls);
+    if (tls_simulation) return call == 1 ? 7 : 78;
+    return TlsAlloc();
+}
+BOOL sos_test_tls_free(DWORD index) {
+    if (tls_simulation) return TRUE;
+    return TlsFree(index);
+}
+
 int runtime_log_printf(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -21,8 +34,13 @@ int runtime_log_printf(const char *format, ...) {
 }
 void runtime_log_exit_request(const char *api, int status, uintptr_t caller) {
     (void)caller;
-    printf("  [fail] the runtime ended the process (%s, status %d)\n", api, status);
-    fflush(stdout);
+    if (tls_simulation) {
+        printf("  [ok]   late reservation stopped with status %d\n", status);
+        fflush(stdout);
+    } else {
+        printf("  [fail] the runtime ended the process (%s, status %d)\n", api, status);
+        fflush(stdout);
+    }
     _Exit(status);
 }
 FILE *sos_stderr_stream(void) { return stdout; }
@@ -296,7 +314,44 @@ static void test_concurrent_join_has_one_owner(void) {
     check("the first join completes", joiner.answer == 1000000);
 }
 
-int main(void) {
+static unsigned tls_index(uint32_t offset) { return (unsigned)((offset - 0x1480u) / 8u); }
+static DWORD WINAPI reserve_worker(void *unused) { (void)unused; runtime_thread_reserve_tls(); return 0; }
+
+static int test_tls_early(void) {
+    HANDLE threads[8];
+    for (int index = 0; index < 8; ++index) threads[index] = CreateThread(NULL, 0, reserve_worker, NULL, 0, NULL);
+    WaitForMultipleObjects(8, threads, TRUE, 5000);
+    for (int index = 0; index < 8; ++index) CloseHandle(threads[index]);
+    runtime_thread_reserve_tls();
+    const LONG calls = InterlockedCompareExchange(&tls_alloc_calls, 0, 0);
+    const uint32_t tcb = runtime_thread_tcb_offset();
+    const uint32_t thread = runtime_thread_thread_offset();
+    check("concurrent first calls allocate exactly two TLS indices", calls == 2);
+    check("early TCB TLS index is inline", tls_index(tcb) < 64);
+    check("early thread TLS index is inline", tls_index(thread) < 64);
+    check("the TCB and thread use distinct TLS indices", tcb != thread);
+    check("later calls reuse the reserved TCB index", runtime_thread_tcb_offset() == tcb);
+    check("later calls reuse the reserved thread index", runtime_thread_thread_offset() == thread);
+    check("later calls allocate no TLS index", InterlockedCompareExchange(&tls_alloc_calls, 0, 0) == calls);
+    while (TlsAlloc() < 64) {}
+    check("reserved indices survive inline TLS exhaustion", runtime_thread_tcb_offset() == tcb && runtime_thread_thread_offset() == thread &&
+                                                          InterlockedCompareExchange(&tls_alloc_calls, 0, 0) == calls);
+    printf("tls early reservation tests: %d failures\n", failures);
+    fflush(stdout);
+    return failures == 0 ? 0 : 1;
+}
+
+static int test_tls_late(void) {
+    tls_simulation = 1;
+    InterlockedExchange(&tls_alloc_calls, 0);
+    runtime_thread_reserve_tls();
+    puts("  [fail] late reservation did not stop");
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--tls-early")) return test_tls_early();
+    if (argc > 1 && !strcmp(argv[1], "--tls-late")) return test_tls_late();
     runtime_thread_attach_main();
     create = (CreateFn)resolve("6UgtwV+0zb4#libkernel");
     join = (JoinFn)resolve("onNY9Byn-W8#libkernel");

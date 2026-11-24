@@ -298,6 +298,7 @@ COVERAGE = [
     ("scripts/skip_intro_check.py", "names"), ("scripts/hermes_unlock_check.py", "names"),
     ("scripts/title_input_check.py", "names"), ("scripts/map_input_check.py", "names"),
     ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"), ("scripts/exit_game_sites.py", "names"),
+    ("tests/controller_icons_tests.cpp", "names"),
     ("tests/ultrawide_tests.cpp", "inventory"), ("scripts/ultrawide_check.py", "names"),
     ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
 ]
@@ -431,6 +432,51 @@ def check_real_builds(gate, builds, load):
     reference = min(windows) if windows else None
     for version, window in sorted(windows.items()):
         gate.check(window == windows[reference], f"CUSA57767 {version}: the AvPlayer setup instructions differ from {reference} beyond relocated addresses")
+    check_crash_path(gate, builds, load)
+
+
+def check_crash_path(gate, builds, load=load_image):
+    gate.start("1.01 thread-pointer load")
+    thread_load = bytes.fromhex("64488b042510000000")
+    tcb_load = bytes.fromhex("64488b042500000000")
+    expected_sites = [0x1a2e604, 0x1a2e674]
+    for version, build in sorted(builds.items()):
+        path = ROOT / "game" / "prepared" / build["folder"] / "eboot.bin"
+        if not gate.check(path.is_file(), f"{build['key']}: {path.relative_to(ROOT)} is not installed"):
+            continue
+        import ps4_module as pm
+        module = pm.read_module(path)
+        sites, tcb = [], 0
+        for segment in module["ph"]:
+            if segment["type"] != 1 or not segment["flags"] & 1:
+                continue
+            blob = module["elf"][segment["offset"]:segment["offset"] + segment["filesz"]]
+            at = blob.find(thread_load)
+            while at >= 0:
+                sites.append(segment["vaddr"] + at)
+                at = blob.find(thread_load, at + 1)
+            tcb += blob.count(tcb_load)
+        if version == "1.00":
+            gate.check(not sites, f"{build['key']}: no FS thread-pointer load was introduced by the base game")
+            gate.check(tcb == 387, f"{build['key']}: expected 387 FS TCB loads, found {tcb}")
+        else:
+            gate.check(sites == expected_sites, f"{build['key']}: FS thread-pointer loads must be {[hex(a) for a in expected_sites]}, found {[hex(a) for a in sites]}")
+            gate.check(tcb == 387, f"{build['key']}: expected 387 FS TCB loads, found {tcb}")
+            image = load(path)
+            for at in sites:
+                gate.check(image[at - 4:at] == b"\x55\x48\x89\xe5", f"{build['key']}: image+{hex(at)} is not a function entry")
+                gate.check(image[at:at + 9] == thread_load, f"{build['key']}: image+{hex(at)} is not the FS thread-pointer load")
+                gate.check(image[at + 9:at + 15] == bytes.fromhex("c780d8000000"), f"{build['key']}: image+{hex(at + 9)} does not set the thread's +0xd8 field")
+    builder = read("launcher/boot_image.cpp")
+    python_builder = read("scripts/prepare_image.py")
+    gate.check("kFsThreadLoad" in builder and "0x10, 0x00, 0x00, 0x00" in builder, "launcher/boot_image.cpp does not rewrite the FS thread-pointer load")
+    gate.check("64488b042510000000" in python_builder, "scripts/prepare_image.py does not rewrite the FS thread-pointer load")
+    loader = read("src/loader.c")
+    gate.check("thread_load" in loader and "runtime_thread_thread_offset" in loader, "src/loader.c does not redirect the thread-pointer load to the TEB slot")
+    threads = read("src/runtime_thread.c")
+    gate.check("runtime_thread_thread_offset" in threads and "set_thread_slot(t)" in threads, "src/runtime_thread.c does not keep the guest thread handle in the TEB slot")
+    gate.check("guest_cancel_enable" in threads and "offsetof(GuestThread, guest_cancel_enable) == 0xd0" in threads,
+               "src/runtime_thread.c does not reserve the 1.01 guest cancellation fields at +0xd0")
 
 
 def read_sources():

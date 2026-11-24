@@ -157,6 +157,20 @@ int main(int argc, char** argv) {
     Check ($baseReport.app_ver -eq '01.00' -and
            $baseReport.eboot_sha256 -eq '19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31') `
         'the 1.00 image is built from the base eboot and param.sfo'
+    $updateReport = Get-Content -LiteralPath (Join-Path $updateImage 'image.json') -Raw | ConvertFrom-Json
+    Check ($baseReport.fs_loads_patched -eq 387 -and $updateReport.fs_loads_patched -eq 389) `
+        'the 1.00 image rewrites the TCB loads; the 1.01 image also rewrites its two thread-pointer loads'
+    $updateBoot = [IO.File]::ReadAllBytes((Join-Path $updateImage 'boot.bin'))
+    $updateImageStart = $updateBoot.Length - [int64][BitConverter]::ToUInt64($updateBoot, 8)
+    $threadLoad = [byte[]](0x65, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00)
+    foreach ($offset in 0x1a2e604, 0x1a2e674) {
+        $site = $updateImageStart + [int64]$offset
+        $same = $true
+        for ($index = 0; $index -lt $threadLoad.Length; ++$index) {
+            $same = $same -and $updateBoot[$site + $index] -eq $threadLoad[$index]
+        }
+        Check $same ('the 1.01 image rewrites image+0x{0:x} to the GS thread-pointer load' -f $offset)
+    }
     $baseContent = [IO.File]::ReadAllBytes((Join-Path $baseImage 'content.bin'))
     Check ($baseContent.Length -eq 28 -and [Text.Encoding]::ASCII.GetString($baseContent, 0, 8) -eq 'SOSCONT1' -and
            $baseContent[8] -eq 3) 'the 1.00 content profile is the full game SKU with the base parameters'

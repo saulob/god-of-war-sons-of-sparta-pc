@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include "runtime_log.h"
+#include "guest_entry.h"
 #include "startup_phase.h"
 #include "startup_profile.h"
 #include "game_build.h"
@@ -161,13 +162,6 @@ static ABI void guest_exit(void) {
     puts("Runtime: process finalizer callback reached");
     runtime_log_exit_request("guest_exit",0,(uintptr_t)__builtin_return_address(0));
 }
-#ifndef _WIN32
-void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
-__asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
-        " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
-        " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
-        " mov %rbp,%rsp\n pop %rbp\n ret\n");
-#endif
 static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t bytes) {
     for (uint64_t i = 0; i < count; ++i)
         if (address >= segments[i].address && bytes <= segments[i].size &&
@@ -301,22 +295,28 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     return sos_crash_guard_vectored(info);
 }
 
-/* Guest code reads its TCB with `mov rax, gs:[0]` (the boot image builder rewrote fs:[0]); on Windows
- * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
+/* Guest code reads its TCB and thread pointer with `mov rax, gs:[0]` / `gs:[0x10]` (the boot image
+ * builder rewrote fs:[0] / fs:[0x10]); on Windows the displacements become the TEB TLS slots that
+ * hold the guest TCB and the guest thread handle (runtime_thread.c). */
 static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
-    static const unsigned char load[] = {0x65, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0};
-    uint32_t displacement = runtime_thread_tcb_offset();
+    static const unsigned char tcb_load[] = {0x65, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0};
+    static const unsigned char thread_load[] = {0x65, 0x48, 0x8b, 0x04, 0x25, 0x10, 0, 0, 0};
+    const uint32_t tcb_displacement = runtime_thread_tcb_offset();
+    const uint32_t thread_displacement = runtime_thread_thread_offset();
     uint64_t patched = 0;
     for (uint64_t s = 0; s < count; ++s) {
-        if (!(segments[s].flags & 1) || segments[s].size < sizeof(load)) continue;
-        unsigned char *at = image + segments[s].address, *end = at + segments[s].size - sizeof(load);
-        for (; at <= end; ++at)
-            if (at[0] == 0x65 && !memcmp(at, load, sizeof(load))) {
-                memcpy(at + 5, &displacement, 4);
-                runtime_redzone_add_volatile((uint64_t)(at + 5 - image), 4);
-                ++patched;
-                at += sizeof(load) - 1;
-            }
+        if (!(segments[s].flags & 1) || segments[s].size < sizeof(tcb_load)) continue;
+        unsigned char *at = image + segments[s].address, *end = at + segments[s].size - sizeof(tcb_load);
+        for (; at <= end; ++at) {
+            uint32_t displacement;
+            if (at[0] == 0x65 && !memcmp(at, tcb_load, sizeof(tcb_load))) displacement = tcb_displacement;
+            else if (at[0] == 0x65 && !memcmp(at, thread_load, sizeof(thread_load))) displacement = thread_displacement;
+            else continue;
+            memcpy(at + 5, &displacement, 4);
+            runtime_redzone_add_volatile((uint64_t)(at + 5 - image), 4);
+            ++patched;
+            at += sizeof(tcb_load) - 1;
+        }
     }
     return patched;
 }
@@ -636,7 +636,7 @@ int main(int argc, char **argv) {
     log_cpu();
     runtime_memory_reserve();
 #ifdef _WIN32
-    runtime_thread_tcb_offset();
+    runtime_thread_reserve_tls();
 #endif
 
     SosPaths paths;
@@ -1040,7 +1040,7 @@ int main(int argc, char **argv) {
     (void)cpu_only;
 
 #ifdef _WIN32
-    printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
+    printf("Guest TCB and thread loads redirected to the TEB TLS slots: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
     if (gpu_enabled) {
         uint64_t *triples = calloc(ns * 3, sizeof(*triples));
         if (!triples) fail("allocation failed");
@@ -1177,13 +1177,12 @@ int main(int argc, char **argv) {
     sos_startup_profile_begin(image, image_size);
     struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
 #ifdef _WIN32
-    typedef void (ABI *Entry)(void *, void (ABI *)(void));
-    ((Entry)(image + entry))(&params, guest_exit);
+    sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, NULL);
 #else
     enum { MAIN_STACK = 8 * 1024 * 1024 };
     unsigned char *stack = runtime_low_map(MAIN_STACK, PROT_READ | PROT_WRITE);
     if (!stack) fail("cannot allocate guest main stack");
-    enter_on_stack(image + entry, &params, (void *)guest_exit, stack + MAIN_STACK - 64);
+    sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, stack + MAIN_STACK - 64);
 #endif
     fprintf(stderr,"Runtime: guest entry unexpectedly returned; entry=guest image+0x%" PRIx64 ", startup phase=%s, module operation=%s\n",
             entry,sos_startup_phase_current(),runtime_module_operation());

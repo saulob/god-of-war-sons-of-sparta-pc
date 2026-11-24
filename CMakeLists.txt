@@ -61,6 +61,7 @@ target_link_libraries(sos_atrac9 PUBLIC $<$<NOT:$<BOOL:${WIN32}>>:m>)
 set_target_properties(sos_atrac9 PROPERTIES C_EXTENSIONS ON)
 
 set(SOS_RUNTIME_SOURCES
+    src/guest_entry.c
     src/runtime.c
     src/runtime_kernel.c
     src/runtime_posix_socket.c

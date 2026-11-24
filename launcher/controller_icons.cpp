@@ -31,8 +31,9 @@ constexpr std::int64_t kLookInputSprite = 40906;
 constexpr std::int32_t kMonoBehaviourClass = 114, kTextureClass = 28, kSpriteClass = 213;
 constexpr std::int32_t kRgba32 = 4;
 constexpr std::size_t kHeaderSize = 48;
+constexpr std::size_t kMonoBehaviourHeader = 28;
 // FNV-1a of the objects the patch reads, so only the analysed game data is patched.
-constexpr std::uint64_t kSourceFingerprint = 0xe4c690956cf2f20f;
+constexpr std::uint64_t kSourceFingerprint = 0xb4fd2fbbba9f5f03;
 
 std::string ReadString(const Bytes& data, std::size_t at, std::size_t* end = nullptr) {
     const auto length = Get<std::uint32_t>(data, at);
@@ -629,17 +630,26 @@ Bytes MakeAtlas(const Atlas& atlas, const Plan& plan) {
                                 count(atlas.glyphsCountAt, atlas.glyphs.size()), {atlas.glyphsEnd, atlas.glyphsEnd, glyphs}});
 }
 
-std::uint64_t SourceFingerprint(const AssetFile& file, const Plan& plan, const Inspection& inspection, const std::int64_t (&sources)[kIconCount], std::int64_t playStationSheet) {
+// The update renumbers the 28-byte MonoBehaviour script header; the patch never reads it.
+Bytes FingerprintObject(const AssetFile& file, const Object& object) {
+    Bytes bytes = file.Read(object);
+    if (file.ClassOf(object) != kMonoBehaviourClass) return bytes;
+    Require(bytes.size() > kMonoBehaviourHeader, "a MonoBehaviour object is shorter than its header");
+    bytes.erase(bytes.begin(), bytes.begin() + kMonoBehaviourHeader);
+    return bytes;
+}
+
+std::uint64_t SourceFingerprint(const AssetFile& file, const Plan& plan, const std::int64_t (&sources)[kIconCount], std::int64_t playStationSheet) {
     std::uint64_t hash = 0xcbf29ce484222325;
     const auto mix = [&](const Bytes& bytes) { hash = Fnv64(bytes.data(), bytes.size(), hash); };
-    mix(inspection.icons.bytes);
-    mix(inspection.xbox.bytes);
-    mix(file.Read(*file.Find(kPs5Atlas)));
+    mix(FingerprintObject(file, *file.Find(kIconData)));
+    mix(FingerprintObject(file, *file.Find(kXboxAtlas)));
+    mix(FingerprintObject(file, *file.Find(kPs5Atlas)));
     mix(plan.templateSprite);
-    mix(file.Read(*file.Find(kLookInputSprite)));
-    for (const std::int64_t id : sources) mix(file.Read(*file.Find(id)));
-    mix(file.Read(*file.Find(plan.xboxSheet)));
-    mix(file.Read(*file.Find(playStationSheet)));
+    mix(FingerprintObject(file, *file.Find(kLookInputSprite)));
+    for (const std::int64_t id : sources) mix(FingerprintObject(file, *file.Find(id)));
+    mix(FingerprintObject(file, *file.Find(plan.xboxSheet)));
+    mix(FingerprintObject(file, *file.Find(playStationSheet)));
     return hash;
 }
 
@@ -751,7 +761,7 @@ Plan Analyse(const AssetFile& file, const IconFiles& source, const Inspection& i
         usedKeys.push_back(sprite.renderKey);
     }
 
-    Recognise(SourceFingerprint(file, plan, inspection, sources, playStation.sheet) == kSourceFingerprint, "the game data is not the analysed version");
+    Recognise(SourceFingerprint(file, plan, sources, playStation.sheet) == kSourceFingerprint, "the game data is not the analysed version");
     plan.iconData = MakeIconData(inspection.icons, plan);
     plan.atlas = MakeAtlas(inspection.xbox, plan);
     for (const NewSprite& sprite : plan.sprites) plan.spriteObjects.push_back(MakeSprite(plan.templateSprite, plan.templateLayout, sprite));

@@ -65,6 +65,8 @@ void runtime_thread_report(void);
 void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align);
 void runtime_thread_attach_main(void);
 uint32_t runtime_thread_tcb_offset(void);
+uint32_t runtime_thread_thread_offset(void);
+void runtime_thread_reserve_tls(void);
 int32_t *runtime_errno(void);
 int runtime_thread_cancel_pending(void);
 void runtime_thread_test_cancel(const char *point);

@@ -36,7 +36,18 @@ try {
     ($run.Text -split "`r?`n") | Where-Object { $_ -match '^\s+\[(ok|fail)\]|tests:|timed out' } | ForEach-Object { Write-Host $_ }
     $result = $run.Code
 
+    $saveText = Get-Content -LiteralPath $saveSource -Raw
+    $namesText = Get-Content -LiteralPath (Join-Path $root 'src\import_names.inc') -Raw
+    if ($saveText.Contains('{"sceSaveDataUmountWithBackup",save_umount_with_backup}') -and
+        $namesText.Contains('{"VwadwBBBJ80#libSceSaveData","sceSaveDataUmountWithBackup"}')) {
+        Write-Host '  [ok]   sceSaveDataUmountWithBackup is registered under its PS4 NID'
+    } else {
+        Write-Host '  [fail] sceSaveDataUmountWithBackup or its NID mapping is missing'
+        $result = 1
+    }
+
     $mutations = @(
+        @{ Name = 'sceSaveDataUmountWithBackup is no longer registered'; Old = '{"sceSaveDataUmountWithBackup",save_umount_with_backup}, '; New = '' },
         @{ Name = 'the error is left out of the failure log'; Old = 'failed (error=%#x, mode=%#x)\n",name,(unsigned)r,mode);'; New = 'failed (mode=%#x)\n",name,mode);' },
         @{ Name = 'the mode is left out of the failure log'; Old = 'failed (error=%#x, mode=%#x)\n",name,(unsigned)r,mode);'; New = 'failed (error=%#x)\n",name,(unsigned)r);' },
         @{ Name = 'the directory is echoed without validation'; Old = 'dir && valid_name(dir->data,sizeof(dir->data)) ? dir->data : "(unnamed)"'; New = 'dir ? dir->data : "(unnamed)"' },

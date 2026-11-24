@@ -22,7 +22,8 @@ from ps4_module import (MAX_IMAGE, PT_LOAD, PT_SCE_PROCPARAM, PT_SCE_RELRO, PT_T
 
 MAGIC = b'SOSBOOT1'
 CONTENT_MAGIC = b'SOSCONT1'
-FS_LOAD = bytes.fromhex('64488b042500000000')  # mov rax, fs:[0]
+FS_LOADS = (bytes.fromhex('64488b042500000000'),  # mov rax, fs:[0]
+            bytes.fromhex('64488b042510000000'))  # mov rax, fs:[0x10]
 KIND_CODE, KIND_DATA = 1, 2
 LOADABLE = (PT_LOAD, PT_SCE_RELRO)
 
@@ -40,17 +41,18 @@ def libc_init_env_is_ret(module):
 
 
 def patch_fs_loads(image, ph, base):
-    """Rewrite initial-exec `mov rax, fs:[0]` to GS: the host owns FS."""
+    """Rewrite the initial-exec TCB and thread-pointer loads to GS: the host owns FS."""
     patched = 0
     for p in ph:
         if p['type'] != PT_LOAD or not p['flags'] & 1:
             continue
         start, end = base + p['vaddr'], base + p['vaddr'] + p['filesz']
-        at = image.find(FS_LOAD, start, end)
-        while at >= 0:
-            image[at] = 0x65
-            patched += 1
-            at = image.find(FS_LOAD, at + len(FS_LOAD), end)
+        for load in FS_LOADS:
+            at = image.find(load, start, end)
+            while at >= 0:
+                image[at] = 0x65
+                patched += 1
+                at = image.find(load, at + len(load), end)
     return patched
 
 

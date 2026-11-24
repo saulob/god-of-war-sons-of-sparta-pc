@@ -21,9 +21,10 @@ function Edit-WorkspaceText([string]$Path, [string]$Old, [string]$New) {
 }
 
 # Runs a program with a time limit; a hang or a crash is a rejection like a failed check.
-function Invoke-TimedProgram([string]$File, [int]$Seconds = 60) {
+function Invoke-TimedProgram([string]$File, [int]$Seconds = 60, [string]$Arguments = '') {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $File
+    $info.Arguments = $Arguments
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true

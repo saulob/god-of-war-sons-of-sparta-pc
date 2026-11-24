@@ -549,15 +549,18 @@ static uint64_t patch_import_stubs(LoadedModule *m) {
 }
 static uint64_t patch_tcb_loads(LoadedModule *m,const ElfFile *elf) {
     uint64_t patched=0;
-    static const unsigned char suffix[]={0x48,0x8b,0x04,0x25,0,0,0,0};
+    static const unsigned char tcb_suffix[]={0x48,0x8b,0x04,0x25,0,0,0,0};
+    static const unsigned char thread_suffix[]={0x48,0x8b,0x04,0x25,0x10,0,0,0};
     for (int i=0;i<elf->phnum;++i) {
         const Phdr *p=&elf->ph[i];
         if (p->type!=PT_LOAD || !(p->flags&1)) continue;
         for (uint64_t at=p->vaddr;at+9<=p->vaddr+p->memsz;++at) {
             unsigned char *code=(unsigned char *)(uintptr_t)(m->base+at);
-            if ((code[0]!=0x64 && code[0]!=0x65) || memcmp(code+1,suffix,sizeof(suffix))) continue;
+            if (code[0]!=0x64 && code[0]!=0x65) continue;
+            const int thread=!memcmp(code+1,thread_suffix,sizeof(thread_suffix));
+            if (!thread && memcmp(code+1,tcb_suffix,sizeof(tcb_suffix))) continue;
 #ifdef _WIN32
-            const uint32_t displacement=runtime_thread_tcb_offset();
+            const uint32_t displacement=thread ? runtime_thread_thread_offset() : runtime_thread_tcb_offset();
             code[0]=0x65;
             memcpy(code+5,&displacement,4);
 #else
@@ -761,7 +764,7 @@ static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t
     publish_code_range(m->base,m->size);
     repair_pending();
     m->loading=0;
-    printf("Runtime: module %s relocated (%" PRIu64 " import stubs, %" PRIu64 " TCB loads)\n",path,stubs,tcb);
+    printf("Runtime: module %s relocated (%" PRIu64 " import stubs, %" PRIu64 " TCB/thread loads)\n",path,stubs,tcb);
     free(elf.data);
     pthread_mutex_unlock(&module_lock);
     operation_set("starting module",path);

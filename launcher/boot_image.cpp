@@ -28,8 +28,9 @@ constexpr uint64_t DT_NEEDED = 1, DT_INIT = 12;
 constexpr uint64_t kMaxImage = 512ull << 20;
 constexpr uint64_t kKindCode = 1, kKindData = 2;
 constexpr uint8_t kSelfMagic[] = {'O', 0x15, '=', 0x1d};
-// mov rax, fs:[0]: initial-exec TLS loads are rewritten to GS because the host owns FS.
-constexpr uint8_t kFsLoad[] = {0x64, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00};
+// mov rax, fs:[0] / fs:[0x10]: the guest TCB and thread pointer loads are rewritten to GS because the host owns FS.
+constexpr uint8_t kFsTcbLoad[] = {0x64, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00};
+constexpr uint8_t kFsThreadLoad[] = {0x64, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00};
 constexpr uint8_t kNidSalt[] = {0x51, 0x8d, 0x64, 0xa6, 0x35, 0xde, 0xd8, 0xc1,
                                 0xe6, 0xb0, 0x39, 0xb1, 0xc3, 0xe5, 0x52, 0x30};
 constexpr char kIdAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-";
@@ -373,19 +374,23 @@ bool LibcInitEnvIsRet(const Module& libc) {
 
 int PatchFsLoads(Bytes& image, const std::vector<ProgramHeader>& ph, uint64_t base) {
     int patched = 0;
-    for (const ProgramHeader& p : ph) {
-        if (p.type != PT_LOAD || !(p.flags & 1)) {
-            continue;
+    const auto patch = [&](const uint8_t (&load)[9]) {
+        for (const ProgramHeader& p : ph) {
+            if (p.type != PT_LOAD || !(p.flags & 1)) {
+                continue;
+            }
+            const uint64_t start = std::min<uint64_t>(base + p.vaddr, image.size());
+            const uint64_t end = std::min<uint64_t>(base + p.vaddr + p.filesz, image.size());
+            auto at = std::search(image.begin() + start, image.begin() + end, std::begin(load), std::end(load));
+            while (at != image.begin() + end) {
+                *at = 0x65;
+                ++patched;
+                at = std::search(at + sizeof(load), image.begin() + end, std::begin(load), std::end(load));
+            }
         }
-        const uint64_t start = std::min<uint64_t>(base + p.vaddr, image.size());
-        const uint64_t end = std::min<uint64_t>(base + p.vaddr + p.filesz, image.size());
-        auto at = std::search(image.begin() + start, image.begin() + end, std::begin(kFsLoad), std::end(kFsLoad));
-        while (at != image.begin() + end) {
-            *at = 0x65;
-            ++patched;
-            at = std::search(at + sizeof(kFsLoad), image.begin() + end, std::begin(kFsLoad), std::end(kFsLoad));
-        }
-    }
+    };
+    patch(kFsTcbLoad);
+    patch(kFsThreadLoad);
     return patched;
 }
 

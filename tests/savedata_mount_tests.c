@@ -14,6 +14,7 @@
 #define ERR_NOT_INITIALIZED ((int32_t)0x809F0001)
 #define ERR_NOT_FOUND ((int32_t)0x809F0008)
 #define ERR_EXISTS ((int32_t)0x809F0007)
+#define ERR_INTERNAL ((int32_t)0x809F000B)
 #define ERR_BAD_MOUNTED ((int32_t)0x809F000D)
 #define ERR_INVALID_USER ((int32_t)0x809F0011)
 #define MODE_RDONLY 1
@@ -34,6 +35,7 @@ int runtime_file_mount(const char *guest_path, const char *host_path) { (void)gu
 void runtime_file_unmount(const char *guest_path) { (void)guest_path; ++file_unmounts; }
 void runtime_history_note(const char *api, const char *library, uintptr_t caller) { (void)api; (void)library; (void)caller; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
+    if (!strcmp(name, "VwadwBBBJ80#libSceSaveData")) name = "sceSaveDataUmountWithBackup";
     for (size_t i = 0; i < count; ++i) if (!strcmp(table[i].name, name)) return (uintptr_t)table[i].function;
     return 0;
 }
@@ -46,12 +48,27 @@ typedef struct { int32_t user; int32_t pad; const TitleId *title; const DirName 
 typedef struct { int32_t user; int32_t pad; const DirName *dir; uint64_t blocks; uint32_t mode;
                  uint8_t reserved[32]; int32_t pad2; } Mount2;
 typedef struct { MountPoint point; uint64_t required_blocks; uint32_t unused, status; uint8_t reserved[28]; int32_t pad; } MountResult;
+typedef struct { char title[128], subtitle[128], detail[1024]; uint32_t user_param; int32_t pad; int64_t mtime; uint8_t reserved[32]; } Param;
+typedef struct { const void *buffer; uint64_t buffer_size, data_size; uint8_t reserved[32]; } Icon;
+typedef struct { uint32_t type; int32_t error; int32_t user; uint32_t pad; char title[16]; char dir[32]; uint8_t reserved[40]; } Event;
+typedef struct { int32_t user; int32_t pad; const TitleId *title; const DirName *dir; const void *fingerprint; uint8_t reserved[32]; } Backup;
+typedef struct { int32_t user; int32_t pad; const TitleId *title; const DirName *dir; Param *param; Icon *icon; uint8_t reserved[32]; } CheckBackup;
 _Static_assert(sizeof(Mount1) == 80 && sizeof(Mount2) == 64 && sizeof(MountResult) == 64, "save mount layouts");
+_Static_assert(sizeof(Param) == 1328 && sizeof(Event) == 104 && sizeof(Backup) == 64 && sizeof(CheckBackup) == 72,
+               "save backup layouts");
 
 typedef int32_t (ABI *InitFn)(const void *);
 typedef int32_t (ABI *Mount1Fn)(const Mount1 *, MountResult *);
 typedef int32_t (ABI *Mount2Fn)(const Mount2 *, MountResult *);
 typedef int32_t (ABI *UmountFn)(const MountPoint *);
+typedef int32_t (ABI *SetParamFn)(const MountPoint *, uint32_t, const void *, uint64_t);
+typedef int32_t (ABI *GetParamFn)(const MountPoint *, uint32_t, void *, uint64_t, uint64_t *);
+typedef int32_t (ABI *IconFn)(const MountPoint *, Icon *);
+typedef int32_t (ABI *ProgressFn)(float *);
+typedef int32_t (ABI *ClearFn)(void);
+typedef int32_t (ABI *EventFn)(const void *, Event *);
+typedef int32_t (ABI *BackupFn)(const Backup *);
+typedef int32_t (ABI *CheckBackupFn)(const CheckBackup *);
 
 static int failures;
 static void check(const char *name, int condition) {
@@ -92,6 +109,15 @@ static int has(const char *text) { return strstr(captured, text) != NULL; }
 static Mount1Fn mount1;
 static Mount2Fn mount2;
 static UmountFn umount;
+static UmountFn umount_backup;
+static SetParamFn set_param;
+static GetParamFn get_param;
+static IconFn load_icon;
+static ProgressFn get_progress;
+static ClearFn clear_progress;
+static EventFn get_event_result;
+static BackupFn backup;
+static CheckBackupFn check_backup;
 
 typedef struct { const DirName *dir; int32_t user; uint64_t blocks; uint32_t mode; } Request;
 
@@ -226,17 +252,143 @@ static void equivalence(void) {
     check("a null request returns the parameter error from both entry points without a crash", null1 == ERR_PARAMETER && null2 == ERR_PARAMETER);
 }
 
+static void save_path(const char *name, const char *suffix, char *out, size_t size) {
+    snprintf(out, size, "%s/savedata/1/CUSA57767/%s%s", user_dir, name, suffix);
+}
+static int write_text(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    const size_t size = strlen(text);
+    const int ok = fwrite(text, 1, size, f) == size;
+    return fclose(f) || !ok ? -1 : 0;
+}
+static int exists(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+static int has_text(const char *path, const char *text) {
+    char buffer[64] = {0};
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    const size_t got = fread(buffer, 1, sizeof(buffer) - 1, f);
+    fclose(f);
+    return got == strlen(text) && !memcmp(buffer, text, got);
+}
+static void backup_scenarios(void) {
+    DirName dir = name_of("BACKUPDIR");
+    MountResult result;
+    char host[700], work[720], meta[720], block[740], payload[760], copy[740], copy_payload[760], copy_meta[760], icon_path[760];
+    Event event;
+    float progress = -1;
+
+    save_path(dir.data, "", host, sizeof(host));
+    save_path(dir.data, ".sos-work", work, sizeof(work));
+    save_path(dir.data, ".sce_sys", meta, sizeof(meta));
+    snprintf(payload, sizeof(payload), "%s/payload.bin", work);
+    snprintf(icon_path, sizeof(icon_path), "%s/icon0.png", meta);
+    snprintf(copy, sizeof(copy), "%s.sos-backup", host);
+    snprintf(copy_payload, sizeof(copy_payload), "%s/payload.bin", copy);
+    snprintf(copy_meta, sizeof(copy_meta), "%s/.sce_sys/param.bin", copy);
+
+    check("backup: the save mounts for writing", call(1, (Request){&dir, 1, 1024, MODE_CREATE}, &result) == 0);
+    check("backup: the guest payload is written", write_text(payload, "payload") == 0);
+    Param param;
+    memset(&param, 0, sizeof(param));
+    snprintf(param.title, sizeof(param.title), "%s", "BACKUP TEST");
+    check("backup: the save parameter is set", set_param(&result.point, 0, &param, sizeof(param)) == 0);
+    Param read;
+    uint64_t got = 0;
+    memset(&read, 0, sizeof(read));
+    check("backup: the save parameter is read",
+          get_param(&result.point, 0, &read, sizeof(read), &got) == 0 && got == sizeof(read) &&
+              !strcmp(read.title, "BACKUP TEST"));
+    check("backup: the icon is written", write_text(icon_path, "PNG") == 0);
+    unsigned char bytes[8] = {0};
+    Icon icon = {bytes, sizeof(bytes), 0, {0}};
+    check("backup: the icon is read", load_icon(&result.point, &icon) == 0 && icon.data_size == 3 &&
+                                           !memcmp(bytes, "PNG", 3));
+    check("backup: clearing progress succeeds", clear_progress() == 0 && get_progress(&progress) == 0 && progress == 0.0f);
+    check("backup: unmount with backup succeeds", umount_backup(&result.point) == 0);
+    check("backup: progress reaches completion", get_progress(&progress) == 0 && progress > 0.99f);
+    memset(&event, 0, sizeof(event));
+    check("backup: the backup event is queued", get_event_result(NULL, &event) == 0 && event.type == 1 &&
+                                                   event.error == 0 && !strcmp(event.dir, dir.data));
+    check("backup: the event is consumed once", get_event_result(NULL, &event) == ERR_NOT_FOUND);
+    check("backup: clearing progress resets it", clear_progress() == 0 && get_progress(&progress) == 0 && progress == 0.0f);
+    snprintf(payload, sizeof(payload), "%s/payload.bin", host);
+    check("backup: the committed save has the payload", has_text(payload, "payload"));
+    check("backup: the backup has the same payload", has_text(copy_payload, "payload"));
+    check("backup: the backup keeps the save metadata", exists(copy_meta));
+    Param checked;
+    unsigned char checked_bytes[8] = {0};
+    Icon checked_icon = {checked_bytes, sizeof(checked_bytes), 0, {0}};
+    CheckBackup check_request = {.user = 1, .dir = &dir, .param = &checked, .icon = &checked_icon};
+    memset(&checked, 0, sizeof(checked));
+    check("backup: the backup parameter is readable",
+          check_backup(&check_request) == 0 && !strcmp(checked.title, "BACKUP TEST"));
+    check("backup: the backup icon is readable", checked_icon.data_size == 3 && !memcmp(checked_bytes, "PNG", 3));
+
+    check("backup: a read-only mount succeeds", call(1, (Request){&dir, 1, 1024, MODE_RDONLY}, &result) == 0);
+    check("backup: a read-only unmount with backup succeeds", umount_backup(&result.point) == 0);
+    check("backup: the read-only backup keeps the payload", has_text(copy_payload, "payload"));
+    check("backup: the read-only backup event is consumed", get_event_result(NULL, &event) == 0 && event.type == 1);
+
+    MountPoint missing;
+    memset(&missing, 0, sizeof(missing));
+    snprintf(missing.data, sizeof(missing.data), "/savedata9");
+    check("backup: an unknown mount returns not-found", umount_backup(&missing) == ERR_NOT_FOUND);
+    check("backup: a null mount returns the parameter error", umount_backup(NULL) == ERR_PARAMETER);
+
+    Backup request;
+    memset(&request, 0, sizeof(request));
+    request.user = 1;
+    request.dir = &dir;
+    check("backup: the explicit backup succeeds", backup(&request) == 0);
+    memset(&event, 0, sizeof(event));
+    check("backup: the explicit backup queues its event", get_event_result(NULL, &event) == 0 && event.type == 2 &&
+                                                             event.error == 0);
+
+    DirName failing = name_of("FAILBACKUP");
+    save_path(failing.data, ".sos-work", work, sizeof(work));
+    snprintf(payload, sizeof(payload), "%s/payload.bin", work);
+    check("backup: the failing save mounts for writing", call(1, (Request){&failing, 1, 1024, MODE_CREATE}, &result) == 0);
+    check("backup: the failing save has a payload", write_text(payload, "keep") == 0);
+    save_path(failing.data, "", host, sizeof(host));
+    snprintf(payload, sizeof(payload), "%s/payload.bin", host);
+    snprintf(block, sizeof(block), "%s.sos-backup", host);
+    check("backup: the backup destination is blocked", write_text(block, "block") == 0);
+    check("backup: a blocked backup returns the internal error", umount_backup(&result.point) == ERR_INTERNAL);
+    check("backup: a blocked backup keeps the committed save", has_text(payload, "keep"));
+    check("backup: a blocked backup leaves the old destination untouched", has_text(block, "block"));
+    remove(block);
+}
+
 int main(void) {
     snprintf(user_dir, sizeof(user_dir), "%s", getenv("SOS_TEST_SAVE_DIR"));
     snprintf(capture_path, sizeof(capture_path), "%s\\capture.txt", user_dir);
+    runtime_savedata_configure("CUSA57767");
     InitFn init = (InitFn)runtime_savedata_resolve("sceSaveDataInitialize3");
     mount1 = (Mount1Fn)runtime_savedata_resolve("sceSaveDataMount");
     mount2 = (Mount2Fn)runtime_savedata_resolve("sceSaveDataMount2");
     umount = (UmountFn)runtime_savedata_resolve("sceSaveDataUmount");
-    if (!init || !mount1 || !mount2 || !umount) {
+    umount_backup = (UmountFn)runtime_savedata_resolve("sceSaveDataUmountWithBackup");
+    set_param = (SetParamFn)runtime_savedata_resolve("sceSaveDataSetParam");
+    get_param = (GetParamFn)runtime_savedata_resolve("sceSaveDataGetParam");
+    load_icon = (IconFn)runtime_savedata_resolve("sceSaveDataLoadIcon");
+    get_progress = (ProgressFn)runtime_savedata_resolve("sceSaveDataGetProgress");
+    clear_progress = (ClearFn)runtime_savedata_resolve("sceSaveDataClearProgress");
+    get_event_result = (EventFn)runtime_savedata_resolve("sceSaveDataGetEventResult");
+    backup = (BackupFn)runtime_savedata_resolve("sceSaveDataBackup");
+    check_backup = (CheckBackupFn)runtime_savedata_resolve("sceSaveDataCheckBackupData");
+    if (!init || !mount1 || !mount2 || !umount || !umount_backup || !set_param || !get_param || !load_icon ||
+        !get_progress || !clear_progress || !get_event_result || !backup || !check_backup) {
         puts("  [fail] the save exports are missing");
         return 1;
     }
+    check("the NID form of sceSaveDataUmountWithBackup resolves",
+          runtime_savedata_resolve("VwadwBBBJ80#libSceSaveData") == (uintptr_t)umount_backup);
     MountResult result;
     DirName early = name_of("EARLY");
     int32_t answer = call(1, (Request){&early, 1, 1024, MODE_CREATE}, &result);
@@ -247,6 +399,7 @@ int main(void) {
     scenarios(2);
     equivalence();
     check("each successful mount reached the file layer once and was unmounted once", file_mounts == 4 && file_unmounts == 4);
+    backup_scenarios();
     printf("save mount tests: %d failures\n", failures);
     fflush(stdout);
     return failures ? 1 : 0;

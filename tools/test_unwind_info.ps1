@@ -33,6 +33,7 @@ void runtime_describe_guest_address(uintptr_t address, char *out, size_t size) {
 uint64_t runtime_add_module_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align) { (void)data; (void)filesz; (void)memsz; (void)align; return 0; }
 void runtime_remove_module_tls(uint64_t module) { (void)module; }
 uint32_t runtime_thread_tcb_offset(void) { return 0; }
+uint32_t runtime_thread_thread_offset(void) { return 0; }
 void runtime_history_note(const char *api, const char *library, uintptr_t caller) { (void)api; (void)library; (void)caller; }
 static unsigned char self_file[512];
 static size_t self_size;
