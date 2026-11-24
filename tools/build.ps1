@@ -56,17 +56,21 @@ try {
     $tc = Resolve-Toolchain 'auto'
     $env:PATH = "$($tc.Bin);$env:PATH"
     Write-Step "Toolchain clang64 ($($tc.Bin)), $config"
-    Sync-GpuDependencies
-    Write-Step 'FFmpeg (gpu\ffmpeg.txt)'
-    $ffmpegPrefix = Sync-FFmpeg
-    $ffmpeg = $ffmpegPrefix.Replace('\', '/')
 
+    # The pinned checkouts, the FFmpeg prefix and the build tree are shared: serialize all of them.
     $buildLock = Enter-BuildLock $buildDir
     try {
+        Sync-GpuDependencies
+        Write-Step 'FFmpeg (gpu\ffmpeg.txt)'
+        $ffmpegPrefix = Sync-FFmpeg
+        $ffmpeg = $ffmpegPrefix.Replace('\', '/')
+        $compiler = Join-Path $tc.Bin 'clang++.exe'
+        $gpuIdentity = Get-GpuRuntimeIdentity $config (Get-CompilerIdentity $compiler) (Join-Path $root 'gpu')
         if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
             Write-Step 'Cleaning build\cmake'
             Remove-Item -LiteralPath $buildDir -Recurse -Force
         }
+        Sync-GpuRuntimeArtifacts $buildDir $gpuIdentity $compiler
         $cache = Join-Path $buildDir 'CMakeCache.txt'
         $configured = (Test-Path -LiteralPath (Join-Path $buildDir 'build.ninja')) -and (Test-Path -LiteralPath $cache) -and
             (Select-String -Path $cache -SimpleMatch "CMAKE_BUILD_TYPE:STRING=$config" -Quiet)
@@ -77,13 +81,10 @@ try {
             Invoke-Native cmake @('-S', $root, '-B', $buildDir, '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$config", '-DCMAKE_C_COMPILER=clang', "-DDCP_FFMPEG_PREFIX=$ffmpeg", '--fresh')
             if ($LASTEXITCODE -ne 0) { Stop-Tool 'CMake configuration failed' }
         }
-        if ($Run) {
-            Write-Step 'Forcing GPU production rebuild for -Run'
-            Remove-GpuProductionArtifacts $buildDir
-        }
         Write-Step 'Building'
         Invoke-Native ninja @('-C', $buildDir, 'sons_of_sparta')
         $buildResult = $LASTEXITCODE
+        if ($buildResult -eq 0) { Set-GpuRuntimeStamp $buildDir $gpuIdentity }
     }
     finally { Exit-BuildLock $buildLock }
     if ($buildResult -ne 0) { Stop-Tool 'Build failed' }

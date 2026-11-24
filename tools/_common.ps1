@@ -132,9 +132,98 @@ function Exit-BuildLock($Mutex) {
     if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Dispose() }
 }
 
-# -Run builds start from no dcpgpu objects, library or loader, so the GPU code that runs is always the current source.
-# A file that cannot be deleted (a running game) throws; the build never goes on to launch an old executable.
-function Remove-GpuProductionArtifacts([string]$BuildDir) {
+# A pinned dependency is current only when the checkout is present and its stamp records the expected commit and patch
+# fingerprint. The directory alone is never enough: a changed pin or patch must fetch it again.
+function Test-PinnedDependency([string]$Directory, [string]$Stamp, [string]$Expected) {
+    if (-not (Test-Path -LiteralPath $Directory)) { return $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $Directory '.git'))) { return $false }
+    if (@(Get-ChildItem -LiteralPath $Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin '.git', '.sos_commit' }).Count -eq 0) { return $false }
+    return (Test-Path -LiteralPath $Stamp) -and
+        (((Get-Content -LiteralPath $Stamp -Raw).Trim() -replace "`r`n", "`n") -eq $Expected)
+}
+
+# An unpatched checkout is current when it is clean at the pinned commit. This also accepts a checkout fetched before
+# the stamp existed without re-fetching it, which would rebuild all of its consumers for no source change.
+function Test-PinnedCheckout([string]$Directory, [string]$Commit) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Directory '.git'))) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $Directory '.gitmodules')) { return $false }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $head = (& git -C $Directory rev-parse HEAD 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $head -ne $Commit) { return $false }
+        $status = (& git -C $Directory status --porcelain --untracked-files=no 2>$null | Out-String).Trim()
+        return ($LASTEXITCODE -eq 0 -and -not $status)
+    }
+    finally { $ErrorActionPreference = $previous }
+}
+
+function Get-ContentSha256([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+
+function Get-StringSha256([string]$Text) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+
+# The GPU inputs Ninja does not track, split by what they invalidate: the toolchain (compiler, configuration, FFmpeg)
+# needs every GPU object recompiled; a dependency pin or patch only needs Ninja's affected consumers recompiled from
+# the re-fetched sources. Sources, headers, shaders and flags stay in Ninja's dependency graph.
+function Get-GpuRuntimeIdentity([string]$Configuration, [string]$CompilerIdentity, [string]$GpuRoot) {
+    $toolchain = "config=$Configuration`ncompiler=$CompilerIdentity`n" +
+        'ffmpeg=' + (Get-ContentSha256 (Join-Path $GpuRoot 'ffmpeg.txt'))
+    $dependencies = New-Object Text.StringBuilder
+    foreach ($line in Get-Content -LiteralPath (Join-Path $GpuRoot 'deps.txt')) {
+        if ($line -match '^\s*(#|$)') { continue }
+        $path, $url, $commit = -split $line
+        # Dependencies outside gpu\ (LibAtrac9, trg-launcher) are not part of the video core.
+        if ($path -match '^\.\.') { continue }
+        $patchDir = Join-Path $GpuRoot ('patches\' + (Split-Path $path -Leaf))
+        $patches = @(Get-ChildItem -LiteralPath $patchDir -Filter '*.patch' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+        [void]$dependencies.Append("dep=$path@$commit patches=").Append((Get-PatchFingerprint $patches)).Append("`n")
+    }
+    return "toolchain=$(Get-StringSha256 $toolchain)`ndependencies=$(Get-StringSha256 $dependencies.ToString())"
+}
+
+function Get-GpuIdentityPart([string]$Identity, [string]$Name) {
+    $match = [regex]::Match($Identity, "(?m)^$Name=([0-9A-F]{64})$")
+    if ($match.Success) { return $match.Groups[1].Value }
+    return ''
+}
+
+function Get-CompilerIdentity([string]$CompilerPath) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $text = (& $CompilerPath --version 2>&1 | Out-String).Trim() }
+    finally { $ErrorActionPreference = $previous }
+    if ($LASTEXITCODE -ne 0 -or -not $text) { Stop-Tool "clang++ --version failed ($CompilerPath)" }
+    return $text
+}
+
+function Get-GpuRuntimeStampPath([string]$BuildDir) { return (Join-Path $BuildDir 'gpu\.sos_runtime_identity') }
+
+function Read-GpuRuntimeStamp([string]$BuildDir) {
+    $path = Get-GpuRuntimeStampPath $BuildDir
+    if (-not (Test-Path -LiteralPath $path)) { return '' }
+    return ((Get-Content -LiteralPath $path -Raw).Trim() -replace "`r`n", "`n")
+}
+
+# Written only when the identity changes, so an unchanged build leaves the artifact times alone.
+function Set-GpuRuntimeStamp([string]$BuildDir, [string]$Identity) {
+    if ((Read-GpuRuntimeStamp $BuildDir) -eq $Identity) { return }
+    $path = Get-GpuRuntimeStampPath $BuildDir
+    New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
+    [IO.File]::WriteAllText($path, $Identity, [Text.Encoding]::ASCII)
+}
+
+# The GPU objects, archive and executable built from other inputs. A file that cannot be deleted (a running game)
+# throws; the build never goes on to launch old artifacts.
+function Reset-GpuRuntimeArtifacts([string]$BuildDir) {
     $objects = Join-Path $BuildDir 'gpu\CMakeFiles\dcpgpu.dir'
     if (Test-Path -LiteralPath $objects) {
         Get-ChildItem -LiteralPath $objects -Force | Remove-Item -Recurse -Force -ErrorAction Stop
@@ -142,6 +231,32 @@ function Remove-GpuProductionArtifacts([string]$BuildDir) {
     foreach ($file in (Join-Path $BuildDir 'gpu\libdcpgpu.a'), (Join-Path $BuildDir 'bin\sons_of_sparta.exe')) {
         if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
     }
+}
+
+# A changed toolchain makes every GPU object unusable; a dependency-only change is rebuilt by Ninja from the sources
+# that Sync-GpuDependencies re-fetched. Without a stamp, existing artifacts are accepted only when the compiler is not
+# newer than all of them.
+function Sync-GpuRuntimeArtifacts([string]$BuildDir, [string]$Identity, [string]$CompilerPath) {
+    $stamp = Read-GpuRuntimeStamp $BuildDir
+    if ($stamp -eq $Identity) { return }
+    $objects = Join-Path $BuildDir 'gpu\CMakeFiles\dcpgpu.dir'
+    $artifacts = @()
+    if (Test-Path -LiteralPath $objects) { $artifacts += @(Get-ChildItem -LiteralPath $objects -Recurse -File) }
+    foreach ($file in (Join-Path $BuildDir 'gpu\libdcpgpu.a'), (Join-Path $BuildDir 'bin\sons_of_sparta.exe')) {
+        if (Test-Path -LiteralPath $file) { $artifacts += Get-Item -LiteralPath $file }
+    }
+    if ($artifacts.Count -eq 0) { return }
+    if ($stamp) {
+        $stampToolchain = Get-GpuIdentityPart $stamp 'toolchain'
+        if ($stampToolchain -and $stampToolchain -eq (Get-GpuIdentityPart $Identity 'toolchain')) { return }
+    }
+    else {
+        $compiler = Get-Item -LiteralPath $CompilerPath -ErrorAction SilentlyContinue
+        $newest = @($artifacts | ForEach-Object { $_.LastWriteTimeUtc } | Sort-Object -Descending)[0]
+        if ($compiler -and $newest -and $compiler.LastWriteTimeUtc -le $newest) { return }
+    }
+    Write-Step 'GPU runtime inputs changed: rebuilding the GPU artifacts'
+    Reset-GpuRuntimeArtifacts $BuildDir
 }
 
 # Runs a native tool with stdout and stderr merged into the console and the build log. The tool's exit code stays in
@@ -253,8 +368,9 @@ function Get-PatchFingerprint($files) {
     } finally { $sha.Dispose() }
 }
 
-# Fetches the pinned sources in gpu\deps.txt missing or at another commit, then applies gpu\patches. The stamp holds the
-# commit and, for a patched dependency, its patch fingerprint.
+# Fetches the pinned sources in gpu\deps.txt missing, at another commit or with another patch set. The stamp holds the
+# commit and, for a patched dependency, its patch fingerprint; an unpatched clean checkout at the pin is stamped without
+# re-fetching, so its consumers keep their objects.
 function Sync-GpuDependencies {
     $git = Get-Command git -ErrorAction SilentlyContinue
     if (-not $git) { Stop-Tool 'git is needed to fetch the video core dependencies (gpu\deps.txt).' }
@@ -263,13 +379,16 @@ function Sync-GpuDependencies {
         if ($line -match '^\s*(#|$)') { continue }
         $path, $url, $commit = -split $line
         $dir = Join-Path $gpu $path
-        if ((Test-Path -LiteralPath $dir) -and @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue).Count -gt 0) { continue }
         $stamp = Join-Path $dir '.sos_commit'
         $patch_dir = Join-Path $gpu ('patches\' + (Split-Path $path -Leaf))
         $patches = @(Get-ChildItem -LiteralPath $patch_dir -Filter '*.patch' -File -ErrorAction SilentlyContinue | Sort-Object Name)
         $fingerprint = Get-PatchFingerprint $patches
         $expected = if ($fingerprint) { "$commit`n$fingerprint" } else { $commit }
-        if ((Test-Path -LiteralPath $stamp) -and (Get-Content -LiteralPath $stamp -Raw).Trim() -eq $expected) { continue }
+        if (Test-PinnedDependency $dir $stamp $expected) { continue }
+        if ($patches.Count -eq 0 -and (Test-PinnedCheckout $dir $commit)) {
+            [System.IO.File]::WriteAllText($stamp, $expected, [System.Text.Encoding]::ASCII)
+            continue
+        }
         Write-Step "Fetching $path ($($commit.Substring(0, 7)))"
         if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
