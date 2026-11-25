@@ -88,6 +88,7 @@ objcopy --strip-debug --add-gnu-debuglink="$symbols_dir/sons_of_sparta.debug" "$
     objcopy --strip-debug "$appdir/usr/bin/sons_of_sparta"
 chmod 0755 "$appdir/usr/bin/sons_of_sparta"
 
+cp -f "$root/assets/launcher/header-art.png" "$appdir/usr/bin/assets/launcher/header-art.png"
 cp -f "$root/assets/launcher/sponsor-heart.png" "$appdir/usr/bin/assets/launcher/sponsor-heart.png"
 cp -f "$root/packaging/README.txt" "$appdir/usr/share/doc/sons-of-sparta-pc/README.txt"
 cp -f "$root/LICENSE" "$appdir/usr/share/doc/sons-of-sparta-pc/LICENSE.txt"
@@ -225,7 +226,9 @@ check_appdir() {
     local dir=$1
     [[ -x "$dir/AppRun" ]] || die "AppRun missing or not executable"
     [[ -x "$dir/usr/bin/sons_of_sparta" ]] || die "usr/bin/sons_of_sparta missing"
+    [[ -f "$dir/usr/bin/assets/launcher/header-art.png" ]] || die "header-art.png missing"
     [[ -f "$dir/usr/bin/assets/launcher/sponsor-heart.png" ]] || die "sponsor-heart.png missing"
+    [[ ! -e "$dir/usr/bin/assets/launcher/header-art-source.png" ]] || die "header-art-source.png must not ship"
     [[ -f "$dir/io.github.saulob.sons_of_sparta_pc.desktop" ]] || die "desktop entry missing"
     [[ -f "$dir/sons-of-sparta-pc.png" ]] || die "icon missing"
     [[ -f "$dir/usr/share/doc/sons-of-sparta-pc/README.txt" ]] || die "README.txt missing"

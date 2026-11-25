@@ -123,7 +123,7 @@ function Test-ReleaseFolder([string]$Folder, [string]$Version, [string]$Objdump)
     $exe = Join-Path $Folder 'sons_of_sparta.exe'
     $updater = Join-Path $Folder 'trg-updater.exe'
     foreach ($req in 'sons_of_sparta.exe', 'trg-updater.exe', 'README.txt', 'LICENSE.txt',
-                     'assets\launcher\sponsor-heart.png', 'licenses\THIRD-PARTY-LICENSES.txt',
+                     'assets\launcher\header-art.png', 'assets\launcher\sponsor-heart.png', 'licenses\THIRD-PARTY-LICENSES.txt',
                      'licenses\VENDOR.txt', 'licenses\components\Boost\LICENSE_1_0.txt') {
         if (-not (Test-Path -LiteralPath (Join-Path $Folder $req) -PathType Leaf)) {
             $problems.Add("Missing required file: $req")
@@ -173,7 +173,7 @@ function Test-ReleaseFolder([string]$Folder, [string]$Version, [string]$Objdump)
     }
 
     $protected = Get-UpdaterProtectedRules
-    $forbiddenNames = @('eboot.bin', 'boot.bin', 'param.sfo', 'content.bin', 'sons_of_sparta.ini', 'renderdoc.dll')
+    $forbiddenNames = @('eboot.bin', 'boot.bin', 'param.sfo', 'content.bin', 'sons_of_sparta.ini', 'renderdoc.dll', 'header-art-source.png')
     $forbiddenExts = @('.pkg', '.pdb', '.debug', '.dmp', '.ilk', '.log', '.self', '.prx', '.sprx', '.sfo', '.trp', '.sav', '.part')
     $needles = @(
         'DEBUG_SAULO',
@@ -385,7 +385,9 @@ foreach ($entry in $closure.GetEnumerator()) {
 
 Write-Step 'Staging assets, README, and licenses'
 New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot 'assets\launcher') | Out-Null
-Copy-Item -LiteralPath (Join-Path $root 'assets\launcher\sponsor-heart.png') -Destination (Join-Path $stageRoot 'assets\launcher\sponsor-heart.png') -Force
+foreach ($image in 'header-art.png', 'sponsor-heart.png') {
+    Copy-Item -LiteralPath (Join-Path $root "assets\launcher\$image") -Destination (Join-Path $stageRoot "assets\launcher\$image") -Force
+}
 Copy-Item -LiteralPath (Join-Path $root 'packaging\README.txt') -Destination (Join-Path $stageRoot 'README.txt') -Force
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $root 'packaging\licenses\THIRD-PARTY-LICENSES.txt') -Destination (Join-Path $licensesDir 'THIRD-PARTY-LICENSES.txt') -Force

@@ -1,14 +1,23 @@
 # Launcher header art
 
-The header draws a gradient, and `header-art.png` over it when that file sits in `assets/launcher` beside the
-executable. This repository ships no header art: the launcher keeps the gradient alone until approved Sons of Sparta art
-exists. The art is placed at the header's full height, flush with its top, right and bottom, and a narrow window cuts it
-from the left (`launcher/header_art.h`). The file is 8.89:1 (3840x432) RGBA with a horizontal alpha mask that lets the
-gradient show through on the left, so the title side stays dark. Without the file, or when it cannot be decoded, the
-gradient stays alone.
+`header-art-source.png` is the official art (2172x724 RGB, approved by the author; no characters, logo or text). Only
+its 2172x313 band from row 20 is used. `header-art.png` is derived from it: 3840x432 (8.89:1) RGBA, the band scaled
+uniformly to 432 rows and anchored right (2998x432), with 842 columns of transparent padding on the left. Do not edit
+`header-art.png` separately, and there is no SVG for this art.
 
-To add art: put `header-art.png` in this folder and list it with `sponsor-heart.png` in the asset copy loop of the
-top-level `CMakeLists.txt`.
+Two alpha masks let the launcher's own header gradient show through. Horizontally, alpha is 0 up to 22% of the width,
+rises along a smoothstep curve and reaches full at 55% (25% 0.02, 30% 0.145, 35% 0.341, 40% 0.565, 45% 0.776, 50%
+0.937), so the art has no visible edge and the title side stays dark. Vertically, the bottom 12% fades out with a
+smoothstep, because the header does not fade into the page itself. Regenerate with (ffmpeg on PATH):
+
+```powershell
+tools\make-header-art.ps1
+```
+
+Only `header-art.png` ships; the source stays in the repository. The launcher draws it over the header gradient at the
+header's full height, flush with the header's top, right and bottom; a narrow window cuts it from the left
+(`launcher/header_art.h`). Without the file, or when it cannot be decoded, it keeps the gradient alone. The build copies
+it beside the executable whenever it changes.
 
 # Sponsor heart
 

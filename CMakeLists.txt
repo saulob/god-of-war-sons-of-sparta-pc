@@ -158,7 +158,7 @@ endif()
 # The launcher reads its images next to the executable; each copy is a build output, so an image-only change syncs.
 set(SOS_LAUNCHER_ASSET_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets/launcher")
 set(SOS_LAUNCHER_ASSET_COPIES)
-foreach(asset sponsor-heart.png)
+foreach(asset header-art.png sponsor-heart.png)
     set(asset_source "${CMAKE_CURRENT_SOURCE_DIR}/assets/launcher/${asset}")
     set(asset_copy "${SOS_LAUNCHER_ASSET_DIR}/${asset}")
     add_custom_command(OUTPUT "${asset_copy}"

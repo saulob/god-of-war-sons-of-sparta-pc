@@ -166,7 +166,6 @@ void TestSponsorAsset() {
         Check(be32(16) == 64 && be32(20) == 64, "sponsor-heart.png is 64 x 64");
     }
     Check(fs::is_regular_file(kRoot / "assets" / "launcher" / "sponsor-heart.svg"), "sponsor-heart.svg is the kept source");
-    Check(!fs::exists(kRoot / "assets" / "launcher" / "header-art.png"), "no header art shipped without approved Sons art");
     Check(Contains(ReadFile(kRoot / "launcher" / "game_profile.h"), "https://github.com/sponsors/saulob"),
           "sponsor URL configured");
 }
@@ -321,6 +320,28 @@ void TestApplicationIcon() {
     const std::string licenses = ReadFile(kRoot / "packaging" / "licenses" / "THIRD-PARTY-LICENSES.txt");
     Check(Contains(licenses, "Application icon: Game Console Ecommerce") && Contains(licenses, "svgrepo.com/svg/425126"),
           "application icon provenance and license");
+}
+
+void TestHeaderArtAsset() {
+    const fs::path folder = kRoot / "assets" / "launcher";
+    const std::string data = ReadFile(folder / "header-art.png");
+    Check(data.size() > 33 && data.compare(1, 3, "PNG") == 0, "header-art.png is a PNG");
+    if (data.size() > 33) {
+        const auto be32 = [&](size_t at) {
+            return (unsigned(uint8_t(data[at])) << 24) | (unsigned(uint8_t(data[at + 1])) << 16) |
+                   (unsigned(uint8_t(data[at + 2])) << 8) | unsigned(uint8_t(data[at + 3]));
+        };
+        Check(be32(16) == 3840 && be32(20) == 432, "header-art.png is 3840 x 432");
+        Check(uint8_t(data[24]) == 8 && uint8_t(data[25]) == 6, "header-art.png is 8-bit RGBA");
+    }
+    Check(fs::is_regular_file(folder / "header-art-source.png"), "header-art-source.png is the kept source");
+    Check(fs::is_regular_file(kRoot / "tools" / "make-header-art.ps1"), "make-header-art.ps1 regenerates the art");
+    Check(Contains(ReadFile(kRoot / "CMakeLists.txt"), "foreach(asset header-art.png sponsor-heart.png)"),
+          "header-art.png is synced beside the executable");
+    Check(Contains(ReadFile(kRoot / "tools" / "package.ps1"), "'header-art.png', 'sponsor-heart.png'"),
+          "Windows package stages header-art.png");
+    Check(Contains(ReadFile(kRoot / "tools" / "package-linux.sh"), "assets/launcher/header-art.png"),
+          "Linux package stages header-art.png");
 }
 
 void TestHeaderArt() {
@@ -734,6 +755,7 @@ int main() {
     TestVersion();
     TestApplicationIcon();
     TestHeaderArt();
+    TestHeaderArtAsset();
     TestSettings();
     TestOptions();
     TestGameProcess();
