@@ -3,22 +3,53 @@
   "game": "God of War: Sons of Sparta",
   "system": "PS4",
   "type": "recomp",
-  "original": {
-    "revision": "01.01",
-    "serial": "CUSA57767"
-  },
+  "original": [
+    {
+      "region": "USA",
+      "revision": "01.00",
+      "serial": "CUSA57767"
+    },
+    {
+      "region": "USA",
+      "revision": "01.01",
+      "serial": "CUSA57767"
+    }
+  ],
   "project": "God of War: Sons of Sparta PC Port",
-  "status": "in-development",
+  "status": "released",
   "targets": [
-    "Windows"
+    "Windows",
+    "Linux",
+    "Steam Deck"
   ],
   "toolchain": "shadPS4-derived runtime",
-  "approach": "Original PS4 x86-64 game code running directly on Windows through replacement PS4 system libraries and a Vulkan renderer derived from shadPS4",
+  "approach": "Original PS4 x86-64 game code running natively on Windows and Linux through replacement PS4 system libraries and a Vulkan renderer derived from shadPS4",
   "maintainers": [
     {
       "name": "saulob",
       "link": "https://github.com/saulob"
     }
   ],
-  "notes": "Native Windows port of the PS4 release (Unity 2022.3 IL2CPP). No game files are included."
+  "links": [
+    {
+      "label": "Latest release",
+      "url": "https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest"
+    },
+    {
+      "label": "Reddit announcement",
+      "url": "https://www.reddit.com/r/recomps/comments/1y5izgf/god_of_war_sons_of_sparta_ps4_native_pc_port_is/"
+    }
+  ],
+  "tags": [
+    "launcher",
+    "Vulkan",
+    "4K",
+    "240 FPS",
+    "True Ultrawide",
+    "local co-op",
+    "SMAA",
+    "FSR",
+    "AppImage"
+  ],
+  "notes": "Public native PC release v0.1.0. Windows x64 is the primary target. Experimental Linux and Steam Deck AppImage: Linux and Steam Deck support is experimental and has not yet been runtime-tested on real hardware. True Ultrawide Hor+ for 21:9 and 32:9. Rendering up to 4K. Frame rates up to 240 FPS and Unlimited. The Pit of Agonies and Hermes Mode are unlockable from the beginning. Original local two-player co-op with Kratos and Deimos in The Pit. Skip Intro. Xbox and PlayStation controller support. TRG launcher with direct installation from the user's own compatible PS4 package. No game files are included."
 }
