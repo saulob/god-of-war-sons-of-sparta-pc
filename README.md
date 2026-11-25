@@ -2,7 +2,7 @@
 
 # God of War: Sons of Sparta - PC Port
 
-### The PS4 version of God of War: Sons of Sparta running natively on Windows, and experimentally on Linux and Steam Deck, with True Ultrawide, up to 4K, high frame rates, The Pit of Agonies DLC and its local co-op from the start, and the TRG launcher
+### The PS4 version of God of War: Sons of Sparta running natively on Windows, and experimentally on Linux and Steam Deck, with True Ultrawide, up to 4K, 240 fps, The Pit of Agonies DLC and its local co-op from the start, and the TRG launcher
 
 [![Latest release](https://img.shields.io/github/v/release/saulob/god-of-war-sons-of-sparta-pc?style=for-the-badge&label=release&color=e0bb32&labelColor=07101f&include_prereleases&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/saulob/god-of-war-sons-of-sparta-pc/total?style=for-the-badge&color=e0bb32&labelColor=07101f&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases)
