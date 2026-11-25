@@ -100,7 +100,7 @@ static char title_id[16]="UNKNOWN";
 static struct { int used, writable; int32_t user; char title[16]; char host[700], work[720], meta[700], name[33]; uint64_t blocks; } slots[SLOTS];
 static size_t mounts_done, commits_done, memory_writes;
 static int backup_progress;
-typedef struct { uint32_t type; int32_t error; int32_t user; char title[16], name[33]; } SaveEvent;
+typedef struct { uint32_t type; int32_t error; int32_t user; int announced; char title[16], name[33]; } SaveEvent;
 static SaveEvent events[4];
 static unsigned event_head, event_count;
 
@@ -615,14 +615,17 @@ static ABI int32_t save_clear_progress(void) {
     pthread_mutex_unlock(&lock);
     return 0;
 }
+/* A backup outlives the unmount that starts it. Games handle the unmount before its notification and lose one that comes
+ * with it, so the first poll after a backup is always busy. */
 static ABI int32_t save_get_event_result(const void *param,Event *event) {
     if (!initialized) return ERR_NOT_INITIALIZED;
     if (!event || param) return ERR_PARAMETER;
     pthread_mutex_lock(&lock);
-    if (!event_count) {
-        const int busy=backup_progress>0 && backup_progress<100;
+    if (!event_count) { pthread_mutex_unlock(&lock); return ERR_NOT_FOUND; }
+    if (!events[event_head].announced) {
+        for (unsigned i=0;i<event_count;++i) events[(event_head+i)%(sizeof(events)/sizeof(*events))].announced=1;
         pthread_mutex_unlock(&lock);
-        return busy ? ERR_EVENT_BUSY : ERR_NOT_FOUND;
+        return ERR_EVENT_BUSY;
     }
     const SaveEvent source=events[event_head];
     event_head=(event_head+1)%(sizeof(events)/sizeof(*events));
@@ -632,6 +635,7 @@ static ABI int32_t save_get_event_result(const void *param,Event *event) {
     event->type=source.type; event->error=source.error; event->user=source.user;
     memcpy(event->title,source.title,sizeof(event->title));
     memcpy(event->dir,source.name,sizeof(event->dir));
+    if (!source.error) printf("Save: backup of '%s' finished\n",source.name);
     return 0;
 }
 static ABI int32_t save_check_backup(const CheckBackup *c) {

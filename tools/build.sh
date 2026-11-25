@@ -165,6 +165,12 @@ run_suite "presentation-swapchain" bash -c "
 
 # 10. SaveData mount diagnostics: the test drives the Windows file layer.
 skip_suite "save-mount-diagnostics" "Windows-only test, covered by tools/test.ps1"
+run_suite "save-backup" bash -c "
+    mkdir -p '$tmp/save_backup_user' &&
+    '$CC' -std=gnu11 -Wall -Wextra -O1 -pthread -I'$root/src' -I'$root/launcher' -I'$root/gpu/shim' \
+        '$root/tests/savedata_backup_tests.c' '$root/src/runtime_savedata.c' -o '$tmp/save_backup_tests' &&
+    SOS_TEST_SAVE_DIR='$tmp/save_backup_user' '$tmp/save_backup_tests'
+"
 
 # 11. Launcher headless unit tests (linked against real built sos_launcher_core)
 run_suite "launcher-core" bash -c "

@@ -17,6 +17,7 @@
 #define ERR_INTERNAL ((int32_t)0x809F000B)
 #define ERR_BAD_MOUNTED ((int32_t)0x809F000D)
 #define ERR_INVALID_USER ((int32_t)0x809F0011)
+#define ERR_EVENT_BUSY ((int32_t)0x809F0018)
 #define MODE_RDONLY 1
 #define MODE_CREATE 4
 #define MODE_CREATE2 32
@@ -276,6 +277,9 @@ static int has_text(const char *path, const char *text) {
     fclose(f);
     return got == strlen(text) && !memcmp(buffer, text, got);
 }
+static int32_t next_event(Event *event) {
+    return get_event_result(NULL, event) == ERR_EVENT_BUSY ? get_event_result(NULL, event) : ERR_PARAMETER;
+}
 static void backup_scenarios(void) {
     DirName dir = name_of("BACKUPDIR");
     MountResult result;
@@ -313,7 +317,7 @@ static void backup_scenarios(void) {
     check("backup: unmount with backup succeeds", umount_backup(&result.point) == 0);
     check("backup: progress reaches completion", get_progress(&progress) == 0 && progress > 0.99f);
     memset(&event, 0, sizeof(event));
-    check("backup: the backup event is queued", get_event_result(NULL, &event) == 0 && event.type == 1 &&
+    check("backup: the backup event is queued", next_event(&event) == 0 && event.type == 1 &&
                                                    event.error == 0 && !strcmp(event.dir, dir.data));
     check("backup: the event is consumed once", get_event_result(NULL, &event) == ERR_NOT_FOUND);
     check("backup: clearing progress resets it", clear_progress() == 0 && get_progress(&progress) == 0 && progress == 0.0f);
@@ -333,7 +337,7 @@ static void backup_scenarios(void) {
     check("backup: a read-only mount succeeds", call(1, (Request){&dir, 1, 1024, MODE_RDONLY}, &result) == 0);
     check("backup: a read-only unmount with backup succeeds", umount_backup(&result.point) == 0);
     check("backup: the read-only backup keeps the payload", has_text(copy_payload, "payload"));
-    check("backup: the read-only backup event is consumed", get_event_result(NULL, &event) == 0 && event.type == 1);
+    check("backup: the read-only backup event is consumed", next_event(&event) == 0 && event.type == 1);
 
     MountPoint missing;
     memset(&missing, 0, sizeof(missing));
@@ -347,7 +351,7 @@ static void backup_scenarios(void) {
     request.dir = &dir;
     check("backup: the explicit backup succeeds", backup(&request) == 0);
     memset(&event, 0, sizeof(event));
-    check("backup: the explicit backup queues its event", get_event_result(NULL, &event) == 0 && event.type == 2 &&
+    check("backup: the explicit backup queues its event", next_event(&event) == 0 && event.type == 2 &&
                                                              event.error == 0);
 
     DirName failing = name_of("FAILBACKUP");
