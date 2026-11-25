@@ -27,8 +27,10 @@ $env:PATH = "$($tc.Bin);$env:PATH"
 & $exe --synthetic
 $result = $LASTEXITCODE
 
-$boot = Join-Path $root 'build\image\CUSA57767-1.00\boot.bin'
-if ($result -eq 0 -and (Test-Path -LiteralPath $boot)) {
+$found = Find-BuildBootImage '1.00'
+Write-Evidence 'image' '1.00' $(if ($found) { $found.State } else { 'NO DATA' }) $(if ($found) { 'boot.bin of the red-zone analysis' } else { 'no boot image in build\image or build\research\image; not read: the real image analysis' })
+if ($result -eq 0 -and $found) {
+    $boot = $found.Path
     & $exe --verify $boot 349685 | Where-Object { $_ -notmatch '^Red zone: \d+ tables' }
     if ($LASTEXITCODE -ne 0) { $result = 1 }
     $cache = Join-Path $temp 'cache'
@@ -40,8 +42,6 @@ if ($result -eq 0 -and (Test-Path -LiteralPath $boot)) {
         New-Item -ItemType Directory -Force -Path $benchCache | Out-Null
         & $exe --bench $boot $benchCache | Where-Object { $_ -notmatch '^Red zone: \d+ tables' }
     }
-} elseif ($result -eq 0) {
-    Write-Host '  [skip] no CUSA57767 1.00 boot image: the real image was not analyzed'
 }
 Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 exit $result

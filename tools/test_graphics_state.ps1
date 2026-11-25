@@ -24,7 +24,10 @@ try {
         $version = ($build -split '-', 2)[1]
         $folder = Join-Path $temp ('shaders_' + $version)
         $dump = & $python.Exe @pythonArguments -I (Join-Path $root 'scripts\graphics_state_check.py') --dump $version $folder
-        if ($LASTEXITCODE -ne 0) { $dump | ForEach-Object { Write-Host "    $_" }; throw "the embedded shaders of $build could not be written" }
+        $code = $LASTEXITCODE
+        $dump | Where-Object { $_ -like 'EVIDENCE|*' } | ForEach-Object { Write-Host $_ }
+        if ($code -eq 3) { continue }
+        if ($code -ne 0) { $dump | ForEach-Object { Write-Host "    $_" }; throw "the embedded shaders of $build could not be written" }
         $shaderArguments += @($version, $folder)
     }
 

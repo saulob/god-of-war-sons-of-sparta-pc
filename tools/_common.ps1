@@ -462,3 +462,6 @@ function Install-FFmpegRuntime([string]$Prefix, [string]$Directory) {
         }
     }
 }
+
+# The local evidence of the supported builds (boot images, game folders) and its summary.
+. (Join-Path $PSScriptRoot '_evidence.ps1')

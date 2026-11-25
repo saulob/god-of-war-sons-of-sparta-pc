@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from il2cpp_index import open_build, relative_calls  # noqa: E402
+from il2cpp_index import open_reported, relative_calls  # noqa: E402
 
 STATE = "StateMachineStateTypes.UI.MainMenu.MainMenuState_GameModeSelection"
 LOAD_GAME = "StateMachineStateTypes.UI.SaveLoadMenu.SaveLoadMenuState_LoadGame"
@@ -45,9 +45,8 @@ def body(index, type_name, method):
 
 def check_build(version, site):
     print("CUSA57767-" + version)
-    index = open_build(version)
+    index = open_reported(version, "the Hermes Mode site")
     if index is None:
-        print("  [skip] not installed: the game code was not read")
         return
     index.all_method_names()
     size, gate, hide = site

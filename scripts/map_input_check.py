@@ -12,9 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from il2cpp_index import open_build  # noqa: E402
-
-ASSET = ROOT / "game/prepared/CUSA57767-1.00/Media/resources.assets"
+from il2cpp_index import open_reported  # noqa: E402
+import build_evidence as evidence  # noqa: E402
 WRAPPERS = ("GameplayActions", "MapActions", "PauseMenuActions")
 failures = []
 
@@ -35,9 +34,8 @@ def bound_to_toggle_map(data, path):
 
 def check_build(version):
     print("CUSA57767-" + version)
-    index = open_build(version)
+    index = open_reported(version, "the ToggleMap wrappers")
     if index is None:
-        print("  [skip] not installed: the game code was not read")
         return
     for wrapper in WRAPPERS:
         address = index.method_address(wrapper, "get_ToggleMap")
@@ -46,10 +44,11 @@ def check_build(version):
 
 def check_asset():
     print("input actions asset (resources.assets)")
-    if not ASSET.is_file():
-        print(f"  [skip] {ASSET} is not installed: the bindings were not read")
+    asset = next((path for version in evidence.versions() for path in [evidence.game_file(version, "Media/resources.assets")] if path), None)
+    if asset is None:
+        evidence.report_content_all("the input actions asset")
         return
-    data = ASSET.read_bytes()
+    data = asset.read_bytes()
     touchpad = bound_to_toggle_map(data, b"<DualShockGamepad>/touchpadButton")
     check(touchpad >= len(WRAPPERS), f"<DualShockGamepad>/touchpadButton is bound to ToggleMap {touchpad} times (gameplay, map, pause)")
     check(bound_to_toggle_map(data, b"<Gamepad>/select") >= 1, "<Gamepad>/select (View) is also bound to ToggleMap")

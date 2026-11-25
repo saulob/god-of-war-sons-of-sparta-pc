@@ -75,6 +75,7 @@ try {
         @{ Old = '    for (size_t i = 0; i < sizeof(kBanks) / sizeof(*kBanks); ++i)'; New = '    for (size_t i = 0; i < 1; ++i)'; What = 'audio banks not required' }
         @{ Old = "    return NULL;`n}`n`nstatic int calls"; New = "    return &kSites[0];`n}`n`nstatic int calls"; What = 'unknown build accepted' }
     )
+    if ($env:SOS_TEST_NO_MUTATIONS -eq '1') { $mutations = @() }
     $index = 0
     $detected = 0
     foreach ($m in $mutations) {

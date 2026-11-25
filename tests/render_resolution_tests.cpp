@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "build_images.h"
 #include "dcp_present.h"
 #include "game_profile.h"
 #include "sos_resolution.h"
@@ -359,21 +360,13 @@ void TestPresentationShape() {
 }
 
 void TestRealImages() {
-    const fs::path images = kRoot / "build" / "image";
-    std::error_code ec;
-    int checked = 0;
-    for (const fs::directory_entry& entry : fs::directory_iterator(images, ec)) {
-        const fs::path boot = entry.path() / "boot.bin", report = entry.path() / "image.json";
-        if (!fs::is_regular_file(boot, ec) || !fs::is_regular_file(report, ec)) continue;
-        const std::string json = ReadFile(report);
-        const sos::GameBuild* build = nullptr;
-        for (const sos::GameBuild& candidate : sos::SupportedBuilds()) {
-            if (Contains(json, std::string("\"eboot_sha256\": \"") + candidate.eboot_sha256 + "\"")) build = &candidate;
-        }
+    for (const sos::GameBuild& supported : sos::SupportedBuilds()) {
+        const sos::GameBuild* build = &supported;
+        const sos_test::BootImage found = sos_test::ReportImage(kRoot, std::string("CUSA57767-") + build->version, "the render target sites");
         BootImage image;
-        if (!build || !ReadImage(boot, image)) continue;
-        const std::string name = std::string(build->label) + " (" + entry.path().filename().string() + ")";
-        ++checked;
+        if (!found.found() || !ReadImage(found.path, image)) continue;
+        const fs::path boot = found.path;
+        const std::string name = std::string(build->label) + " (" + boot.parent_path().filename().string() + ")";
         bool all = true;
         for (const SosResolutionSite& site : build->resolution_sites) {
             all = all && site.offset + site.length <= image.bytes.size() &&
@@ -394,7 +387,6 @@ void TestRealImages() {
             TestRealImageSafety(image, *build, name);
         }
     }
-    if (!checked) std::printf("  [skip] no installed boot image of a supported build: the real images were not read\n");
 }
 
 void TestWiring() {

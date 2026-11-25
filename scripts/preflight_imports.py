@@ -16,6 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_evidence as evidence  # noqa: E402
 from ps4_module import nid as ps4_nid, read_module  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -142,7 +143,16 @@ def resolution(import_name, names, exports, nids, generated):
     return "unknown", names.get(key, "")
 
 
-def scan_module(path, root, names, exports, nids, generated, shared, guest_exports, cache):
+def module_files(version):
+    """{path relative to the game folder: file} of the build's modules, the update's over the base game's."""
+    files = {}
+    for root in reversed(evidence.roots(version)):
+        for path in root.rglob("*.prx"):
+            files[path.relative_to(root).as_posix()] = path
+    return files
+
+
+def scan_module(path, label, relative, names, exports, nids, generated, shared, guest_exports, cache):
     module = cache.get(path) or read_module(path)
     called = call_evidence(module)
     entries = []
@@ -157,8 +167,8 @@ def scan_module(path, root, names, exports, nids, generated, shared, guest_expor
         guest = library in shared
         guest_ok = guest and nid in guest_exports.get(library, set())
         entries.append({
-            "build": root.name,
-            "module": str(path.relative_to(root)).replace("\\", "/"),
+            "build": label,
+            "module": relative,
             "nid": nid, "library": library, "import": import_name,
             "mapped": mapped, "state": state, "native": native, "guest": guest, "guest_ok": guest_ok,
             "called": import_name in called or symbol["name"] in called,
@@ -181,16 +191,16 @@ def main(argv=None):
     generated = {ps4_nid(name): name for name in exports}
     all_entries, failures, warnings = [], 0, 0
     for build in builds:
-        root = ROOT / "game" / "prepared" / build
-        if not root.is_dir():
-            print(f"missing prepared build: {root}", file=sys.stderr)
-            failures += 1
+        version = build.split("-", 1)[1]
+        files = module_files(version)
+        evidence.report_content(version, "its module imports", bool(files))
+        if not files:
             continue
-        modules = [root / m for m in args.module] or ([p for p in root.rglob("*.prx")] if args.all else list((root / "Media" / "Plugins").glob("*.prx")))
-        if not args.all and not args.module:
-            modules = [root / "Media" / "Plugins" / "SaveData.prx"]
+        relatives = args.module or (sorted(files) if args.all else ["Media/Plugins/SaveData.prx"])
+        modules = [files.get(relative, Path(relative)) for relative in relatives]
+        names_of = {path: relative for relative, path in files.items()}
         shared = {"libc", "libkernel", "libSceLibcInternal"}
-        shared.update(p.stem for p in root.rglob("*.prx"))
+        shared.update(path.stem for path in files.values())
         cache, guest_exports = {}, {}
         for path in modules:
             if not path.is_file():
@@ -205,7 +215,7 @@ def main(argv=None):
         for path in modules:
             if path not in cache:
                 continue
-            entries = scan_module(path, root, names, exports, nids, generated, shared, guest_exports, cache)
+            entries = scan_module(path, build, names_of[path], names, exports, nids, generated, shared, guest_exports, cache)
             all_entries += entries
     lines = [f"Import preflight: {', '.join(builds)}", f"modules: {len(set(e['module'] for e in all_entries))} imports: {len(all_entries)}"]
     by_module = {}

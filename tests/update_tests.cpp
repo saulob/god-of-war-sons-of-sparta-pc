@@ -560,7 +560,8 @@ void TestReleaseContract() {
       const std::string name = Lowercase(Utf8Path(entry.path().filename()));
       const std::string extension = Lowercase(Utf8Path(entry.path().extension()));
       const bool script = extension == ".ps1" || extension == ".sh" || extension == ".py" || extension == ".cmake";
-      if (!entry.is_regular_file() || !script || (name.find("package") == std::string::npos && name.find("release") == std::string::npos)) {
+      const bool test_script = name.rfind("test_", 0) == 0;
+      if (!entry.is_regular_file() || !script || test_script || (name.find("package") == std::string::npos && name.find("release") == std::string::npos)) {
         continue;
       }
       ++packagers;

@@ -15,8 +15,9 @@ $exe = Join-Path $temp 'test.exe'
     (Join-Path $PSScriptRoot 'startup_profile_stubs.c') (Join-Path $root 'src\runtime_stop.c') '-pthread' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the module read test' }
 $env:PATH = "$($tc.Bin);$env:PATH"
-$module = Join-Path $root 'game\prepared\CUSA57767-1.00\Media\Modules\Il2cppUserAssemblies.prx'
-if (Test-Path -LiteralPath $module) { & $exe $module } else { & $exe; Write-Host '  [skip] no prepared CUSA57767 1.00' }
+$module = Find-BuildGameFile '1.00' 'Media\Modules\Il2cppUserAssemblies.prx'
+Write-GameFileEvidence '1.00' $module 'the real game module'
+if ($module) { & $exe $module } else { & $exe }
 $result = $LASTEXITCODE
 Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 exit $result

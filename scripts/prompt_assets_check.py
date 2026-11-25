@@ -13,7 +13,10 @@ import struct
 import sys
 from pathlib import Path
 
-DEFAULT_MEDIA = Path(__file__).resolve().parent.parent / "game" / "prepared" / "CUSA57767-1.00" / "Media"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_evidence as evidence  # noqa: E402
+
+DEFAULT_MEDIA = evidence.media("1.00")
 CLASS_TEXTURE2D, CLASS_SPRITE, CLASS_MONOBEHAVIOUR, CLASS_MATERIAL = 28, 213, 114, 21
 ATLASES = ("New_PS_ButtonPromptsAtlas", "PS4_ButtonPromptsAtlas", "Xbox_ButtonPromptsAtlas", "PC_ButtonPromptsAtlas")
 XBOX_SPRITES = "ABXY_Controller_Sheet(384,256)"
@@ -240,14 +243,14 @@ def check_scene_prompts(media, resources_data, resources_objects):
     cross = next((path_id for path_id, (offset, size, class_id) in resources_objects.items()
                   if class_id == CLASS_SPRITE and object_name(resources_data, offset, size, class_id) == "KS_ButtonPrompt_2"), None)
     if scripts is None or cross is None or not all(name in scripts for name in ("SaveMiniMenu", "PitPlayerSelectMiniMenu", "Image", "AutoButtonSprite")):
-        print("  [skip] the scene prompt check needs globalgamemanagers.assets and its scripts")
+        print("  [data] DATA UNAVAILABLE: the scene prompt check needs globalgamemanagers.assets and its scripts")
         return
     followers = set(scripts["AutoButtonSprite"]) | set(scripts.get("UIControlTypeListener", [])) | set(scripts.get("UiPromptIconSwitcher", []))
     images = set(scripts["Image"])
     for scene in ("level4", "level120"):
         path = media / scene
         if not path.is_file():
-            print(f"  [skip] {scene} is not installed: its menu prompts were not read")
+            print(f"  [data] DATA UNAVAILABLE: {scene} is not on this machine, its menu prompts were not read")
             continue
         data, objects = parse(path)
         for menu, expected in (("SaveMiniMenu", 4), ("PitPlayerSelectMiniMenu", 2)):
@@ -286,7 +289,7 @@ def main():
     media = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_MEDIA
     path = media / "resources.assets"
     if not path.is_file():
-        print(f"  [skip] {path} is not installed: the prompt assets were not read")
+        evidence.report_content_all("the prompt assets")
         return 0
     data, objects = parse(path)
     names = {}

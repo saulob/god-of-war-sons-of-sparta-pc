@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_evidence as evidence  # noqa: E402
 import ps4_module as pm  # noqa: E402
 
 LIBRARY = 'libSceAvPlayer'
@@ -74,14 +75,14 @@ def main(argv):
     report = Path(argv[argv.index('--report') + 1]) if '--report' in argv else None
     bound = registered()
     names = symbol_names()
-    builds = sorted((ROOT / 'game' / 'prepared').glob('*/eboot.bin'))
-    if not builds:
-        print('  [skip] no prepared eboot.bin found')
-        return 0
     failures = 0
     scans = {}
-    for path in builds:
-        label = path.parent.name
+    for version in evidence.versions():
+        evidence.report_content(version, 'its AvPlayer imports')
+        path = evidence.eboot(version)
+        if path is None:
+            continue
+        label = evidence.key_of(version)
         sites = scan(path)
         scans[label] = sites
         unresolved = sorted(n for n in sites if n not in bound)
@@ -95,7 +96,7 @@ def main(argv):
                          (all(sites[n] for n in sites), 'every import has a call site')):
             print(f'  [{"ok  " if ok else "fail"}] {label}: {text}')
             failures += 0 if ok else 1
-    if len({tuple(sorted(s)) for s in scans.values()}) != 1:
+    if len({tuple(sorted(s)) for s in scans.values()}) > 1:
         print('  [note] the prepared builds do not import the same AvPlayer functions')
     if report:
         write_report(report, scans, bound, names)

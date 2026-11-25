@@ -14,7 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import prompt_assets_check as pac  # noqa: E402
-from il2cpp_index import ROOT, metadata_path, open_build  # noqa: E402
+from il2cpp_index import ROOT, open_build, open_reported  # noqa: E402
+import build_evidence as evidence  # noqa: E402
 from prompt_dialog import Slots, engine_method, function_end, image_field, slot_table, subsystem_body  # noqa: E402
 from prompt_sites import fnv64, hexbytes  # noqa: E402
 
@@ -316,30 +317,29 @@ def game_assets(media):
 
 def check_assets(media, sheets):
     if not (media / "resources.assets").is_file():
-        print("  [skip] no resources.assets: the sprites and the scenes were not read")
-        return
+        return False
     ps4, ps5, xbox = game_assets(media)
     errors = validate_sheets(sheets, ps4, ps5, xbox)
     check(not errors, f"every mapped sprite is the same input in the game's own icon maps, and its Xbox sprite is the expected one {errors or ''}")
     scripts = pac.named_scripts(media)
     if scripts is None or not all((media / file).is_file() for file in SCENE_FILES):
-        print("  [skip] the scene assets are not installed: the menus were not read")
-        return
+        return False
     found = static_glyphs(media, scripts, sheets)
     errors = validate_screens(found, sheets)
     check(not errors, f"{len(SCREENS)} known glyph Images without a follower are still there and become the matching Xbox input "
                       f"({len(found)} such Images in all) {errors or ''}")
+    return True
 
 
 def check_build(build):
-    index = open_build(build)
-    if index is None:
-        print(f"  [skip] CUSA57767-{build}: no boot image or metadata installed")
-        return
     print(f"CUSA57767-{build}")
+    index = open_reported(build, "the glyph hooks")
+    if index is None:
+        return
     index.all_method_names()
     check_code(index, build, discover(index), HEADER.read_text() if HEADER.is_file() else "")
-    check_assets(metadata_path(build).parent.parent, source_sheets(SOURCE.read_text()))
+    complete = check_assets(evidence.media(build), source_sheets(SOURCE.read_text()))
+    evidence.report_content(build, "the sprites and the scenes", complete)
 
 
 def self_test():

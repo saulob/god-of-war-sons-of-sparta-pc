@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from il2cpp_index import open_build  # noqa: E402
+from il2cpp_index import open_reported  # noqa: E402
 
 STATE = "StateMachineStateTypes.UI.MainMenu.MainMenuState"
 WAIT = STATE + "_WaitForInputPress"
@@ -57,9 +57,8 @@ def callees(index, start, code):
 
 def check_build(version):
     print("CUSA57767-" + version)
-    index = open_build(version)
+    index = open_reported(version, "the title input path")
     if index is None:
-        print("  [skip] not installed: the game code was not read")
         return
     constants = claim_constants()
     check(constants is not None, "the Skip Intro claim names the menu fields it reads")

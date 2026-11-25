@@ -15,10 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from il2cpp_index import ROOT, open_build  # noqa: E402
+import build_evidence as evidence  # noqa: E402
 from prompt_sites import fnv64  # noqa: E402
 
 HEADER = ROOT / "launcher" / "sos_resolution_sites.h"
-MEDIA = ROOT / "game" / "prepared" / "CUSA57767-1.00" / "Media"
+MEDIA = evidence.media("1.00")
 BUILDS = ("1.00", "1.01")
 
 # Every Screen.SetResolution request of the game's code: mov edi, 1920; mov esi, 1080; mov edx, 1; call rax.
@@ -106,10 +107,22 @@ def build_facts(build):
             "callers": {n for n in callers if not n.startswith("UnityEngine.Screen::")}, "shape_callers": set(shape)}
 
 
+def synthetic_facts(build, sites):
+    offsets = sites.get(build) or []
+    names = [f"{t}::{m}" for t, m in SET_RESOLUTION_METHODS]
+    return {"sites": list(zip(offsets, names)), "problems": [], "everywhere": list(offsets), "callers": set(names), "shape_callers": set()}
+
+
+def synthetic_scenes(text):
+    scalers = {canvas: {(1, (1920.0, 1080.0), 1, 0.0)} for canvas in HUD_CANVASES}
+    splash = header_splash(text)
+    return {"cameras": [("level9", 1, (0.0, 0.0, 1.0, 1.0), 0)], "pixel_perfect": 0, "scalers": scalers,
+            "fades": [("level4", "Fade", (0.0, 0.0, 1.0, 1.0, 0, 0, 1920, 1080))], "videos": [(SPLASH_FILE, "VideoPlayer")],
+            "splash": (splash[0], splash[1], SPLASH_ORIGINAL) if splash else None}
+
+
 def check_build(build, facts, header_sites):
     print(f"CUSA57767 {build}")
-    if not check(facts is not None, f"{build}: boot image and metadata installed"):
-        return
     check(not facts["problems"], f"{build}: every SetResolution request found once in its method " + "; ".join(facts["problems"]))
     offsets = [offset for offset, _ in facts["sites"]]
     check(len(offsets) == len(SET_RESOLUTION_METHODS) and len(set(offsets)) == len(offsets),
@@ -403,7 +416,6 @@ def self_test(builds, scenes, text):
     expect("another 1920 x 1080 request exists", build_case(lambda f: f["everywhere"].append(1)))
     expect("a new Screen.SetResolution caller", build_case(lambda f: f["callers"].add("Foo::Bar")))
     expect("game code sets a camera aspect", build_case(lambda f: f["shape_callers"].add("CameraController::Update")))
-    expect("a build is not installed", build_case(lambda f: "missing"))
     first_101 = re.search(r"SOS_SET_RESOLUTION_SITES_1_01 \\\n    SOS_SET_RESOLUTION_SITE\((0x[0-9a-f]+)u\)", text)
     if first_101:
         expect("the header holds a wrong 1.01 offset", header_case(first_101.group(1) + "u", hex(int(first_101.group(1), 16) + 1) + "u"))
@@ -428,18 +440,20 @@ def main(argv):
     if argv[1:2] == ["generate"]:
         return generate()
     text = HEADER.read_text(encoding="utf-8") if HEADER.is_file() else ""
-    builds = {build: build_facts(build) for build in BUILDS}
-    scenes = scene_facts(Media(MEDIA)) if MEDIA.is_dir() else None
-    if argv[1:2] == ["--self-test"]:
-        if None in builds.values() or scenes is None:
-            print("  [fail] self-test needs both builds and the game files installed")
-            return 1
-        return self_test(builds, scenes, text)
     sites = header_sites(text)
+    real = {build: build_facts(build) for build in BUILDS}
+    builds = {build: real[build] or synthetic_facts(build, sites) for build in BUILDS}
+    real_scenes = scene_facts(Media(MEDIA)) if (MEDIA / "level3").is_file() and (MEDIA / SPLASH_FILE).is_file() else None
+    scenes = real_scenes or synthetic_scenes(text)
+    if argv[1:2] == ["--self-test"]:
+        return self_test(builds, scenes, text)
     for build in BUILDS:
+        evidence.report_image(build, "the SetResolution sites")
+        if not real[build]:
+            evidence.report_contract(build, "the sites of launcher/sos_resolution_sites.h")
         check_build(build, builds[build], sites)
-    if check(scenes is not None, "game files installed"):
-        check_scenes(scenes, {"splash": header_splash(text)})
+    check_scenes(scenes, {"splash": header_splash(text)})
+    evidence.report_content_all("the scenes and UI the Hor+ view relies on")
     print(f"  [ultrawide] {len(failures)} failures")
     return 1 if failures else 0
 

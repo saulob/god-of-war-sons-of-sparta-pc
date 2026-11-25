@@ -43,6 +43,9 @@ Key Features
 - Automatic / PlayStation / Xbox controller prompts and prepared Xbox icons
 - Skip Intro, Exit Game in the title menu, and optional Unlock Hermes Mode
   (off by default; saves are never modified)
+- Optional Unlock The Pit Early (off by default): the game's own The Pit of
+  Agonies entry appears in the title menu before the story is completed, and
+  saves are never modified. The Pit keeps its original local two-player co-op
 - Native SaveData with atomic writes and backups, plus full Trophy support
 
 Save Data & Portable Files

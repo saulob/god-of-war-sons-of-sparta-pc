@@ -12,6 +12,7 @@
 
 #include <Zydis/Zydis.h>
 
+#include "build_images.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 #include "sos_exit_game.h"
@@ -379,17 +380,6 @@ bool ReadBootImage(const fs::path& path, std::vector<uint8_t>& out) {
     return static_cast<bool>(f);
 }
 
-fs::path BootPathFor(const std::string& buildKey) {
-    const fs::path root(SOS_SOURCE_DIR);
-    const fs::path primary = root / "build" / "image" / buildKey / "boot.bin";
-    if (fs::is_regular_file(primary)) return primary;
-    const size_t dash = buildKey.rfind('-');
-    if (dash != std::string::npos) {
-        const fs::path alt = root / "build" / "image" / ("v" + buildKey.substr(dash + 1)) / "boot.bin";
-        if (fs::is_regular_file(alt)) return alt;
-    }
-    return {};
-}
 
 bool DecodeFirst(const uint8_t* code, size_t len, ZydisDecodedInstruction& insn, ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT]) {
     ZydisDecoder dec;
@@ -399,9 +389,9 @@ bool DecodeFirst(const uint8_t* code, size_t len, ZydisDecodedInstruction& insn,
 
 void TestRealBootImage(const char* buildKey) {
     const std::string name = buildKey;
-    const fs::path bootPath = BootPathFor(buildKey);
-    Check(!bootPath.empty(), name + ": boot image present");
-    if (bootPath.empty()) return;
+    const sos_test::BootImage boot = sos_test::ReportImage(fs::path(SOS_SOURCE_DIR), name, "the Exit Game hook sites");
+    if (!boot.found()) return;
+    const fs::path bootPath = boot.path;
 
     std::vector<uint8_t> original;
     Check(ReadBootImage(bootPath, original), name + ": boot image read cleanly");

@@ -12,6 +12,7 @@ Native PC port of *God of War: Sons of Sparta* (`CUSA57767` **1.00 USA** and **1
 - Configurable frame rate (`30`–`240` FPS or Unlimited) with drift-free frame pacing
 - Automatic / PlayStation / Xbox controller prompts with prepared Xbox button glyphs
 - Skip Intro, Title Menu Exit Game, and optional **Unlock Hermes Mode** (off by default)
+- Optional **Unlock The Pit Early** (off by default) shows the game's own **The Pit of Agonies** in the title menu before the story is completed; The Pit keeps its original local two-player co-op
 - Atomic SaveData with backup/unmount support and full Trophy tracking (`NPWR58134_00`)
 - Built-in launcher and self-updater
 

@@ -136,8 +136,10 @@ int main(int argc, char** argv) {
         (Join-Path $root 'launcher\crypto_win.cpp') '-lbcrypt' '-o' $harness
     if ($LASTEXITCODE -ne 0) { throw 'could not compile the launcher readiness harness' }
 
-    $source = Join-Path $root 'game\prepared\CUSA57767-1.01'
-    if (Test-Path -LiteralPath (Join-Path $source 'eboot.bin')) {
+    $updateEboot = Find-BuildGameFile '1.01' 'eboot.bin'
+    Write-GameFileEvidence '1.01' $updateEboot 'the launcher readiness checks of the update'
+    $source = if ($updateEboot) { Split-Path -Parent $updateEboot } else { $null }
+    if ($source) {
         Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
         $shared = 'eboot.bin', 'sce_discmap.plt', 'sce_module/libc.prx', 'sce_module/libSceFios2.prx',
                   'Media/Modules/PS4Util.prx', 'Media/Modules/Il2cppUserAssemblies.prx', 'sce_sys/param.sfo'
@@ -157,11 +159,9 @@ int main(int argc, char** argv) {
         $fullOutput = & $harness tree (Join-Path $fixture 'full') 2>&1 | Out-String
         Check ($LASTEXITCODE -eq 0) "a complete tree passes the launcher check ($($fullOutput.Trim()))"
 
-        $imageSource = Join-Path $root 'build\image\CUSA57767-1.01'
-        if (-not (Test-Path -LiteralPath (Join-Path $imageSource 'image.json'))) {
-            $imageSource = Join-Path $root 'build\image\v1.01'
-        }
-        if (Test-Path -LiteralPath (Join-Path $imageSource 'image.json')) {
+        $updateImage = Find-BuildBootImage '1.01'
+        $imageSource = if ($updateImage) { Split-Path -Parent $updateImage.Path } else { $null }
+        if ($imageSource) {
             foreach ($name in $script:ImageFiles) {
                 Link-File (Join-Path $imageSource $name) (Join-Path $fixture "image\$name")
             }

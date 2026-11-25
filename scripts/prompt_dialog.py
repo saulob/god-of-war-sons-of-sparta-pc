@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from il2cpp_index import ROOT, open_build  # noqa: E402
+from il2cpp_index import ROOT, open_build, open_reported  # noqa: E402
 from prompt_sites import fnv64, hexbytes, lookup_slot_and_target  # noqa: E402
 
 HEADER = ROOT / "launcher" / "prompt_dialog_sites.h"
@@ -456,9 +456,8 @@ def check_special_icons(index, build):
 
 
 def check_build(build):
-    index = open_build(build)
+    index = open_reported(build, "the dialog and menu hooks")
     if index is None:
-        print(f"  [skip] CUSA57767-{build}: no boot image or metadata installed")
         return
     print(f"CUSA57767-{build}")
     try:

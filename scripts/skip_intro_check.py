@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from il2cpp_index import open_build, relative_calls  # noqa: E402
+from il2cpp_index import open_reported, relative_calls  # noqa: E402
 
 FIRST_STATE_JUMP, LOOP_EXIT, SKIP_CHECK, SKIP_BRANCH, ENDING, NEXT_FRAME, SAVE_CHECK, SAVE_READY = (
     0x1A9, 0x82F, 0x898, 0x8A6, 0xA0E, 0x9B2, 0x10AA, 0x10B5)
@@ -198,9 +198,8 @@ def names_calls(index, start, length):
 
 def check_build(key, version, table):
     print(key)
-    index = open_build(version)
+    index = open_reported(version, "the Skip Intro sites")
     if index is None:
-        print("  [skip] not installed: the game code was not read")
         return
     if not check(key in table, "the site table has the build"):
         return

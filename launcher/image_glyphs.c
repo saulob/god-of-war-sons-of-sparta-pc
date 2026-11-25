@@ -81,8 +81,7 @@ static int hooks_of(int style) {
     return style == SOS_PROMPTS_XBOX ? SOS_GLYPH_HOOK_TEXT_ATLAS : 0;
 }
 
-int sos_image_glyphs_verify(const uint8_t *image, uint64_t size, const char *build_key, int style, const char **why) {
-    const SosImageGlyphSite *site = sos_image_glyphs_site(build_key);
+int sos_image_glyphs_verify_site(const uint8_t *image, uint64_t size, const SosImageGlyphSite *site, int style, const char **why) {
     const char *reason = NULL;
     uint64_t services = FNV_OFFSET;
     if (!site) reason = "no verified glyph hooks in this build";
@@ -101,6 +100,10 @@ int sos_image_glyphs_verify(const uint8_t *image, uint64_t size, const char *bui
     if (!reason && services != site->services_hash) reason = "the code the handlers call is not the verified code";
     if (reason && why) *why = reason;
     return reason == NULL;
+}
+
+int sos_image_glyphs_verify(const uint8_t *image, uint64_t size, const char *build_key, int style, const char **why) {
+    return sos_image_glyphs_verify_site(image, size, sos_image_glyphs_site(build_key), style, why);
 }
 
 /* push rdi, rsi, rdx, rcx, r8, r9 ; sub rsp,8 ; mov rax,handler ; call rax ; add rsp,8 ; pop them. */
@@ -137,14 +140,13 @@ static void write_hook(uint8_t *method, uint8_t *stub, uintptr_t handler) {
     method[5] = 0x90;
 }
 
-int sos_image_glyphs_install(uint8_t *image, uint64_t size, const char *build_key, int style, uint8_t *stubs, size_t stubs_capacity,
-                             char *message, size_t message_size) {
+int sos_image_glyphs_install_site(uint8_t *image, uint64_t size, const SosImageGlyphSite *site, int style, uint8_t *stubs, size_t stubs_capacity,
+                                  char *message, size_t message_size) {
     const char *why = "";
-    if (!sos_image_glyphs_verify(image, size, build_key, style, &why)) {
-        snprintf(message, message_size, "not applied: %s in %s", why, build_key ? build_key : "this build");
+    if (!sos_image_glyphs_verify_site(image, size, site, style, &why)) {
+        snprintf(message, message_size, "not applied: %s", why);
         return 0;
     }
-    const SosImageGlyphSite *site = sos_image_glyphs_site(build_key);
     const int hooks = hooks_of(style);
     int in_reach = stubs && stubs_capacity >= (size_t)hooks * SOS_GLYPH_STUB_SLOT;
     for (int i = 0; in_reach && i < hooks; ++i) {
@@ -161,6 +163,14 @@ int sos_image_glyphs_install(uint8_t *image, uint64_t size, const char *build_ke
     snprintf(message, message_size, "Menu glyph hooks installed at image+0x%x%s", site->hooks[0].method,
              hooks > SOS_GLYPH_HOOK_TEXT_ATLAS ? " and the text atlas" : "");
     return 1;
+}
+
+int sos_image_glyphs_install(uint8_t *image, uint64_t size, const char *build_key, int style, uint8_t *stubs, size_t stubs_capacity,
+                             char *message, size_t message_size) {
+    const int installed = sos_image_glyphs_install_site(image, size, sos_image_glyphs_site(build_key), style, stubs, stubs_capacity, message, message_size);
+    const size_t used = strlen(message);
+    if (!installed && used < message_size) snprintf(message + used, message_size - used, " in %s", build_key ? build_key : "this build");
+    return installed;
 }
 
 typedef struct {

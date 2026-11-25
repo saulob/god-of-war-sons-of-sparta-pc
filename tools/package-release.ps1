@@ -8,6 +8,8 @@
     3. Ubuntu 20.04 (glibc 2.31) WSL Linux Release build, headless tests, and AppImage packaging
        (tools/package-release-linux.sh)
     4. SHA-256 verification of all dist\ artifacts and local release notes generation
+  Fails closed: when the test gate or a packaging step fails, nothing that looks like a release stays in dist\ (the artifacts of
+  the failed run are moved to build\package-failed\), and no package is built from a tree that failed the gate.
   Never publishes, tags, pushes, or launches the game or launcher.
 #>
 [CmdletBinding()]
@@ -46,6 +48,20 @@ $winAsset = "SonsOfSpartaPC-v$version-windows-x64.zip"
 $linAsset = "SonsOfSpartaPC-v$version-x86_64.AppImage"
 $notesOut = Join-Path $distDir "release-notes-v$version.md"
 
+# Release artifacts of this version: the packages, their checksums, the notes and the debug symbols that go with them.
+$artifacts = @($notesOut, (Join-Path $distDir $winAsset), (Join-Path $distDir "$winAsset.sha256"), (Join-Path $distDir $linAsset),
+    (Join-Path $distDir "$linAsset.sha256"), (Join-Path $distDir "SonsOfSpartaPC-v$version-windows-x64-symbols"), (Join-Path $distDir "SonsOfSpartaPC-v$version-x86_64-symbols"))
+
+# A failed run takes its artifacts out of dist\, so nothing in it can be mistaken for a release.
+function Move-ArtifactsOutOfDist {
+    $existing = @($artifacts | Where-Object { Test-Path -LiteralPath $_ })
+    if ($existing.Count -eq 0) { return }
+    $folder = Join-Path $root ('build\package-failed\v{0}-{1}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    foreach ($path in $existing) { Move-Item -LiteralPath $path -Destination $folder -Force }
+    Write-Host "  The artifacts of this failed run are not releases; they were moved out of dist to $folder" -ForegroundColor Yellow
+}
+
 # A failed run must not leave an older build behind under this version's name.
 $stale = @($notesOut)
 if (-not $SkipWindows) { $stale += (Join-Path $distDir $winAsset), (Join-Path $distDir "$winAsset.sha256") }
@@ -58,13 +74,16 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) { $failures.Add("Windows tools\test.ps1 failed (exit $LASTEXITCODE)") }
 }
 
-if (-not $SkipWindows) {
+$packaging = $failures.Count -eq 0
+if (-not $packaging) { Write-Host '  No package is built: the test gate failed.' -ForegroundColor Yellow }
+
+if (-not $SkipWindows -and $packaging) {
     Write-Step "Step 2: Windows Release build & ZIP packaging (v$version)"
     & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'package.ps1')
     if ($LASTEXITCODE -ne 0) { $failures.Add("Windows tools\package.ps1 failed (exit $LASTEXITCODE)") }
 }
 
-if (-not $SkipLinux) {
+if (-not $SkipLinux -and $packaging) {
     Write-Step "Step 3: Linux x86_64 Release build, headless tests & AppImage packaging (v$version)"
     $distro = if ($WslDistro) { $WslDistro } else { Find-FocalWslDistro }
     if (-not $distro) {
@@ -81,6 +100,7 @@ $winSha = 'MISSING'
 $linSha = 'MISSING'
 
 foreach ($pair in @(@($winAsset, 'win'), @($linAsset, 'lin'))) {
+    if (-not $packaging) { break }
     $file = Join-Path $distDir $pair[0]
     $shaFile = "$file.sha256"
     if ((Test-Path -LiteralPath $file) -and (Test-Path -LiteralPath $shaFile)) {
@@ -96,7 +116,7 @@ foreach ($pair in @(@($winAsset, 'win'), @($linAsset, 'lin'))) {
 }
 
 $notesTemplate = Join-Path $root 'packaging\release-notes.md'
-if ($failures.Count -eq 0 -and (Test-Path -LiteralPath $notesTemplate)) {
+if ($failures.Count -eq 0 -and $packaging -and (Test-Path -LiteralPath $notesTemplate)) {
     $notes = (Get-Content -LiteralPath $notesTemplate -Raw -Encoding UTF8) `
         -replace '@VERSION@', $version `
         -replace '@WINDOWS_ASSET@', $winAsset `
@@ -109,6 +129,7 @@ if ($failures.Count -eq 0 -and (Test-Path -LiteralPath $notesTemplate)) {
 
 Write-Host ''
 if ($failures.Count -gt 0) {
+    Move-ArtifactsOutOfDist
     Write-Host 'RELEASE NOT PREPARED:' -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
     exit 1

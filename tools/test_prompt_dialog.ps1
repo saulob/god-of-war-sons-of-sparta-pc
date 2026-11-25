@@ -60,7 +60,7 @@ try {
     # mutations need the real boot images (and are skipped with them).
     $dialog = [IO.File]::ReadAllText((Join-Path $launcher 'prompt_dialog.c')).Replace("`r`n", "`n")
     $prompts = [IO.File]::ReadAllText((Join-Path $launcher 'controller_prompts.c')).Replace("`r`n", "`n")
-    $hasBoot = (Test-Path -LiteralPath (Join-Path $root 'build\image\CUSA57767-1.00\boot.bin')) -or (Test-Path -LiteralPath (Join-Path $root 'build\image\v1.00\boot.bin'))
+    $hasBoot = [bool]((Find-BuildBootImage '1.00') -or (Find-BuildBootImage '1.01'))
     $mutations = @(
         @{ File = 'prompt_dialog.c'; Old = '        if (alive(image)) set_glyph(image, confirm);'; New = '        (void)image;'; What = 'the campfire menu prompt no longer receives the Xbox confirm glyph'; Real = $false }
         @{ File = 'prompt_dialog.c'; Old = '    void *const confirm = xbox ? pointer_at(icons, g_dialog.site.xbox_confirm) : NULL;
@@ -103,7 +103,7 @@ try {
     $detected = 0
     foreach ($mutation in $mutations) {
         $index++
-        if ($mutation.Real -and -not $hasBoot) { Write-Host "  [skip] mutation needs the real boot image: $($mutation.What)"; continue }
+        if ($mutation.Real -and -not $hasBoot) { Write-Host "  [data] DATA UNAVAILABLE: mutation needs a real boot image: $($mutation.What)"; continue }
         $folder = Join-Path $temp "mutation$index"
         New-Item -ItemType Directory -Force -Path $folder | Out-Null
         $workspace = Copy-ToWorkspace $folder (Join-Path $launcher $mutation.File) $mutation.File

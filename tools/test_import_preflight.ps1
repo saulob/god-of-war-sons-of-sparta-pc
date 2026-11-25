@@ -1,6 +1,6 @@
-# Headless import preflight for both prepared builds: every PRX import table and PLT/GOT call site is checked
-# against the real NID mappings and resolver tables. SaveData.prx may not leave a called import without a resolver.
-# No game, launcher, GPU or window is started.
+# Headless import preflight for the builds whose modules are on this machine (prepared folder or extracted layers): every PRX
+# import table and PLT/GOT call site is checked against the real NID mappings and resolver tables. SaveData.prx may not leave a
+# called import without a resolver. A build without modules is reported as NOT INSTALLED. No game, launcher, GPU or window is started.
 [CmdletBinding()]
 param()
 
@@ -27,10 +27,10 @@ function Run-Preflight([string[]]$Arguments) {
 try {
     $saveReport = Join-Path $temp 'savedata.txt'
     $save = Run-Preflight @('--check', '--report', $saveReport)
-    ($save.Text -split "`r?`n") | Where-Object { $_ -match 'CALLED IMPORTS|KNOWN OPTIONAL|SaveData\.prx|REQUIRED NID|Import preflight' } |
+    ($save.Text -split "`r?`n") | Where-Object { $_ -match 'CALLED IMPORTS|KNOWN OPTIONAL|SaveData\.prx|REQUIRED NID|Import preflight|^EVIDENCE\|' } |
         ForEach-Object { Write-Host $_ }
     if ($save.Code -eq 0 -and $save.Text -match 'CALLED IMPORTS WITH NO RESOLVER: none') {
-        Write-Host '  [ok]   SaveData.prx has no called import without a resolver in 1.00 and 1.01'
+        Write-Host '  [ok]   SaveData.prx has no called import without a resolver in the builds whose modules are here'
     } else {
         Write-Host "  [fail] SaveData.prx has a called import without a resolver (exit $($save.Code))"
         $result = 1
@@ -47,11 +47,13 @@ try {
     $all = Run-Preflight @('--all', '--check', '--report', $allReport)
     if ($all.Code -eq 0 -and (Test-Path $allReport)) {
         $rows = @(Get-Content -LiteralPath $allReport | Where-Object { $_ -match 'CUSA57767-1\.0[01]\s+.*total=' })
-        Write-Host ("  [ok]   full inventory scanned ({0} module rows, both builds)" -f $rows.Count)
-        if ($rows.Count -lt 20) {
-            Write-Host '  [fail] the full inventory did not cover the prepared modules'
+        $scanned = @($all.Text -split "`r?`n" | Where-Object { $_ -match '^EVIDENCE\|content\|' -and $_ -notmatch '\|NOT INSTALLED\|' }).Count
+        Write-Host ("  [ok]   full inventory scanned ({0} module rows, {1} build(s) with modules)" -f $rows.Count, $scanned)
+        if ($rows.Count -lt 20 * $scanned) {
+            Write-Host '  [fail] the full inventory did not cover the modules of every build that has them'
             $result = 1
         }
+        $all.Text -split "`r?`n" | Where-Object { $_ -match '^EVIDENCE\|' } | ForEach-Object { Write-Host $_ }
     } else {
         Write-Host "  [fail] the full import inventory failed (exit $($all.Code))"
         $result = 1

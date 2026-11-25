@@ -43,8 +43,7 @@ try {
     & $exe
     $result = $LASTEXITCODE
 
-    $hasGame = (Test-Path -LiteralPath (Join-Path $root 'game\prepared\CUSA57767-1.00\Media\StreamingAssets\aa\PS4\0342107720d621839faadc2c6c3deb69.bundle')) -or
-        (Test-Path -LiteralPath (Join-Path $root 'game\prepared\v1.00\Media\StreamingAssets\aa\PS4\0342107720d621839faadc2c6c3deb69.bundle'))
+    $hasGame = [bool](Find-BuildGameFile '1.00' 'Media\StreamingAssets\aa\PS4\0342107720d621839faadc2c6c3deb69.bundle')
 
     # Mutated copies: each must make the test fail. Data mutations run the bundle tests alone, which need the game's files.
     $mutations = @(
@@ -79,7 +78,7 @@ try {
     $detected = 0
     foreach ($mutation in $mutations) {
         $index++
-        if (-not $hasGame) { Write-Host "  [skip] mutation needs the game's icon files: $($mutation.What)"; continue }
+        if (-not $hasGame) { Write-Host "  [data] DATA UNAVAILABLE: mutation needs the game's icon files: $($mutation.What)"; continue }
         $workspace = New-Workspace "mutation$index"
         Edit-WorkspaceText (Join-Path $workspace $mutation.File) $mutation.Old $mutation.New
         $mutated = Join-Path $workspace 'test.exe'
@@ -98,7 +97,7 @@ try {
     )
     foreach ($mutation in $textMutations) {
         $index++
-        if (-not $hasGame) { Write-Host "  [skip] mutation needs the game's icon files: $($mutation.What)"; continue }
+        if (-not $hasGame) { Write-Host "  [data] DATA UNAVAILABLE: mutation needs the game's icon files: $($mutation.What)"; continue }
         $fake = Join-Path $temp "tree$index"
         foreach ($file in @('src\loader.c', 'src\runtime_file.c', 'launcher\launcher.cpp', 'launcher\controller_icons.cpp', 'launcher\icon_bundle.cpp')) { [void](Copy-ToWorkspace $fake (Join-Path $root $file) $file) }
         Edit-WorkspaceText (Join-Path $fake $mutation.File) $mutation.Old $mutation.New

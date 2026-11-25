@@ -16,7 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import prompt_assets_check as pac  # noqa: E402
-from il2cpp_index import metadata_path, open_build, relative_calls  # noqa: E402
+from il2cpp_index import open_reported, relative_calls  # noqa: E402
+import build_evidence as evidence  # noqa: E402
 
 SEQUENCE = "MenuSystem.PitModeInputSequence"
 COROUTINE = "<Coroutine_SubscribeToInputEvents>d__15"
@@ -44,6 +45,10 @@ def site_table():
 def scene_ranges():
     text = (ROOT / "src/sos_pit_unlock.c").read_text()
     return [(int(a), int(b)) for a, b in re.findall(r"\{(\d+), (\d+)\}", re.search(r"kScenes\[\] = \{(.*?)\};", text).group(1))]
+
+
+def check_table(version, size, gate, invoke):
+    check(13 <= gate and gate + 2 <= size and 0 < invoke < size and invoke != gate, f"the site table keeps the gate and UnityEvent.Invoke of {version} inside its {size} byte image")
 
 
 def methods(index, type_name, method_name):
@@ -163,7 +168,10 @@ def check_scenes(media):
     expected = {"PitMode", "PitofAgonies_Lobby", "PitofAgonies_PitStop", "PitofAgonies_Score"} | {f"PitofAgonies_BossRoom{n}" for n in range(1, 6)} \
         | {f"PitofAgonies_Room{n}" for n in range(1, 19)}
     check(expected <= base, "the lobby, rooms, boss rooms, stop, score and run scenes are in the build")
-    check(all((media / f"level{i}").stat().st_size > 1000 and (media / f"sharedassets{i}.assets").is_file() for i in pit), "every Pit scene is on disk")
+    on_disk = all((media / f"level{i}").is_file() and (media / f"sharedassets{i}.assets").is_file() for i in pit)
+    if on_disk:
+        check(all((media / f"level{i}").stat().st_size > 1000 for i in pit), "every Pit scene is on disk")
+    return on_disk
 
 
 def check_wiring():
@@ -186,18 +194,23 @@ def main():
     table = site_table()
     check_wiring()
     check(set(table) == {"1.00", "1.01"}, "the site table covers CUSA57767 1.00 and 1.01 only")
+    ranges = scene_ranges()
+    check(all(a <= b for a, b in ranges) and all(ranges[i][1] < ranges[i + 1][0] for i in range(len(ranges) - 1)), "the required Pit scene ranges are ordered and disjoint")
     for version in sorted(table):
         print("CUSA57767-" + version)
-        index = open_build(version)
+        check_table(version, *table[version])
+        index = open_reported(version, "the title menu check and the Pit scenes")
         if index is None:
-            print("  [skip] not installed: the game code and scenes were not read")
             continue
         index.all_method_names()
         check_code(index, *table[version])
-        media = metadata_path(version).parent.parent
-        for level in ("level3", "level8"):
-            check_menu(media, level)
-        check_scenes(media)
+        media = evidence.media(version)
+        complete = all((media / f"level{n}").is_file() for n in (3, 8))
+        if complete:
+            for level in ("level3", "level8"):
+                check_menu(media, level)
+            complete = check_scenes(media)
+        evidence.report_content(version, "the title menu scenes and the Pit scenes", complete)
     print("FAILED" if failures else "PASSED")
     return 1 if failures else 0
 

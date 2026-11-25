@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "build_images.h"
 #include "controller_prompts.h"
 #include "image_glyphs.h"
 #include "prompt_dialog.h"
@@ -494,6 +495,156 @@ void TestStub(const std::string& name, const Image& image, const Image& original
     Check(depth == 0 && atCall % 16 == 8, name + ": the stub keeps the stack balanced and aligned at the call");
 }
 
+// ---- the contract of a build, without its game code -------------------------------------------------------------------------
+
+uint64_t Fnv(uint64_t hash, const uint8_t* data, size_t size) {
+    for (size_t i = 0; i < size; ++i) hash = (hash ^ data[i]) * UINT64_C(0x100000001b3);
+    return hash;
+}
+
+struct Synthetic {
+    SosImageGlyphSite site;
+    Image image;
+    uint64_t size = 0;
+};
+
+// The hooked methods and the functions the handlers call of `real`, with its lengths and first bytes, at offsets packed into a small image;
+// the hashes are those of the bytes laid, which are not the game's.
+Synthetic MakeSynthetic(const SosImageGlyphSite& real) {
+    Synthetic s{real, {}, 0};
+    uint64_t at = 0x1000;
+    uint64_t seed = 0x2545f4914f6cdd1dull;
+    const auto place = [&](uint32_t length) {
+        const uint64_t begin = at;
+        at += (length + 31) & ~uint64_t{15};
+        return begin;
+    };
+    for (SosGlyphHook& hook : s.site.hooks) hook.method = static_cast<uint32_t>(place(hook.length));
+    for (SosGlyphRange& range : s.site.services) {
+        const uint32_t length = range.end - range.begin;
+        range.begin = static_cast<uint32_t>(place(length));
+        range.end = range.begin + length;
+    }
+    s.size = at + 0x1000;
+    s.image.assign(s.size + SOS_IMAGE_GLYPHS_STUB_BYTES, 0);
+    const auto fill = [&](uint64_t begin, uint64_t end) {
+        for (uint64_t i = begin; i < end; ++i) {
+            seed ^= seed << 13, seed ^= seed >> 7, seed ^= seed << 17;
+            s.image[i] = static_cast<uint8_t>(seed);
+        }
+    };
+    for (SosGlyphHook& hook : s.site.hooks) {
+        fill(hook.method, hook.method + hook.length);
+        std::memcpy(&s.image[hook.method], hook.entry, SOS_GLYPH_HOOK_STOLEN);
+        hook.hash = Fnv(UINT64_C(0xcbf29ce484222325), &s.image[hook.method], hook.length);
+    }
+    uint64_t services = UINT64_C(0xcbf29ce484222325);
+    for (const SosGlyphRange& range : s.site.services) {
+        fill(range.begin, range.end);
+        services = Fnv(services, &s.image[range.begin], range.end - range.begin);
+    }
+    s.site.services_hash = services;
+    return s;
+}
+
+void TestContract(const char* key) {
+    const std::string name = std::string(key) + " contract";
+    const SosImageGlyphSite* table = sos_image_glyphs_site(key);
+    Check(table != nullptr, name + ": the build has a site");
+    if (!table) return;
+    const SosPitUnlockSite* pit = sos_pit_unlock_site(key);
+
+    std::vector<std::pair<uint64_t, uint64_t>> spans;
+    for (const SosGlyphHook& hook : table->hooks) {
+        Check(hook.length >= SOS_GLYPH_HOOK_STOLEN && hook.entry[0] == 0x55, name + ": a hooked method holds its stolen bytes and starts with push rbp");
+        spans.push_back({hook.method, uint64_t{hook.method} + hook.length});
+    }
+    for (const SosGlyphRange& range : table->services) {
+        Check(range.begin < range.end, name + ": a called function has a range");
+        spans.push_back({range.begin, range.end});
+    }
+    std::sort(spans.begin(), spans.end());
+    bool disjoint = true, inside = pit != nullptr;
+    for (size_t i = 0; i < spans.size(); ++i) {
+        if (i && spans[i].first < spans[i - 1].second) disjoint = false;
+        if (pit && spans[i].second > pit->image_size) inside = false;
+    }
+    Check(disjoint, name + ": no hooked method or called function overlaps another");
+    Check(inside, name + ": every hooked method and called function lies inside the image");
+
+    Synthetic synthetic = MakeSynthetic(*table);
+    const SosImageGlyphSite& site = synthetic.site;
+    const Image original = synthetic.image;
+    const uint64_t size = synthetic.size;
+    const void* const handlers[] = {reinterpret_cast<const void*>(sos_image_glyphs_on_enable), reinterpret_cast<const void*>(sos_image_glyphs_on_disable),
+                                    reinterpret_cast<const void*>(sos_image_glyphs_on_set_sprite), reinterpret_cast<const void*>(sos_prompt_hook_handler)};
+    const char* why = "";
+    char message[240];
+    for (const int style : {SOS_PROMPTS_XBOX, SOS_PROMPTS_AUTOMATIC})
+        Check(sos_image_glyphs_verify_site(original.data(), size, &site, style, &why), name + ": the laid hooks verify");
+    Check(!sos_image_glyphs_verify_site(original.data(), size, &site, SOS_PROMPTS_PLAYSTATION, &why), name + ": PlayStation prompts have no hooks");
+    Check(!sos_image_glyphs_verify_site(original.data(), size, table, SOS_PROMPTS_AUTOMATIC, &why), name + ": the game's fingerprints do not match other bytes");
+
+    const auto refuses = [&](Image copy, uint64_t copy_size, const SosImageGlyphSite* with, int style, size_t capacity, uint64_t stub_at, const std::string& what) {
+        const Image before = copy;
+        Check(sos_image_glyphs_install_site(copy.data(), copy_size, with, style, copy.data() + stub_at, capacity, message, sizeof(message)) == 0 && copy == before,
+              name + ": " + what + " writes nothing");
+    };
+    refuses(original, size, nullptr, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "an unknown build");
+    refuses(original, size, &site, SOS_PROMPTS_PLAYSTATION, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "the PlayStation style");
+    refuses(original, size, &site, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES - 1, size, "a small stub area");
+    refuses(original, site.hooks[0].method + 4, &site, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "a truncated image");
+    {
+        Image copy = original;
+        Check(sos_image_glyphs_install_site(copy.data(), size, &site, SOS_PROMPTS_AUTOMATIC, copy.data() + size + (uint64_t{1} << 32), SOS_IMAGE_GLYPHS_STUB_BYTES,
+                                            message, sizeof(message)) == 0 && copy == original, name + ": stubs out of reach write nothing");
+    }
+    for (const SosGlyphHook& hook : site.hooks)
+        for (const uint32_t at : {0u, 5u, 6u, hook.length / 2, hook.length - 1}) {
+            Image bad = original;
+            bad[hook.method + at] ^= 0x01;
+            refuses(bad, size, &site, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "one changed hooked method (no partial install)");
+        }
+    for (const SosGlyphRange& range : site.services) {
+        Image bad = original;
+        bad[range.begin + 8] ^= 0x01;
+        refuses(bad, size, &site, SOS_PROMPTS_XBOX, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "a changed function the handlers call");
+    }
+    for (int i = 0; i < SOS_GLYPH_HOOKS; ++i) {
+        SosImageGlyphSite bad = site;
+        bad.hooks[i].hash ^= 1;
+        refuses(original, size, &bad, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "a hook fingerprint that differs");
+        bad = site;
+        bad.hooks[i].entry[2] ^= 1;
+        refuses(original, size, &bad, SOS_PROMPTS_AUTOMATIC, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "first bytes that differ");
+    }
+    {
+        SosImageGlyphSite bad = site;
+        bad.services_hash ^= 1;
+        refuses(original, size, &bad, SOS_PROMPTS_XBOX, SOS_IMAGE_GLYPHS_STUB_BYTES, size, "a called-function fingerprint that differs");
+    }
+
+    for (const int style : {SOS_PROMPTS_XBOX, SOS_PROMPTS_AUTOMATIC}) {
+        const bool automatic = style == SOS_PROMPTS_AUTOMATIC;
+        const std::string label = name + (automatic ? " Automatic" : " Xbox");
+        const int hooks = automatic ? SOS_GLYPH_HOOKS : SOS_GLYPH_HOOK_TEXT_ATLAS;
+        Image image = original;
+        uint8_t* stubs = image.data() + size;
+        Check(sos_image_glyphs_install_site(image.data(), size, &site, style, stubs, SOS_IMAGE_GLYPHS_STUB_BYTES, message, sizeof(message)) == 1, label + ": the hooks install");
+        std::set<uint64_t> allowed;
+        for (int i = 0; i < hooks; ++i) {
+            for (int k = 0; k < SOS_GLYPH_HOOK_STOLEN; ++k) allowed.insert(site.hooks[i].method + k);
+            TestStub(label + " hook " + std::to_string(i), image, original, site.hooks[i], stubs + i * SOS_GLYPH_STUB_SLOT, handlers[i]);
+        }
+        const std::set<uint64_t> changed = Changed(original, image, size);
+        Check(std::includes(allowed.begin(), allowed.end(), changed.begin(), changed.end()) && !changed.empty(), label + ": only the hooked entries change");
+        const Image once = image;
+        Check(sos_image_glyphs_install_site(image.data(), size, &site, style, stubs, SOS_IMAGE_GLYPHS_STUB_BYTES, message, sizeof(message)) == 0 && image == once,
+              label + ": a second install writes nothing");
+    }
+    sos_test::ReportContract(key, "the hooks and called functions of its site table on a small image: every refusal, each style, stubs, second install");
+}
+
 void TestReal(const char* key, const fs::path& boot) {
     const std::string name = key;
     constexpr uint64_t kOther = SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
@@ -623,19 +774,14 @@ int main() {
         TestLifetime(key);
         TestLateIcons(key);
         TestTwoPads(key);
+        TestContract(key);
     }
     Check(sos_image_glyphs_site(nullptr) == nullptr && sos_image_glyphs_site("CUSA57767-9.99") == nullptr, "other builds have no site");
     if (!std::getenv("SOS_TEST_FAST")) {
         const fs::path root = SOS_SOURCE_DIR;
         for (const char* key : kBuilds) {
-            const std::string version = std::string(key).substr(10);
-            fs::path boot;
-            for (const std::string& folder : {std::string(key), "v" + version}) {
-                const fs::path candidate = root / "build" / "image" / folder / "boot.bin";
-                if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-            }
-            if (boot.empty()) std::printf("  [skip] %s: no boot image\n", key);
-            else TestReal(key, boot);
+            const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the glyph hooks");
+            if (boot.found()) TestReal(key, boot.path);
         }
     }
     std::printf("image glyph tests: %d checks, %d failures\n", g_checks, g_failures);

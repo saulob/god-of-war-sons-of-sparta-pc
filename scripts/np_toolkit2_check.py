@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_evidence as evidence  # noqa: E402
 import ps4_module as pm  # noqa: E402
 
 LIBRARY = 'libSceNpToolkit2'
@@ -41,17 +42,18 @@ def runtime_symbols():
 def main():
     bound, unbound, startup = parse_table()
     symbols = runtime_symbols()
-    paths = sorted(glob.glob(str(ROOT / 'game' / 'prepared' / '*' / 'Media' / 'Plugins' / 'UnityNpToolkit2.prx')))
-    if not paths:
-        print('  [skip] no prepared UnityNpToolkit2.prx found')
-        return 0
+    plugins = {}
+    for version in evidence.versions():
+        evidence.report_content(version, 'its UnityNpToolkit2.prx')
+        path = evidence.game_file(version, 'Media/Plugins/UnityNpToolkit2.prx')
+        if path:
+            plugins[evidence.key_of(version)] = path
     failures = 0
-    for path in paths:
-        module = pm.read_module(Path(path))
+    for label, path in plugins.items():
+        module = pm.read_module(path)
         imports = {s['identity'][0] for s in module['symbols']
                    if s['identity'] and s['section'] == 0 and s['identity'][1][0] == LIBRARY}
         external = {s['identity'][0] for s in module['symbols'] if s['identity'] and s['section'] == 0 and s['identity'][1][0] != LIBRARY}
-        label = Path(path).parents[2].name
         missing = sorted(imports - set(bound) - set(unbound))
         stale = sorted((set(bound) | set(unbound)) - imports)
         startup_unbound = sorted(n for n in startup if n not in bound)

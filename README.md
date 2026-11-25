@@ -145,6 +145,10 @@ Adding the port to Steam does not require bundling or moving original game files
 .\tools\package-release.ps1      # local Windows + Linux release build & verification (never publishes)
 ```
 
+`tools\test.ps1` checks both supported builds from the sources and needs no game version installed. A boot image
+(`build\image`, or a research copy in `build\research\image`) or game folder on the machine only adds evidence; its
+absence is reported as `DATA UNAVAILABLE` in the run summary, never as a pass or a failure.
+
 ### Linux (Ubuntu 20.04 / x86_64)
 
 ```sh

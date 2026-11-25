@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import build_evidence as evidence  # noqa: E402
 import prompt_assets_check as assets  # noqa: E402
 import ps4_module as pm  # noqa: E402
 
@@ -39,18 +40,16 @@ def image_of(path):
 
 
 def main():
-    builds = sorted((ROOT / "game" / "prepared").glob("CUSA*/eboot.bin"))
-    if not builds:
-        print("  [skip] no prepared eboot.bin found")
-        return 0
-    for eboot in builds:
-        name = eboot.parent.name
-        print(name)
+    for version in evidence.versions():
+        print(evidence.key_of(version))
+        eboot = evidence.eboot(version)
+        evidence.report_content(version, "the flip rate site and the fixed physics step")
+        if eboot is None:
+            continue
         sites = [m.start() for m in re.finditer(re.escape(SET_FLIP_RATE_FROM_INTERVAL), image_of(eboot))]
         check(len(sites) == 1, "the sync interval sets the flip rate to (interval != 1): one site" + (f" at 0x{sites[0]:x}" if sites else ""))
-        managers = Path(eboot.parent / "Media" / "globalgamemanagers")
-        if not managers.is_file():
-            print("  [skip] globalgamemanagers is not installed")
+        managers = evidence.game_file(version, "Media/globalgamemanagers")
+        if managers is None:
             continue
         data, objects = assets.parse(managers)
         steps = [struct.unpack_from("<4f", data, offset) for offset, _size, class_id in objects.values()

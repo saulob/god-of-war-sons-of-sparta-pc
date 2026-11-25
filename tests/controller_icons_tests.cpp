@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "build_images.h"
 #include "controller_icons.h"
 #include "icon_bundle.h"
 
@@ -965,13 +966,15 @@ int main() {
     TestRedirection(root);
     Fixture f;
     f.source.clear();
-    for (const char* folder : {"CUSA57767-1.00", "v1.00"}) {
-        const fs::path media = root / "game" / "prepared" / folder / "Media";
+    for (const char* folder : {"prepared/CUSA57767-1.00", "prepared/v1.00", "extracted/v1.00"}) {
+        const fs::path media = sos_test::EvidenceRoot(root) / "game" / folder / "Media";
         if (f.source.empty() && fs::is_regular_file(media / kIconsAssetsName) && fs::is_regular_file(media / kIconsStreamName) && fs::is_regular_file(media / kIconsBundleFolder / kIconsBundleName)) f.source = media;
     }
     if (f.source.empty()) {
-        std::printf("  [skip] CUSA57767 1.00: the game's resources.assets is not installed, the assets were not read\n");
+        sos_test::Report("content", "CUSA57767-1.00", "NOT INSTALLED", "no game folder; not read: the game's resources.assets and icon bundle");
     } else {
+        sos_test::Report("content", "CUSA57767-1.00", f.source.generic_string().find("/prepared/") != std::string::npos ? "AVAILABLE" : "EXTRACTED LAYERS",
+                         f.source.lexically_relative(sos_test::EvidenceRoot(root)).generic_string());
         f.root = TempRoot();
         f.original = {f.source / kIconsAssetsName, f.source / kIconsStreamName, f.source / kIconsBundleFolder / kIconsBundleName};
         const IconFiles out = Folder(f.root / "out");
@@ -996,7 +999,7 @@ int main() {
         std::error_code error;
         fs::remove_all(f.root, error);
     }
-    const fs::path other = root / "game" / "prepared" / "CUSA57767-1.01" / "Media";
+    const fs::path other = sos_test::EvidenceRoot(root) / "game" / "prepared" / "CUSA57767-1.01" / "Media";
     if (fs::is_regular_file(other / kIconsAssetsName) && fs::is_regular_file(other / kIconsStreamName)) {
         const fs::path work = TempRoot();
         const fs::path cache = work / "cache";
@@ -1007,8 +1010,9 @@ int main() {
         Check(plan.kind == IconPlanKind::kUsePrepared && HasControllerIcons(plan.files), "1.01: the Xbox directions and interaction icons are prepared from its own data");
         std::error_code error;
         fs::remove_all(work, error);
+        sos_test::Report("content", "CUSA57767-1.01", "AVAILABLE", "game/prepared");
     } else {
-        std::printf("  [skip] CUSA57767 1.01: its resources.assets is not installed; asset preparation is not checked for it and refuses unknown data\n");
+        sos_test::Report("content", "CUSA57767-1.01", "NOT INSTALLED", "no prepared game folder; not read: its resources.assets and the asset preparation for it");
     }
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

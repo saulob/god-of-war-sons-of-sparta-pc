@@ -15,8 +15,14 @@
 
   Each group is BUILD-SPECIFIC or SHARED HOST. A build-specific group must report both supported builds (the versions of
   scripts\game_profiles.py, listed by scripts\build_parity_check.py --builds) in its output and must not skip a part for one
-  of them; the first group checks every build-specific table against that inventory and the prepared builds. To cover a new
-  build-specific feature: register it in scripts\build_parity_check.py, then add its test as a 'build' group here.
+  of them; the first group checks every build-specific table against that inventory. To cover a new build-specific feature:
+  register it in scripts\build_parity_check.py, then add its test as a 'build' group here.
+
+  A supported build is a contract of the port, checked on every run whatever is installed here. Local game data is extra
+  evidence: a real boot image (build\image, then build\research\image), the prepared game folder and the extracted package
+  layers are only read, and a group that finds none of them for a build reports it as EVIDENCE lines instead of failing or
+  skipping. The last block of the run sums it up for each build: the contract (PASS or FAIL), the real image (PASS, FAIL or
+  DATA UNAVAILABLE) and the prepared content (AVAILABLE or NOT INSTALLED). DATA UNAVAILABLE is neither a pass nor a failure.
 .PARAMETER TimeoutSeconds
   Fails a group that runs longer than this.
 .PARAMETER Detail
@@ -34,6 +40,10 @@ $shell = (Get-Process -Id $PID).Path
 $script:GroupChecks = [long]0
 $script:SupportedBuilds = $null
 $script:Skipped = New-Object System.Collections.Generic.List[string]
+$script:DataUnavailable = New-Object System.Collections.Generic.List[string]
+$script:EvidenceRecords = New-Object System.Collections.Generic.List[object]
+$script:Outcomes = New-Object System.Collections.Generic.List[object]
+$script:CurrentStep = $null
 
 function Result([string]$State, [string]$Reason = '') { [pscustomobject]@{ State = $State; Reason = $Reason } }
 
@@ -127,6 +137,19 @@ function Test-BuildCoverage($Lines) {
     return $null
 }
 
+# The EVIDENCE lines of a group (what local game data it read, per build) and its DATA UNAVAILABLE notes, kept for the final summary.
+function Add-GroupEvidence($Lines, [string]$Scope, [bool]$Passed) {
+    $name = if ($script:CurrentStep) { $script:CurrentStep.Name } else { 'group' }
+    foreach ($line in $Lines) {
+        $record = ConvertFrom-EvidenceLine $line
+        if ($record) {
+            $script:EvidenceRecords.Add([pscustomobject]@{ Group = $name; Scope = $Scope; Passed = $Passed; Kind = $record.Kind; Build = $record.Build; State = $record.State; Detail = $record.Detail })
+        } elseif ($line -match '^\s*\[data\]') {
+            $script:DataUnavailable.Add(('{0}: {1}' -f $name, ($line.Trim() -replace '^\[data\]\s*', '')))
+        }
+    }
+}
+
 # The outcome of a finished group: exit code, failure lines under exit code 0, and the build coverage of build groups.
 function Get-GroupResult($Run, [string]$Scope, [string]$Label) {
     $lines = @($Run.Lines)
@@ -137,6 +160,7 @@ function Get-GroupResult($Run, [string]$Scope, [string]$Label) {
     if ($Run.Code -ne 0) { $problem = "$Label exited with $($Run.Code)" }
     elseif (@($lines | Where-Object { $_ -match '^\s*(\[fail\s*\]|FAIL|FAILED)(\s|:|$)' }).Count) { $problem = "$Label exited with 0 but reported a failure" }
     elseif ($Scope -eq 'build') { $problem = Test-BuildCoverage $lines }
+    Add-GroupEvidence $lines $Scope (-not $problem)
     if ($problem) {
         $lines | ForEach-Object { Write-Host "    $_" }
         return Result 'FAIL' $problem
@@ -206,7 +230,9 @@ function Invoke-GitWhitespace {
 $parity = Join-Path $root 'scripts\build_parity_check.py'
 
 $steps = @(
-    @{ Name = 'build-parity'; Scope = 'build'; Title = 'Build parity: every build-specific table (identity, Skip Intro sites, Xbox prompt sites and hook, dialog glyph sites, resolution sites) covers CUSA57767 1.00 and 1.01 and nothing else, the builds agree where they must, the prepared eboots and boot images are the supported builds, and the AvPlayer caller (InitEx, 6 video buffers, auto start off, file callbacks, SetAvSyncMode None) is equivalent in both'; Block = { Invoke-PythonCheck @($parity) 'build' } },
+    @{ Name = 'build-parity'; Scope = 'build'; Title = 'Build parity: every build-specific table (identity, Skip Intro sites, Xbox prompt sites and hook, dialog glyph sites, resolution sites) covers CUSA57767 1.00 and 1.01 and nothing else, the builds agree where they must, any local eboot or boot image is the supported build it is for, the builds register, agree on image size and fingerprint and share their base layer, and the AvPlayer caller (InitEx, 6 video buffers, auto start off, file callbacks, SetAvSyncMode None) is equivalent in both'; Block = { Invoke-PythonCheck @($parity) 'build' } },
+    @{ Name = 'build-contract'; Scope = 'build'; Title = 'Build contract of CUSA57767 1.00 and 1.01 from the source tables alone (registration, fingerprints, every feature in every build, patched and verified ranges inside the image and shared by no two features, unknown builds refused) and mutated tables that must fail'; Block = { Invoke-Helper 'test_build_contract.ps1' 'build' } },
+    @{ Name = 'build-evidence'; Scope = 'host'; Title = 'Local build evidence: boot image lookup (build\image, then build\research\image), game folders and extracted layers, and the gates and the run summary with only 1.00, only 1.01, both, a research image alone, no prepared folder and no data at all (temporary synthetic folders, no game data)'; Block = { Invoke-Helper 'test_build_evidence.ps1' 'host' } },
     @{ Name = 'build-parity-selftest'; Scope = 'host'; Title = 'Build parity gate self-test: it fails for a build missing from a table, an unknown build, a changed patch byte, fingerprint or layout, a test that names one build, and each AvPlayer setup change (mutated copies of the data, nothing written)'; Block = { Invoke-PythonCheck @($parity, '--self-test') 'host' } },
     @{ Name = 'supported-builds'; Scope = 'host'; Title = 'Supported builds: CUSA57767 1.00 alone and the optional 1.01 update are discovered, selected, installed and removed independently, with the expected package layers and shared files'; Block = { Invoke-Helper 'test_supported_builds.ps1' 'host' } },
     @{ Name = 'graphics-imports'; Scope = 'build'; Title = 'Graphics imports (GnmDriver, VideoOut, Razor) of the eboot and every loaded module in CUSA57767 1.00 and 1.01: each has a named host function, no stub that returns success or aborts has a guest caller, and class and caller presence match scripts\graphics_imports.json'; Block = { Invoke-PythonCheck @((Join-Path $root 'scripts\graphics_import_check.py')) 'build' } },
@@ -276,6 +302,7 @@ $steps = @(
     @{ Name = 'crash-dump'; Scope = 'host'; Title = 'Crash dump discovery and diagnostics: same-execution log/dump pairing, runtime_log session-number reservation, MDMP/size/age/type validation, optional attachment, Crash detected state, authoritative Vulkan device-lost vs generic crash classification, bounded VK_EXT_device_fault extraction, privacy scrubbing, and mutated copies that must fail'; Block = { Invoke-Helper 'test_crash_dump.ps1' 'host' } },
     @{ Name = 'crash-report'; Scope = 'host'; Title = 'Bug Report system: the Dragon incident protocol over WebSocket (incident.file/status/read/feedback/dump/dump_end), resumable chunked minidump upload with mid-transfer drop recovery, receipt ownership, status revisions and player feedback, the private Bearer-authenticated admin list/detail/log/dump/status/delete dashboard, My reports history persistence, Worker configuration, and mutated copies that must fail'; Block = { Invoke-Helper 'test_crash_report.ps1' 'host' } },
     @{ Name = 'startup-diagnostics'; Scope = 'host'; Title = 'Startup stability diagnostics: shared-host startup stage progression across configuration, boot image, renderer, Vulkan instance/device, swapchain, modules, guest entry, audio and first present, last-stage crash diagnosis, DeviceLost exit log flush, and mutated copies that must fail'; Block = { Invoke-Helper 'test_startup_diagnostics.ps1' 'host' } },
+    @{ Name = 'package-release'; Scope = 'host'; Title = 'Release packaging failure paths on a copy of package-release.ps1 with stand-ins for the gate and the packager (nothing is built or packaged): a failed gate builds no package, a failed packaging step or checksum leaves nothing that looks like a release in dist, and a successful run still writes the package, its checksum and the notes'; Block = { Invoke-Helper 'test_package_release.ps1' 'host' } },
     @{ Name = 'progress-reporter'; Scope = 'host'; Title = 'Test progress: percentage, bar, durations, ETA, check counts, previous group, timing summary, redirected output and a synthetic long group (synthetic time, no sleeping)'; Block = { Invoke-Helper 'test_progress.ps1' 'host' } },
     @{ Name = 'git-whitespace'; Scope = 'host'; Title = 'git diff --check (staged, unstaged and new files)'; Block = { Invoke-GitWhitespace } }
 )
@@ -297,11 +324,13 @@ try {
     foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name, $environment[$name]) }
     foreach ($step in $steps) {
         $script:GroupChecks = [long]0
+        $script:CurrentStep = $step
         Start-ProgressGroup $script:Progress $step.Name $script:Clock.Elapsed.TotalSeconds
         Write-Step ('[{0}] {1}' -f $(if ($step.Scope -eq 'build') { 'builds' } else { 'host' }), $step.Title)
         try { $result = & $step.Block }
         catch { $result = Result 'FAIL' "the group could not run: $($_.Exception.Message)" }
         Clear-ProgressLine $script:Progress
+        $script:Outcomes.Add([pscustomobject]@{ Name = $step.Name; Scope = $step.Scope; Passed = ($result.State -eq 'PASS') })
         switch ($result.State) {
             'PASS' { Write-Host '    PASS' -ForegroundColor Green }
             'FAIL' { $failed++; Write-Host "    FAIL: $($result.Reason)" -ForegroundColor Red }
@@ -322,6 +351,19 @@ Write-Host ''
 if ($script:Skipped.Count -gt 0) {
     Write-Host "Skipped parts: $($script:Skipped.Count)" -ForegroundColor Yellow
     $script:Skipped | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+}
+if ($script:DataUnavailable.Count -gt 0) {
+    Write-Host "Data unavailable (not a failure): $($script:DataUnavailable.Count)" -ForegroundColor Yellow
+    $script:DataUnavailable | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+}
+$supported = @(Get-SupportedBuilds)
+if ($supported.Count -gt 0) {
+    Write-Host ''
+    $summary = @(Format-BuildEvidenceSummary $supported $script:EvidenceRecords.ToArray() $script:Outcomes.ToArray())
+    foreach ($line in $summary) {
+        $color = if ($line -eq $summary[0]) { 'Cyan' } elseif ($line -match 'FAIL') { 'Red' } elseif ($line -match 'DATA UNAVAILABLE|NOT INSTALLED') { 'Yellow' } elseif ($line -match 'PASS|AVAILABLE') { 'Green' } else { 'Cyan' }
+        Write-Host $line -ForegroundColor $color
+    }
 }
 Write-Host "Failed: $failed"
 if ($failed) { exit 1 }

@@ -30,9 +30,9 @@ $trophySources = (Join-Path $root 'src\trophies').Replace('\', '/')
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the trophy test' }
 
 $env:PATH = "$($tc.Bin);$env:PATH"
-$game = Join-Path $root 'game\prepared\CUSA57767-1.00'
-if (Test-Path -LiteralPath (Join-Path $game 'sce_sys\npbind.dat')) { $env:SOS_TROPHY_GAME = $game }
-else { Write-Host '  [skip] no prepared CUSA57767 1.00: the real trophy pack was not read' }
+$pack = Find-BuildGameFile '1.00' 'sce_sys\npbind.dat'
+Write-GameFileEvidence '1.00' $pack 'the real trophy pack'
+if ($pack) { $env:SOS_TROPHY_GAME = Split-Path -Parent (Split-Path -Parent $pack) }
 & $exe
 $result = $LASTEXITCODE
 Remove-Item -LiteralPath $temp -Recurse -Force

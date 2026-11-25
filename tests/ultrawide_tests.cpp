@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "build_images.h"
 #include "dcp_present.h"
 #include "game_profile.h"
 #include "sos_resolution.h"
@@ -307,20 +308,10 @@ bool ReadImage(const fs::path& boot, std::vector<unsigned char>& bytes) {
 }
 
 void TestRealImages() {
-    int checked = 0;
     for (const sos::GameBuild& build : sos::SupportedBuilds()) {
         std::vector<unsigned char> image;
-        bool found = false;
-        for (const std::string& name : {std::string(build.folder), std::string("v") + build.version}) {
-            const fs::path folder = kRoot / "build" / "image" / name;
-            found = found || (Contains(ReadFile(folder / "image.json"), build.eboot_sha256) && ReadImage(folder / "boot.bin", image));
-        }
-        if (!found) {
-            std::printf("  [fail] %s: boot image not installed\n", build.label);
-            ++g_failures;
-            continue;
-        }
-        ++checked;
+        const sos_test::BootImage boot = sos_test::ReportImage(kRoot, std::string("CUSA57767-") + build.version, "the SetResolution sites");
+        if (!boot.found() || !ReadImage(boot.path, image)) continue;
         const std::string name = build.label;
         bool originals = true;
         for (const SosResolutionSite& site : build.resolution_sites) {
@@ -346,7 +337,6 @@ void TestRealImages() {
         Check(calls_kept, name + ": the opcodes, the window mode and the call are untouched");
         std::printf("  CUSA57767 %s: %zu resolution requests rewritten on the real image\n", build.version, requests.size());
     }
-    Check(checked == 2, "both supported builds were read");
 }
 
 void TestWiring() {

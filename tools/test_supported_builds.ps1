@@ -1,5 +1,7 @@
 # Headless checks for the two independent playable builds: CUSA57767 1.00 alone and the optional 1.01 update.
-# Fixtures are hard links to the real extracted/prepared files; no game, launcher or GUI is started.
+# The selection rules are checked without any game file; the cases that need a real executable use hard links to the extracted
+# packages or the prepared folders that are on this machine, and a build without them is reported as NOT INSTALLED, never as a
+# failure. No game, launcher or GUI is started.
 [CmdletBinding()]
 param()
 
@@ -15,8 +17,17 @@ function Check([bool]$Ok, [string]$Name) {
 }
 
 $fixture = Join-Path $root 'build\test-supported-builds'
-$baseSource = Join-Path $root 'game\extracted\v1.00'
-$updateSource = Join-Path $root 'game\prepared\CUSA57767-1.01'
+$dataRoot = if ($env:SOS_EVIDENCE_ROOT) { $env:SOS_EVIDENCE_ROOT } else { $root }
+
+function Find-Source([string[]]$Candidates) {
+    foreach ($candidate in $Candidates) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'eboot.bin')) { return $candidate }
+    }
+    return $null
+}
+
+$baseSource = Find-Source @((Join-Path $dataRoot 'game\extracted\v1.00'), (Join-Path $dataRoot 'game\prepared\CUSA57767-1.00'))
+$updateSource = Find-Source @((Join-Path $dataRoot 'game\prepared\CUSA57767-1.01'), (Join-Path $dataRoot 'game\extracted\CUSA57767-1.01'))
 $shared = 'eboot.bin', 'sce_discmap.plt', 'sce_sys/param.sfo', 'sce_module/libc.prx', 'sce_module/libSceFios2.prx',
           'Media/Modules/PS4Util.prx', 'Media/Modules/Il2cppUserAssemblies.prx'
 
@@ -63,8 +74,6 @@ function Add-Build([string]$Case, [string]$Folder, [string]$View, [string]$Image
 }
 
 try {
-    if (-not (Test-Path -LiteralPath (Join-Path $baseSource 'eboot.bin'))) { throw "missing $baseSource" }
-    if (-not (Test-Path -LiteralPath (Join-Path $updateSource 'eboot.bin'))) { throw "missing $updateSource" }
     Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $fixture | Out-Null
 
@@ -116,6 +125,32 @@ int main(int argc, char** argv) {
         (Join-Path $root 'launcher\crypto_win.cpp') '-lbcrypt' '-o' $selection
     if ($LASTEXITCODE -ne 0) { throw 'could not compile the build-selection harness' }
 
+    Write-Step 'Case 0: no game file is needed to refuse an unknown executable'
+    $nothing = Case-Root 'case0'
+    New-Item -ItemType Directory -Force -Path (Join-Path $nothing 'prepared'), (Join-Path $nothing 'image') | Out-Null
+    $active = & $selection active (Join-Path $nothing 'prepared') (Join-Path $nothing 'image') 2>&1 | Out-String
+    Check ($LASTEXITCODE -eq 3 -and $active.Trim() -eq 'none') "an empty installation has no active build ($($active.Trim()))"
+    foreach ($folder in 'CUSA57767-1.00', 'CUSA57767-1.01') {
+        $unknown = Join-Path $nothing "prepared\$folder"
+        New-Item -ItemType Directory -Force -Path $unknown | Out-Null
+        Set-Content -LiteralPath (Join-Path $unknown 'eboot.bin') -NoNewline -Value 'not the supported executable'
+        Set-Content -LiteralPath (Join-Path $unknown '.sos_view.json') -NoNewline -Value '{"version":"1.00","scope":"full"}'
+    }
+    $prepared = & $selection prepared (Join-Path $nothing 'prepared') (Join-Path $nothing 'image') 2>&1 | Out-String
+    Check ([string]::IsNullOrWhiteSpace($prepared)) "folders named after the supported builds but holding another executable are not builds ($($prepared.Trim()))"
+    foreach ($folder in 'CUSA57767-1.00', 'CUSA57767-1.01') {
+        $pinned = & $selection pinned (Join-Path $nothing 'prepared') (Join-Path $nothing 'image') $folder 2>&1 | Out-String
+        Check ($LASTEXITCODE -ne 0 -and $pinned -match '^none\|') "$folder cannot be selected with another executable ($($pinned.Trim()))"
+    }
+
+    foreach ($pair in @(@('CUSA57767-1.00', $baseSource), @('CUSA57767-1.01', $updateSource))) {
+        $state = if ($pair[1]) { 'EXTRACTED LAYERS' } else { 'NOT INSTALLED' }
+        if ($pair[1] -and $pair[1] -like (Join-Path $dataRoot 'game\prepared\*')) { $state = 'AVAILABLE' }
+        $detail = if ($pair[1]) { $pair[1].Substring($dataRoot.Length).TrimStart('\').Replace('\', '/') } else { 'no game files; the selection of this build was not run on the real executable' }
+        Write-Host "EVIDENCE|content|$($pair[0])|$state|$detail"
+    }
+
+    if ($baseSource) {
     $builderSource = Join-Path $fixture 'builder.cpp'
     @'
 #include <cstddef>
@@ -145,21 +180,24 @@ int main(int argc, char** argv) {
     $baseImage = Join-Path $fixture 'image-base'
     $updateImage = Join-Path $fixture 'image-update'
     Write-View $baseSource $base '1.00' -Data
-    Write-View $updateSource $update '1.01' -Update -Data
-    Write-View $updateSource $partial '1.01'                 # the current partial view: no scope
-    Write-View $updateSource $lying '1.01' -Data            # a marker that claims full without game data
-    Remove-Item -LiteralPath (Join-Path $lying 'Media\globalgamemanagers.assets') -Force
     & $builder $base $baseImage
     if ($LASTEXITCODE -ne 0) { throw 'could not build the 1.00 fixture image' }
-    & $builder $update $updateImage
-    if ($LASTEXITCODE -ne 0) { throw 'could not build the 1.01 fixture image' }
+    if ($updateSource) {
+        Write-View $updateSource $update '1.01' -Update -Data
+        Write-View $updateSource $partial '1.01'                 # the current partial view: no scope
+        Write-View $updateSource $lying '1.01' -Data            # a marker that claims full without game data
+        Remove-Item -LiteralPath (Join-Path $lying 'Media\globalgamemanagers.assets') -Force
+        & $builder $update $updateImage
+        if ($LASTEXITCODE -ne 0) { throw 'could not build the 1.01 fixture image' }
+    }
     $baseReport = Get-Content -LiteralPath (Join-Path $baseImage 'image.json') -Raw | ConvertFrom-Json
     Check ($baseReport.app_ver -eq '01.00' -and
            $baseReport.eboot_sha256 -eq '19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31') `
         'the 1.00 image is built from the base eboot and param.sfo'
+    Check ($baseReport.fs_loads_patched -eq 387) 'the 1.00 image rewrites the TCB loads'
+    if ($updateSource) {
     $updateReport = Get-Content -LiteralPath (Join-Path $updateImage 'image.json') -Raw | ConvertFrom-Json
-    Check ($baseReport.fs_loads_patched -eq 387 -and $updateReport.fs_loads_patched -eq 389) `
-        'the 1.00 image rewrites the TCB loads; the 1.01 image also rewrites its two thread-pointer loads'
+    Check ($updateReport.fs_loads_patched -eq 389) 'the 1.01 image also rewrites its two thread-pointer loads'
     $updateBoot = [IO.File]::ReadAllBytes((Join-Path $updateImage 'boot.bin'))
     $updateImageStart = $updateBoot.Length - [int64][BitConverter]::ToUInt64($updateBoot, 8)
     $threadLoad = [byte[]](0x65, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00)
@@ -170,6 +208,7 @@ int main(int argc, char** argv) {
             $same = $same -and $updateBoot[$site + $index] -eq $threadLoad[$index]
         }
         Check $same ('the 1.01 image rewrites image+0x{0:x} to the GS thread-pointer load' -f $offset)
+    }
     }
     $baseContent = [IO.File]::ReadAllBytes((Join-Path $baseImage 'content.bin'))
     Check ($baseContent.Length -eq 28 -and [Text.Encoding]::ASCII.GetString($baseContent, 0, 8) -eq 'SOSCONT1' -and
@@ -188,6 +227,7 @@ int main(int argc, char** argv) {
     Check ($prepared.Trim() -eq '1.00') "only 1.00 is prepared ($($prepared.Trim()))"
     Check (-not ($prepared -match '1\.01')) 'the missing update is not reported as installed'
 
+    if ($updateSource) {
     Write-Step 'Case 3: base 1.00 and update 1.01 installed together'
     Add-Build 'case3' 'CUSA57767-1.00' $base $baseImage
     Add-Build 'case3' 'CUSA57767-1.01' $update $updateImage
@@ -213,6 +253,7 @@ int main(int argc, char** argv) {
     $case4 = Case-Root 'case4b'
     $active = & $selection active (Join-Path $case4 'prepared') (Join-Path $case4 'image') 2>&1 | Out-String
     Check ($LASTEXITCODE -eq 0 -and $active -match '^1\.00\|valid') "a data-less 1.01 does not block 1.00 ($($active.Trim()))"
+    }
 
     Write-Step 'Case 5: a complete extracted 1.00 folder'
     $tree = & $selection tree $base 2>&1 | Out-String
@@ -227,6 +268,7 @@ int main(int argc, char** argv) {
     foreach ($token in 'prepare_game', 'pkg_extract', '.pkg', '--scope', 'Decomp_Downloads', 'game\extracted',
                        'Invoke-Script', '-Packages', '-Version', '1.01') {
         Check (-not $build.Contains($token)) "build.ps1 has no '$token'"
+    }
     }
 }
 finally {

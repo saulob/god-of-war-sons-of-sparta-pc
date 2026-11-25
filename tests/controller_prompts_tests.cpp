@@ -13,6 +13,7 @@
 
 #include <Zydis/Zydis.h>
 
+#include "build_images.h"
 #include "controller_prompts.h"
 #include "sos_skip_intro.h"
 
@@ -298,45 +299,31 @@ bool RealImage(const fs::path& boot, const std::vector<SosPromptSite>& sites, Im
 
 void TestRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
-    struct Real {
-        const char* key;
-        const char* folders[2];
-    };
-    const Real builds[] = {{"CUSA57767-1.00", {"CUSA57767-1.00", "v1.00"}}, {"CUSA57767-1.01", {"CUSA57767-1.01", "v1.01"}}};
-    bool any = false;
-    for (const Real& build : builds) {
-        fs::path boot;
-        for (const char* folder : build.folders) {
-            const fs::path candidate = root / "build" / "image" / folder / "boot.bin";
-            if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-        }
-        if (boot.empty()) {
-            std::printf("  [skip] %s: no boot image\n", build.key);
-            continue;
-        }
-        any = true;
-        const std::string name = build.key;
-        const std::vector<SosPromptSite> sites = Sites(build.key);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        const sos_test::BootImage found = sos_test::ReportImage(root, key, "the Xbox patch sites");
+        if (!found.found()) continue;
+        const fs::path boot = found.path;
+        const std::string name = key;
+        const std::vector<SosPromptSite> sites = Sites(key);
         Image image;
         Check(RealImage(boot, sites, image), name + ": the real image is readable");
         if (image.empty()) continue;
         const Image original = image;
-        Check(sos_controller_prompts_state(image.data(), image.size(), build.key) == SOS_PROMPTS_PLAYSTATION,
+        Check(sos_controller_prompts_state(image.data(), image.size(), key) == SOS_PROMPTS_PLAYSTATION,
               name + ": the real code is the verified original");
-        const std::string other = std::string(build.key) == kBuilds[0] ? kBuilds[1] : kBuilds[0];
+        const std::string other = std::string(key) == kBuilds[0] ? kBuilds[1] : kBuilds[0];
         Check(sos_controller_prompts_state(image.data(), image.size(), other.c_str()) == -1,
               name + ": the other build's sites do not match this code");
         char message[200];
-        Check(sos_controller_prompts_apply(image.data(), image.size(), build.key, SOS_PROMPTS_XBOX, message,
+        Check(sos_controller_prompts_apply(image.data(), image.size(), key, SOS_PROMPTS_XBOX, message,
                                            sizeof(message)) == SOS_PROMPTS_XBOX,
               name + ": Xbox applies to the real code");
-        Check(sos_controller_prompts_state(image.data(), image.size(), build.key) == SOS_PROMPTS_XBOX,
+        Check(sos_controller_prompts_state(image.data(), image.size(), key) == SOS_PROMPTS_XBOX,
               name + ": the real code holds Xbox");
-        Check(sos_controller_prompts_apply(image.data(), image.size(), build.key, SOS_PROMPTS_PLAYSTATION, message,
+        Check(sos_controller_prompts_apply(image.data(), image.size(), key, SOS_PROMPTS_PLAYSTATION, message,
                                            sizeof(message)) == SOS_PROMPTS_PLAYSTATION && image == original,
               name + ": PlayStation restores the real code");
     }
-    if (!any) std::printf("  [skip] no installed boot image: the real code was not read\n");
 }
 
 // ---- Automatic: when Xbox symbols apply, the override step, the handler and the channel --------------------------------------
@@ -672,22 +659,9 @@ void TestHookReal(const char* key, const fs::path& boot) {
 
 void TestHookRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
-    struct Real {
-        const char* key;
-        const char* folders[2];
-    };
-    const Real builds[] = {{"CUSA57767-1.00", {"CUSA57767-1.00", "v1.00"}}, {"CUSA57767-1.01", {"CUSA57767-1.01", "v1.01"}}};
-    for (const Real& build : builds) {
-        fs::path boot;
-        for (const char* folder : build.folders) {
-            const fs::path candidate = root / "build" / "image" / folder / "boot.bin";
-            if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-        }
-        if (boot.empty()) {
-            std::printf("  [skip] %s: no boot image, the prompt hook was not checked on the real code\n", build.key);
-            continue;
-        }
-        TestHookReal(build.key, boot);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the Automatic prompt hook");
+        if (boot.found()) TestHookReal(key, boot.path);
     }
 }
 

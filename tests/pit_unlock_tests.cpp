@@ -5,13 +5,16 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "build_images.h"
 #include "sos_exit_game.h"
 #include "sos_hermes_unlock.h"
 #include "sos_pit_unlock.h"
@@ -56,6 +59,36 @@ std::set<uint64_t> Changed(const std::vector<uint8_t>& a, const std::vector<uint
     for (size_t i = 0; i < a.size(); ++i)
         if (a[i] != b[i]) changed.insert(i);
     return changed;
+}
+
+struct SparseImage {
+    uint8_t* data;
+    uint64_t size;
+    explicit SparseImage(uint64_t bytes) : data(static_cast<uint8_t*>(std::calloc(static_cast<size_t>(bytes), 1))), size(bytes) {}
+    ~SparseImage() { std::free(data); }
+    SparseImage(const SparseImage&) = delete;
+    SparseImage& operator=(const SparseImage&) = delete;
+};
+
+// The verified check of the title menu, laid on a zeroed image of the build's size from the pattern the source verifies.
+void LayCheck(SparseImage& image, const SosPitUnlockSite& site) {
+    const SosPitUnlockPattern& pattern = *sos_pit_unlock_pattern();
+    const uint64_t start = site.gate - pattern.jump;
+    for (int i = 0; i < pattern.length; ++i) image.data[start + i] = pattern.bytes[i] >= 0 ? static_cast<uint8_t>(pattern.bytes[i]) : 0xab;
+    for (const int call : {pattern.pit_call, pattern.hermes_call}) {
+        const int32_t relative = static_cast<int32_t>(static_cast<int64_t>(site.invoke) - static_cast<int64_t>(start + call + 5));
+        std::memcpy(image.data + start + call + 1, &relative, sizeof(relative));
+    }
+}
+
+bool ZeroOutside(const SparseImage& image, uint64_t low, uint64_t high) {
+    static const std::vector<uint8_t> zeros(1 << 20, 0);
+    for (uint64_t at = 0; at < image.size; at += zeros.size()) {
+        const uint64_t end = std::min<uint64_t>(at + zeros.size(), image.size);
+        for (const auto& [from, to] : {std::pair<uint64_t, uint64_t>{at, std::min(end, low)}, {std::max(at, high), end}})
+            if (from < to && std::memcmp(image.data + from, zeros.data(), static_cast<size_t>(to - from)) != 0) return false;
+    }
+    return true;
 }
 
 void WriteFile(const fs::path& file, const char* text) {
@@ -178,6 +211,83 @@ void TestBuild(const char* key, const fs::path& boot, const fs::path& prepared, 
     Check(sos_skip_intro_verify(image.data(), size, sos_skip_intro_site(key), &why), name + ": Skip Intro still verifies with The Pit on");
 }
 
+// The contract of a build, from its site table and the verified pattern alone: no game file is read.
+void TestContract(const char* key, const fs::path& folder) {
+    const std::string name = std::string(key) + " contract";
+    const SosPitUnlockSite* site = sos_pit_unlock_site(key);
+    const SosPitUnlockPattern& pattern = *sos_pit_unlock_pattern();
+    Check(site != nullptr, name + ": the build has a site");
+    if (!site) return;
+    // Where the title menu check was verified in each build's code; a change here is a decision, not a side effect.
+    static const struct {
+        const char* key;
+        uint64_t size;
+        uint32_t gate, invoke;
+    } verified[] = {{"CUSA57767-1.00", 168044704u, 0x4c22879, 0x90e2640}, {"CUSA57767-1.01", 168046032u, 0x4c290b9, 0x90f9b20}};
+    bool pinned = false;
+    for (const auto& row : verified) pinned |= !std::strcmp(row.key, key) && row.size == site->image_size && row.gate == site->gate && row.invoke == site->invoke;
+    Check(pinned, name + ": the site is where the check was verified");
+    const uint64_t start = site->gate - pattern.jump, end = start + pattern.length;
+    Check(site->gate >= static_cast<uint32_t>(pattern.jump) && end <= site->image_size && site->invoke < site->image_size,
+          name + ": the check and UnityEvent.Invoke lie inside the image");
+    Check(pattern.bytes[pattern.jump] == 0x74 && pattern.bytes[pattern.jump + 1] == 0x13, name + ": the patched branch is je +0x13");
+    Check(pattern.bytes[pattern.pit_call] == 0xe8 && pattern.bytes[pattern.hermes_call] == 0xe8, name + ": both events are called with a relative call");
+
+    const SosHermesUnlockSite* hermes = sos_hermes_unlock_site(key);
+    Check(hermes != nullptr && hermes->image_size == site->image_size, name + ": Hermes Mode and The Pit describe the same image");
+    if (hermes) {
+        const uint64_t low = hermes->gate - 10, high = hermes->gate + 6;
+        Check(end <= low || high <= start, name + ": the Hermes Mode check and the Pit check share no byte");
+    }
+
+    SparseImage image(site->image_size);
+    if (!image.data) {
+        Check(false, name + ": the sparse image is allocated");
+        return;
+    }
+    LayCheck(image, *site);
+    const std::string game = MakeGameFolder(folder / (name + " game")).string();
+    const char* why = "";
+    char message[200] = {};
+    Check(sos_pit_unlock_verify(image.data, image.size, site, &why), name + ": the laid check verifies");
+    const uint64_t low = start > 64 ? start - 64 : 0, high = end + 64;
+    const std::vector<uint8_t> before(image.data + low, image.data + high);
+    const auto window = [&] { return std::vector<uint8_t>(image.data + low, image.data + high); };
+    Check(ZeroOutside(image, low, high), name + ": nothing but the check was laid");
+
+    const auto refuses = [&](const char* build, uint64_t size, const char* content, const std::string& what) {
+        const auto kept = window();
+        Check(sos_pit_unlock_apply(image.data, size, build, content, message, sizeof(message)) == 0 && window() == kept, name + ": " + what + " is left alone");
+    };
+    refuses("CUSA57767-9.99", image.size, game.c_str(), "an unknown build");
+    refuses(nullptr, image.size, game.c_str(), "no build");
+    refuses(key, image.size - 8, game.c_str(), "an image of another size");
+    refuses(key, image.size, nullptr, "a launch without a game folder");
+    refuses(key, image.size, (folder / "nothing").string().c_str(), "a game without the Pit content");
+    const char* other = std::strcmp(key, "CUSA57767-1.00") ? "CUSA57767-1.00" : "CUSA57767-1.01";
+    refuses(other, image.size, game.c_str(), "the other build's key");
+
+    for (int i = 0; i < pattern.length; ++i) {
+        image.data[start + i] ^= 0xff;
+        refuses(key, image.size, game.c_str(), "a changed byte at check+" + std::to_string(i));
+        image.data[start + i] ^= 0xff;
+    }
+    Check(window() == before, name + ": the refusals left the image as it was");
+
+    Check(sos_pit_unlock_apply(image.data, image.size, key, game.c_str(), message, sizeof(message)) == 1, name + ": the patch applies");
+    Check(std::strstr(message, "offered") != nullptr, name + ": the patch reports The Pit as offered");
+    const auto patched = window();
+    bool only_the_branch = true;
+    for (size_t i = 0; i < patched.size(); ++i)
+        only_the_branch = only_the_branch && ((patched[i] != before[i]) == (low + i == site->gate || low + i == site->gate + 1));
+    Check(only_the_branch, name + ": exactly the two branch bytes change");
+    Check(image.data[site->gate] == 0x90 && image.data[site->gate + 1] == 0x90, name + ": the branch becomes NOPs");
+    Check(ZeroOutside(image, low, high), name + ": nothing outside the check changed");
+    Check(!sos_pit_unlock_verify(image.data, image.size, site, &why), name + ": the patched image is no longer the pristine code");
+    Check(sos_pit_unlock_apply(image.data, image.size, key, game.c_str(), message, sizeof(message)) == 0 && window() == patched, name + ": a second apply writes nothing");
+    sos_test::ReportContract(key, "the verified check on a sparse image: patch, every changed byte refused, second apply, other build and content refused");
+}
+
 }  // namespace
 
 int main() {
@@ -189,26 +299,13 @@ int main() {
     TestSettings(folder);
     TestContent(folder);
 
-    const struct {
-        const char* key;
-        std::vector<const char*> folders;
-    } builds[] = {{"CUSA57767-1.00", {"CUSA57767-1.00", "v1.00"}}, {"CUSA57767-1.01", {"CUSA57767-1.01", "v1.01"}}};
-    bool any = false;
-    for (const auto& build : builds) {
-        fs::path boot;
-        for (const char* name : build.folders) {
-            const fs::path candidate = root / "build" / "image" / name / "boot.bin";
-            if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-        }
-        if (boot.empty()) {
-            std::printf("  [skip] %s: no boot image\n", build.key);
-            continue;
-        }
-        any = true;
-        TestBuild(build.key, boot, root / "game" / "prepared" / build.key, folder);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        TestContract(key, folder);
+        const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the title menu check");
+        if (boot.found()) TestBuild(key, boot.path, sos_test::EvidenceRoot(root) / "game" / "prepared" / key, folder);
+        sos_test::ReportContent(root, key, "the Pit scene files");
     }
     fs::remove_all(folder);
-    if (!any) std::printf("  [skip] no installed boot image: the real code was not read\n");
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

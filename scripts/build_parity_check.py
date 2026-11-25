@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import build_evidence as evidence  # noqa: E402
 from game_profiles import PROFILES  # noqa: E402
 
 TITLE = "CUSA57767"
@@ -192,10 +193,8 @@ def check_identity(gate, builds, sources):
         row = rows.get(build["key"], {})
         gate.check(row.get("sha256") == build["sha256"] and row.get("folder") == build["folder"],
                    f"launcher/game_profile.cpp differs from scripts/game_profiles.py for {build['key']}")
-    for name in ("EBOOT_SHA256", "IMAGE_FOLDERS"):
-        table = sources["il2cpp:" + name]
-        gate.same_builds({f"{TITLE}-{v}" for v in table}, keys, f"scripts/il2cpp_index.py {name}")
-    gate.check(all(sources["il2cpp:EBOOT_SHA256"].get(v) == b["sha256"] for v, b in builds.items()), "scripts/il2cpp_index.py fingerprints differ from scripts/game_profiles.py")
+    gate.check('PROFILES[TITLE]["versions"][version]["eboot_sha256"]' in sources["scripts/build_evidence.py"] and "import build_evidence" in sources["scripts/il2cpp_index.py"],
+               "the local images and eboots are not identified by the fingerprints of scripts/game_profiles.py")
     for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         gate.same_builds({f"{TITLE}-{v}" for v in sources[name + ":BUILDS"]}, keys, f"scripts/{name}.py BUILDS")
 
@@ -224,6 +223,32 @@ def check_pit_unlock(gate, builds, sources):
     rows = unlock_rows(sources["src/sos_pit_unlock.c"])
     gate.same_builds(rows, keys, "src/sos_pit_unlock.c site table")
     gate.check(len(set(rows.values())) <= 1, "src/sos_pit_unlock.c site rows differ in shape between builds")
+
+
+def image_sizes(text):
+    return {key: int(size) for key, size in re.findall(r'\{"(CUSA\d+-[\d.]+)", (\d+)u', text)}
+
+
+def check_contract(gate, builds, sources):
+    gate.start("Build contract")
+    keys = {b["key"] for b in builds.values()}
+    shas = [b["sha256"] for b in builds.values()]
+    gate.check(len(set(shas)) == len(shas) and all(re.fullmatch(r"[0-9a-f]{64}", sha) for sha in shas), "the fingerprints are not distinct SHA-256 values")
+    profile = PROFILES[TITLE]["versions"]
+    known = [v for v in builds if v in profile]
+    gate.check(len(known) == len(builds), "a build is not registered in scripts/game_profiles.py")
+    gate.check(all(profile[v]["layers"][-1]["app_ver"].endswith(v[1:]) for v in known), "a build's last package layer is not its own version")
+    gate.check(all(layer["update"] == (index > 0) for v in known for index, layer in enumerate(profile[v]["layers"])), "only the layers after the base are updates")
+    gate.check(all(profile[v]["layers"][0] == profile[min(known)]["layers"][0] for v in known), "the base layer is not shared by every build")
+    header = sources["src/game_build.h"]
+    versions = {f"{t}-{v}" for t, v in re.findall(r'\{"(CUSA\d+)", "([\d.]+)"', header)}
+    gate.same_builds(versions, keys, "src/game_build.h versions")
+    sizes = {name: image_sizes(sources[path]) for name, path in (("Skip Intro", "src/sos_skip_intro.c"), ("Hermes Mode", "src/sos_hermes_unlock.c"),
+                                                                  ("The Pit", "src/sos_pit_unlock.c"))}
+    for key in sorted(keys):
+        found = {name: table.get(key) for name, table in sizes.items()}
+        gate.check(all(found.values()) and len(set(found.values())) == 1, f"{key}: the features disagree on the image size {found}")
+    gate.check(len({sizes["The Pit"].get(key) for key in keys}) == len(keys), "the builds share an image size")
 
 
 def check_prompts(gate, builds, sources):
@@ -310,7 +335,7 @@ def check_resolution(gate, builds, sources):
         gate.check(len(offsets) == 7 and len(set(offsets)) == 7, f"launcher/sos_resolution_sites.h: CUSA57767 {version} needs its 7 distinct SetResolution sites")
 
 
-FEATURES = [check_identity, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution]
+FEATURES = [check_identity, check_contract, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution]
 
 # Sources that carry build-keyed data, with the feature that owns them.
 OWNERS = {
@@ -330,7 +355,7 @@ SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save an
 # Tests and checks that must name every supported build, or iterate the inventory.
 COVERAGE = [
     ("tests/skip_intro_tests.cpp", "names"), ("tests/hermes_unlock_tests.cpp", "names"),
-    ("tests/pit_unlock_tests.cpp", "names"), ("scripts/pit_unlock_check.py", "names"),
+    ("tests/pit_unlock_tests.cpp", "names"), ("scripts/pit_unlock_check.py", "names"), ("tests/build_contract_tests.cpp", "inventory"),
     ("tests/title_patch_matrix_tests.cpp", "names"), ("tests/controller_prompts_tests.cpp", "names"),
     ("tests/prompt_dialog_tests.cpp", "names"), ("tests/image_glyphs_tests.cpp", "names"),
     ("scripts/image_glyphs.py", "names"), ("tests/exit_game_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
@@ -366,7 +391,7 @@ def check_coverage(gate, builds, sources):
         elif mode == "inventory":
             gate.check("SupportedBuilds()" in text, f"{path} no longer iterates the supported builds")
         elif mode == "profiles":
-            gate.check("PROFILES" in text or "build_parity_check.py" in text, f"{path} no longer iterates the supported builds")
+            gate.check(any(token in text for token in ("PROFILES", "build_parity_check.py", "build_evidence")), f"{path} no longer iterates the supported builds")
         else:
             missing = [v for v in builds if not re.search(r"(?<![\d.])" + re.escape(v) + r"(?![\d.])", text)]
             gate.check(not missing, f"{path} never names CUSA57767 {', '.join(missing)}")
@@ -442,21 +467,21 @@ def avplayer_facts(insns, init_site, sync_site):
 
 
 def check_real_builds(gate, builds, load):
-    gate.start("Prepared builds")
+    gate.start("Local evidence")
     for version, build in sorted(builds.items()):
-        eboot = ROOT / "game" / "prepared" / build["folder"] / "eboot.bin"
-        gate.check(eboot.is_file(), f"{build['key']}: {eboot.relative_to(ROOT)} is not installed")
-        if eboot.is_file():
-            gate.check(hashlib.sha256(eboot.read_bytes()).hexdigest() == build["sha256"], f"{build['key']}: eboot.bin is not the supported build")
-        from il2cpp_index import boot_image_path
-        gate.check(boot_image_path(version) is not None, f"{build['key']}: no built boot image, so the patch sites were not read from its game code")
+        evidence.report_image(version, "the patch sites")
+        found = evidence.game_file(version, "eboot.bin")
+        evidence.report_content(version, "its eboot", found is not None)
+        if found:
+            gate.check(hashlib.sha256(found.read_bytes()).hexdigest() == build["sha256"], f"{build['key']}: {found.name} on this machine is not the supported build")
+        evidence.report_contract(version, "registration, fingerprint, image size and patch tables")
     gate.start("AvPlayer caller")
     import avplayer_check as av
     names = {name: nid for nid, name in av.symbol_names().items()}
     windows = {}
     for version, build in sorted(builds.items()):
-        path = ROOT / "game" / "prepared" / build["folder"] / "eboot.bin"
-        if not path.is_file():
+        path = evidence.eboot(version)
+        if path is None:
             continue
         sites = av.scan(path)
         found = {n: [at for at, _k in sites.get(names[n], [])] for n in ("sceAvPlayerInitEx", "sceAvPlayerSetAvSyncMode", "sceAvPlayerSetLogCallback")}
@@ -480,8 +505,8 @@ def check_crash_path(gate, builds, load=load_image):
     tcb_load = bytes.fromhex("64488b042500000000")
     expected_sites = [0x1a2e604, 0x1a2e674]
     for version, build in sorted(builds.items()):
-        path = ROOT / "game" / "prepared" / build["folder"] / "eboot.bin"
-        if not gate.check(path.is_file(), f"{build['key']}: {path.relative_to(ROOT)} is not installed"):
+        path = evidence.eboot(version)
+        if path is None:
             continue
         import ps4_module as pm
         module = pm.read_module(path)
@@ -523,9 +548,7 @@ def read_sources():
         "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "src/sos_hermes_unlock.c", "src/sos_pit_unlock.c",
         "launcher/controller_prompts.c", "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
         "launcher/image_glyphs.c", "launcher/image_glyphs_sites.h",
-        "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h")}
-    for name in ("EBOOT_SHA256", "IMAGE_FOLDERS"):
-        sources["il2cpp:" + name] = ast_assignment("scripts/il2cpp_index.py", name) or {}
+        "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h", "scripts/build_evidence.py", "scripts/il2cpp_index.py")}
     for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         sources[name + ":BUILDS"] = ast_assignment(f"scripts/{name}.py", "BUILDS") or ()
     for path, _mode in COVERAGE:
@@ -565,6 +588,10 @@ def self_test():
 
     results.append(("the real sources pass", not base.failures))
     expect_failure("a build added to the inventory but missing from every table", lambda b: b.update({"1.02": {"key": f"{TITLE}-1.02", "sha256": "0" * 64, "folder": f"{TITLE}-1.02"}}))
+    expect_failure("two builds with one fingerprint", lambda b: b["1.01"].update({"sha256": b["1.00"]["sha256"]}))
+    expect_failure("a fingerprint that is not SHA-256", lambda b: b["1.01"].update({"sha256": "xyz"}))
+    expect_failure("the image size of 1.01 differs between features", mutate=lambda s: s.update({"src/sos_pit_unlock.c": s["src/sos_pit_unlock.c"].replace("168046032u", "168046033u")}))
+    expect_failure("the image size of 1.00 missing from a feature", mutate=lambda s: s.update({"src/sos_hermes_unlock.c": s["src/sos_hermes_unlock.c"].replace('{"CUSA57767-1.00", 168044704u', '{"CUSA57767-1.00", 0x')}))
     expect_failure("1.01 dropped from the Skip Intro table", mutate=lambda s: s.update({"src/sos_skip_intro.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_skip_intro.c"])}))
     expect_failure("1.01 dropped from the Hermes Mode table", mutate=lambda s: s.update({"src/sos_hermes_unlock.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_hermes_unlock.c"])}))
     expect_failure("1.01 dropped from The Pit table", mutate=lambda s: s.update({"src/sos_pit_unlock.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_pit_unlock.c"])}))
@@ -579,8 +606,8 @@ def self_test():
     expect_failure("a dialog layout offset changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?0x20, 0x20, 0x30, )0x168", r"\g<1>0x169", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))
     expect_failure("a menu hook Image field changed in 1.01", mutate=lambda s: s.update({"launcher/prompt_dialog_sites.h": re.sub(r"(kDialog_1_01.*?4u, \{0x198u, )0x1a0u", r"\g<1>0x1a4u", s["launcher/prompt_dialog_sites.h"], count=1, flags=re.S)}))
     expect_failure("a 1.01 fingerprint changed in the build header", mutate=lambda s: s.update({"src/game_build.h": s["src/game_build.h"].replace("aafe8a2a", "bbbb8a2a")}))
-    expect_failure("1.01 missing from the image tables", mutate=lambda s: s.update({"il2cpp:IMAGE_FOLDERS": {k: v for k, v in s["il2cpp:IMAGE_FOLDERS"].items() if k != "1.01"}}))
-    expect_failure("a graphics check that stops iterating the supported builds", mutate=lambda s: s.update({"cov:scripts/graphics_import_check.py": s["cov:scripts/graphics_import_check.py"].replace("PROFILES", "X")}))
+    expect_failure("the local images no longer follow the registered fingerprints", mutate=lambda s: s.update({"scripts/build_evidence.py": s["scripts/build_evidence.py"].replace("eboot_sha256", "sha")}))
+    expect_failure("a graphics check that stops iterating the supported builds", mutate=lambda s: s.update({"cov:scripts/graphics_import_check.py": s["cov:scripts/graphics_import_check.py"].replace("PROFILES", "X").replace("build_evidence", "Y")}))
     expect_failure("a test that names only 1.00", mutate=lambda s: s.update({"cov:tests/skip_intro_tests.cpp": s["cov:tests/skip_intro_tests.cpp"].replace("1.01", "x")}))
     expect_failure("1.01 loses a SetResolution site", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITE(0x50f541cu)", "")}))
     expect_failure("1.01 routed to the 1.00 resolution sites", mutate=lambda s: s.update({"launcher/game_profile.cpp": s["launcher/game_profile.cpp"].replace(".resolution_sites = kResolutionSites_1_01", ".resolution_sites = kResolutionSites_1_00")}))

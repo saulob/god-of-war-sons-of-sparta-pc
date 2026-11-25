@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from il2cpp_index import ROOT, open_build  # noqa: E402
+from il2cpp_index import ROOT, open_build, open_reported  # noqa: E402
 
 HEADER = ROOT / "launcher" / "controller_prompts_sites.h"
 HOOK_METHOD = ("InputOverseer", "ResolveIconsForCurrentInput")
@@ -189,9 +189,8 @@ def holder_types(index):
 
 
 def check_build(build):
-    index = open_build(build)
+    index = open_reported(build, "the prompt sites")
     if index is None:
-        print(f"  [skip] CUSA57767-{build}: no boot image or metadata installed")
         return None
     print(f"CUSA57767-{build}")
     values = index.enum_values("GamepadType")

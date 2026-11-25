@@ -28,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import build_evidence as evidence  # noqa: E402
 import ps4_module as pm  # noqa: E402
 from game_profiles import PROFILES  # noqa: E402
 
@@ -94,9 +95,13 @@ def symbol_names():
     return names
 
 
-def module_paths(folder):
-    root = ROOT / "game" / "prepared" / folder
-    return [root / "eboot.bin"] + sorted((root / "Media" / "Modules").glob("*.prx")) + sorted((root / "Media" / "Plugins").glob("*.prx"))
+def module_paths(version):
+    media = evidence.media(version)
+    return [evidence.eboot(version)] + media_modules(media / "Modules") + media_modules(media / "Plugins")
+
+
+def media_modules(folder):
+    return sorted(folder.glob("*.prx"))
 
 
 def scan_module(path):
@@ -135,12 +140,12 @@ def scan_module(path):
     return found
 
 
-def scan_build(folder):
-    """{(nid, library): called} over the eboot and the modules the runtime loads, or None when the build is not installed."""
-    if not (ROOT / "game" / "prepared" / folder / "eboot.bin").is_file():
+def scan_build(version):
+    """{(nid, library): called} over the eboot and the modules the runtime loads, or None when the build's files are not on this machine."""
+    if evidence.eboot(version) is None:
         return None
     called = {}
-    for path in module_paths(folder):
+    for path in module_paths(version):
         for key, sites in scan_module(path).items():
             called[key] = called.get(key, False) or sites > 0
     return called
@@ -150,7 +155,7 @@ def build_live(builds):
     """{version: {(nid, library): called}} for the installed builds."""
     live = {}
     for version in builds:
-        scanned = scan_build(PROFILES[TITLE]["versions"][version]["folder"])
+        scanned = scan_build(version)
         if scanned is not None:
             live[version] = scanned
     return live
@@ -209,11 +214,15 @@ def load_inventory():
     return json.loads(INVENTORY.read_text())
 
 
+def recorded_imports(committed, version):
+    return {tuple(k.split("#")): row["called"][version] for k, row in committed.items() if version in row["called"]}
+
+
 def self_test():
     builds = inventory_builds()
     hosts, names = host_classes(), symbol_names()
     committed = load_inventory()
-    live = {v: {tuple(k.split("#")): row["called"][v] for k, row in committed.items() if v in row["called"]} for v in builds}
+    live = {v: recorded_imports(committed, v) for v in builds}
     results = [("the committed inventory passes against its own data", not evaluate(builds, live, hosts, names, committed)[0])]
 
     def expect_failure(name, mutate):
@@ -248,12 +257,21 @@ def main(argv):
         return self_test()
     builds = inventory_builds()
     hosts, names = host_classes(), symbol_names()
-    live = build_live(builds)
+    scanned = build_live(builds)
     if "--write" in argv:
-        INVENTORY.write_text(json.dumps(inventory_from(live, hosts, names), indent=1) + "\n")
+        if set(scanned) != set(builds):
+            print("[fail] --write reads every supported build; the files of one are not on this machine")
+            return 1
+        INVENTORY.write_text(json.dumps(inventory_from(scanned, hosts, names), indent=1) + "\n")
         print(f"wrote {INVENTORY.relative_to(ROOT)}")
         return 0
-    failures, report = evaluate(builds, live, hosts, names, load_inventory())
+    committed = load_inventory()
+    live = {version: scanned.get(version) or recorded_imports(committed, version) for version in builds}
+    for version in sorted(builds):
+        evidence.report_content(version, "its graphics imports")
+        if version not in scanned:
+            evidence.report_contract(version, "the imports recorded in scripts/graphics_imports.json against the host functions")
+    failures, report = evaluate(builds, live, hosts, names, committed)
     for line in report:
         print(f"  {line}")
     for text in failures:

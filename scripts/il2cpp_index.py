@@ -8,17 +8,13 @@ Used by the static checks (scripts/prompt_sites.py). Nothing is executed.
 """
 import bisect
 import importlib.util
-import json
 import re
 import struct
 from pathlib import Path
 
+import build_evidence as evidence
+
 ROOT = Path(__file__).resolve().parent.parent
-EBOOT_SHA256 = {
-    "1.00": "19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31",
-    "1.01": "aafe8a2ab8e55e0044fe371248749026c494a07d6864fbb6a7fa89fe39999d58",
-}
-IMAGE_FOLDERS = {"1.00": ("CUSA57767-1.00", "v1.00"), "1.01": ("CUSA57767-1.01", "v1.01")}
 GAME_CODE_IMAGE = "Il2cppUserAssemblies.prx"
 
 
@@ -33,18 +29,11 @@ _check = _load_checker()
 
 
 def boot_image_path(build):
-    for folder in IMAGE_FOLDERS[build]:
-        manifest = ROOT / "build" / "image" / folder / "image.json"
-        boot = manifest.with_name("boot.bin")
-        if manifest.is_file() and boot.is_file():
-            if json.loads(manifest.read_text()).get("eboot_sha256") == EBOOT_SHA256[build]:
-                return boot
-    return None
+    return evidence.boot_image(build)[0]
 
 
 def metadata_path(build):
-    path = ROOT / "game" / "prepared" / f"CUSA57767-{build}" / "Media" / "Metadata" / "global-metadata.dat"
-    return path if path.is_file() else None
+    return evidence.game_file(build, "Media/Metadata/global-metadata.dat")
 
 
 class Index:
@@ -186,10 +175,20 @@ class Index:
 
 
 def open_build(build):
-    boot, metadata = boot_image_path(build), metadata_path(build)
-    if not boot or not metadata:
-        return None
-    return Index(boot, metadata)
+    """The index of a build whose boot image and metadata are on this machine, else None."""
+    boot, _state = evidence.boot_image(build)
+    metadata = metadata_path(build)
+    return Index(boot, metadata) if boot and metadata else None
+
+
+def open_reported(build, what):
+    """open_build, reporting the evidence of the build: where the image is from, or NO DATA saying what was not read."""
+    index = open_build(build)
+    if index is None and evidence.boot_image(build)[0]:
+        evidence.report("image", build, evidence.NO_DATA, f"the metadata of its boot image is not on this machine; not read from the real code: {what}")
+    else:
+        evidence.report_image(build, what)
+    return index
 
 
 def relative_calls(code, start, targets):

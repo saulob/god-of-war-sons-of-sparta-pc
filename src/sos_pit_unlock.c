@@ -32,6 +32,11 @@ static const char *const kBanks[] = {
     "StreamingAssets/Scenes/PitofAgonies.streams.bank",
 };
 
+const SosPitUnlockPattern *sos_pit_unlock_pattern(void) {
+    static const SosPitUnlockPattern pattern = {kGate, kGateLength, kJumpAt, kPitCallAt, kHermesCallAt};
+    return &pattern;
+}
+
 const SosPitUnlockSite *sos_pit_unlock_site(const char *build) {
     for (size_t i = 0; build && i < sizeof(kSites) / sizeof(*kSites); ++i)
         if (!strcmp(build, kSites[i].build)) return &kSites[i];

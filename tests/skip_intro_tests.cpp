@@ -15,6 +15,7 @@
 #include <windows.h>
 #endif
 
+#include "build_images.h"
 #include "game_profile.h"
 #include "sos_skip_intro.h"
 
@@ -542,21 +543,10 @@ void TestTitleGuard() {
 
 void TestRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
-    const struct {
-        const char* key;
-        const char* folder;
-    } builds[] = {{"CUSA57767-1.00", "CUSA57767-1.00"}, {"CUSA57767-1.01", "v1.01"}};
-    bool any = false;
-    for (const auto& build : builds) {
-        const fs::path boot = root / "build" / "image" / build.folder / "boot.bin";
-        if (!fs::is_regular_file(boot)) {
-            std::printf("  [skip] %s: no boot image\n", build.key);
-            continue;
-        }
-        any = true;
-        TestRealImage(build.key, boot);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the Skip Intro sites");
+        if (boot.found()) TestRealImage(key, boot.path);
     }
-    if (!any) std::printf("  [skip] no installed boot image: the real code was not read\n");
 }
 
 void TestWiring() {

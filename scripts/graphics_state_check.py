@@ -116,11 +116,11 @@ def self_test():
 def dump(version, folder):
     """Writes the shaders embedded in the eboot of a build as t<type>_<index>_<image offset>.bin; returns their count."""
     import ps4_module as pm
-    from game_profiles import PROFILES
-    eboot = ROOT / "game" / "prepared" / PROFILES["CUSA57767"]["versions"][version]["folder"] / "eboot.bin"
-    if not eboot.is_file():
-        print(f"  [fail] CUSA57767 {version}: {eboot.relative_to(ROOT)} is not installed")
-        return 0
+    import build_evidence as evidence
+    eboot = evidence.eboot(version)
+    evidence.report_content(version, "its embedded shaders")
+    if eboot is None:
+        return None
     module = pm.read_module(eboot)
     loads = [p for p in module["ph"] if p["type"] == 1]
     image = bytearray(max(p["vaddr"] + p["memsz"] for p in loads))
@@ -145,6 +145,8 @@ def main(argv):
     if "--dump" in argv:
         version, folder = argv[argv.index("--dump") + 1:argv.index("--dump") + 3]
         count = dump(version, folder)
+        if count is None:
+            return 3
         print(f"  CUSA57767 {version}: {count} embedded shaders written")
         return 0 if count else 1
     results = checks(read_sources())

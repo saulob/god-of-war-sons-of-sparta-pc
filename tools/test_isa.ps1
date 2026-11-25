@@ -25,17 +25,17 @@ $env:PATH = "$($tc.Bin);$env:PATH"
 & $exe
 $result = $LASTEXITCODE
 
-$game = Join-Path $root 'game\prepared\CUSA57767-1.00'
+$eboot = Find-BuildGameFile '1.00' 'eboot.bin'
+$game = if ($eboot) { Split-Path -Parent $eboot } else { $null }
 $python = Get-Command py, python -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($result -eq 0 -and $python -and (Test-Path -LiteralPath (Join-Path $game 'eboot.bin'))) {
+Write-GameFileEvidence '1.00' $eboot 'the real binary scan'
+if ($result -eq 0 -and $python -and $eboot) {
     [string[]]$pythonArguments = if ($python.Name -like 'py.*') { '-3', '-I' } else { '-I' }
     $ranges = Join-Path $temp 'ranges'
     & $python.Source @pythonArguments (Join-Path $PSScriptRoot 'export_code_ranges.py') $game $ranges | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'could not export the code ranges' }
     & $exe --scan $ranges
     $result = $LASTEXITCODE
-} elseif ($result -eq 0) {
-    Write-Host '  [skip] no prepared CUSA57767 1.00: the real binary scan was not run'
 }
 Remove-Item -LiteralPath $temp -Recurse -Force
 exit $result

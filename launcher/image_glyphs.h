@@ -51,11 +51,14 @@ typedef struct {
 
 const SosImageGlyphSite *sos_image_glyphs_site(const char *build_key);
 
-/* 1 when every method the style hooks and every function the handlers call are the verified code; else 0 with `why`. */
+/* 1 when every method the style hooks and every function the handlers call are the verified code of `site`; else 0 with `why`. */
+int sos_image_glyphs_verify_site(const uint8_t *image, uint64_t size, const SosImageGlyphSite *site, int style, const char **why);
 int sos_image_glyphs_verify(const uint8_t *image, uint64_t size, const char *build_key, int style, const char **why);
 
 /* Verifies everything, then writes the hooks of `style` (Xbox: the three Image hooks; Automatic: all four; PlayStation: none).
  * Writes nothing and returns 0, saying why, when any check fails or `stubs` is out of reach of the image. */
+int sos_image_glyphs_install_site(uint8_t *image, uint64_t size, const SosImageGlyphSite *site, int style, uint8_t *stubs, size_t stubs_capacity,
+                                  char *message, size_t message_size);
 int sos_image_glyphs_install(uint8_t *image, uint64_t size, const char *build_key, int style, uint8_t *stubs, size_t stubs_capacity,
                              char *message, size_t message_size);
 

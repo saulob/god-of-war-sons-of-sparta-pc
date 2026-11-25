@@ -19,6 +19,14 @@ typedef struct {
     uint32_t invoke;
 } SosPitUnlockSite;
 
+/* The code the site must hold: `bytes` (-1 for a byte that is not checked), the branch the patch removes at `jump` and the two
+ * UnityEvent.Invoke calls at `pit_call` and `hermes_call`, all as offsets from the start of the check. */
+typedef struct {
+    const short *bytes;
+    int length, jump, pit_call, hermes_call;
+} SosPitUnlockPattern;
+
+const SosPitUnlockPattern *sos_pit_unlock_pattern(void);
 const SosPitUnlockSite *sos_pit_unlock_site(const char *build);
 int sos_pit_unlock_verify(const uint8_t *image, uint64_t size, const SosPitUnlockSite *site, const char **why);
 /* 1 when every Pit scene file is in the game folder; otherwise `missing` names the first absent one. */

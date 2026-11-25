@@ -17,6 +17,7 @@
 
 #include <Zydis/Zydis.h>
 
+#include "build_images.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 extern "C" {
@@ -1104,23 +1105,11 @@ void TestMenuHookReal(const char* key, const fs::path& boot_path) {
 
 void TestRealImages() {
     const fs::path root = SOS_SOURCE_DIR;
-    struct Real {
-        const char* key;
-        const char* folders[2];
-    };
-    const Real builds[] = {{"CUSA57767-1.00", {"CUSA57767-1.00", "v1.00"}}, {"CUSA57767-1.01", {"CUSA57767-1.01", "v1.01"}}};
-    for (const Real& build : builds) {
-        fs::path boot;
-        for (const char* folder : build.folders) {
-            const fs::path candidate = root / "build" / "image" / folder / "boot.bin";
-            if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-        }
-        if (boot.empty()) {
-            std::printf("  [skip] %s: no boot image, the dialog hook was not checked on the real code\n", build.key);
-            continue;
-        }
-        TestHookReal(build.key, boot);
-        TestMenuHookReal(build.key, boot);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the dialog and menu hooks");
+        if (!boot.found()) continue;
+        TestHookReal(key, boot.path);
+        TestMenuHookReal(key, boot.path);
     }
 }
 

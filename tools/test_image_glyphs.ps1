@@ -1,7 +1,8 @@
 # Headless test of the menu glyph Images without a controller follower: the sprite mapping, the handlers on fake Images (forced Xbox,
-# forced PlayStation, Automatic with each controller kind, controller changes, late icons) and, when the boot images are installed, the
-# hooks on the real code of CUSA57767 1.00 and 1.01 and the static proof from the game code, icon maps and scenes; then mutated copies
-# of the production source that must each fail. No game, launcher or window is started.
+# forced PlayStation, Automatic with each controller kind, controller changes, late icons), the hooks of both builds on a small image
+# laid from their site tables, and, for a build whose boot image is on this machine, the hooks on its real code and the static proof
+# from the game code, icon maps and scenes; then mutated copies of the production source that must each fail. No game, launcher or
+# window is started.
 [CmdletBinding()]
 param()
 
@@ -64,7 +65,6 @@ try {
         $result = 1
     }
 
-    $hasBoot = (Test-Path -LiteralPath (Join-Path $root 'build\image\CUSA57767-1.01\boot.bin')) -and (Test-Path -LiteralPath (Join-Path $root 'build\image\CUSA57767-1.00\boot.bin'))
     $mutations = @(
         @{ Old = 'SOS_GLYPH_LEFT_STICK_PRESS, SOS_GLYPH_LEFT_TRIGGER, SOS_GLYPH_RIGHT_TRIGGER, SOS_GLYPH_LEFT_SHOULDER, SOS_GLYPH_RIGHT_SHOULDER,'; New = 'SOS_GLYPH_LEFT_STICK_PRESS, SOS_GLYPH_LEFT_SHOULDER, SOS_GLYPH_RIGHT_SHOULDER, SOS_GLYPH_LEFT_SHOULDER, SOS_GLYPH_RIGHT_SHOULDER,'; What = 'L2 and R2 shown as LB and RB' }
         @{ Old = '    SHEET("KS_ButtonPrompt_", kOutlineSheet),'; New = '    SHEET("KS_ButtonPromptX_", kOutlineSheet),'; What = 'the pause tab sprites are not recognised (L2 and R2 stay)' }
@@ -89,25 +89,24 @@ try {
         @{ Old = '    if (g_glyphs.count == TRACKED_IMAGES) return;'; New = '    if (g_glyphs.count == 4) return;'; What = 'too few glyphs are tracked' }
         @{ Old = '    if (wanted == g_glyphs.shown && !(g_glyphs.pending && ++g_glyphs.calls >= RETRY_CALLS)) return;'; New = '    if (wanted == g_glyphs.shown) return;'; What = 'late icons are never picked up' }
         @{ Old = '    return style == SOS_PROMPTS_XBOX ? SOS_GLYPH_HOOK_TEXT_ATLAS : 0;'; New = '    return SOS_GLYPH_HOOK_TEXT_ATLAS;'; What = 'PlayStation prompts install the hooks' }
-        @{ Old = '        else if (fnv1a(FNV_OFFSET, image + hook->method, hook->length) != hook->hash) reason = "a hooked method is not the verified code";'; New = ''; What = 'a changed method is hooked'; Real = $true }
-        @{ Old = '    if (!reason && services != site->services_hash) reason = "the code the handlers call is not the verified code";'; New = '    (void)services;'; What = 'the called functions are not verified'; Real = $true }
-        @{ Old = '(uintptr_t)sos_image_glyphs_on_set_sprite, (uintptr_t)sos_prompt_hook_handler}'; New = '(uintptr_t)sos_image_glyphs_on_set_sprite, (uintptr_t)sos_image_glyphs_on_enable}'; What = 'the text atlas hook calls another handler'; Real = $true }
-        @{ Old = '    method[5] = 0x90;'; New = '    method[5] = 0xcc;'; What = 'the sixth stolen byte is a trap'; Real = $true }
-        @{ Old = '    put_rel32(at, at + 4, method + SOS_GLYPH_HOOK_STOLEN);'; New = '    put_rel32(at, at + 4, method);'; What = 'the stub returns into the hook'; Real = $true }
+        @{ Old = '        else if (fnv1a(FNV_OFFSET, image + hook->method, hook->length) != hook->hash) reason = "a hooked method is not the verified code";'; New = ''; What = 'a changed method is hooked' }
+        @{ Old = '    if (!reason && services != site->services_hash) reason = "the code the handlers call is not the verified code";'; New = '    (void)services;'; What = 'the called functions are not verified' }
+        @{ Old = '(uintptr_t)sos_image_glyphs_on_set_sprite, (uintptr_t)sos_prompt_hook_handler}'; New = '(uintptr_t)sos_image_glyphs_on_set_sprite, (uintptr_t)sos_image_glyphs_on_enable}'; What = 'the text atlas hook calls another handler' }
+        @{ Old = '    method[5] = 0x90;'; New = '    method[5] = 0xcc;'; What = 'the sixth stolen byte is a trap' }
+        @{ Old = '    put_rel32(at, at + 4, method + SOS_GLYPH_HOOK_STOLEN);'; New = '    put_rel32(at, at + 4, method);'; What = 'the stub returns into the hook' }
     )
+    if ($env:SOS_TEST_NO_MUTATIONS -eq '1') { $mutations = @() }
     $index = 0
     $detected = 0
     foreach ($mutation in $mutations) {
         $index++
-        $real = $mutation.ContainsKey('Real')
-        if ($real -and -not $hasBoot) { Write-Host "  [skip] mutation needs the real boot image: $($mutation.What)"; continue }
         $folder = Join-Path $temp "mutation$index"
         New-Item -ItemType Directory -Force -Path $folder | Out-Null
         $workspace = Copy-ToWorkspace $folder (Join-Path $launcher 'image_glyphs.c') 'image_glyphs.c'
         Edit-WorkspaceText $workspace $mutation.Old $mutation.New
         $mutantObject = Join-Path $folder 'image_glyphs.o'
         $mutantExe = Join-Path $folder 'test.exe'
-        if (-not $real) { $env:SOS_TEST_FAST = '1' }
+        $env:SOS_TEST_FAST = '1'
         try {
             $ok = Test-MutationDetected $mutation.What { Build-Object $workspace $mutantObject @('-Wno-unused'); Build-Test $mutantObject $mutantExe; $global:LASTEXITCODE = 0 } $mutantExe
         } finally { Remove-Item Env:\SOS_TEST_FAST -ErrorAction SilentlyContinue }

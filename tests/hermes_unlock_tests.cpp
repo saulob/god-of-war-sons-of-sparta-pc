@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "build_images.h"
 #include "sos_hermes_unlock.h"
 
 namespace fs = std::filesystem;
@@ -158,26 +159,11 @@ int main() {
     const fs::path on_settings = settings / "on.ini";
     const fs::path off_settings = settings / "off.ini";
 
-    const struct {
-        const char* key;
-        std::vector<const char*> folders;
-    } builds[] = {{"CUSA57767-1.00", {"CUSA57767-1.00", "v1.00"}}, {"CUSA57767-1.01", {"CUSA57767-1.01", "v1.01"}}};
-    bool any = false;
-    for (const auto& build : builds) {
-        fs::path boot;
-        for (const char* folder : build.folders) {
-            const fs::path candidate = root / "build" / "image" / folder / "boot.bin";
-            if (boot.empty() && fs::is_regular_file(candidate)) boot = candidate;
-        }
-        if (boot.empty()) {
-            std::printf("  [skip] %s: no boot image\n", build.key);
-            continue;
-        }
-        any = true;
-        TestBuild(build.key, boot, on_settings, off_settings);
+    for (const char* key : {"CUSA57767-1.00", "CUSA57767-1.01"}) {
+        const sos_test::BootImage boot = sos_test::ReportImage(root, key, "the Hermes Mode site");
+        if (boot.found()) TestBuild(key, boot.path, on_settings, off_settings);
     }
     fs::remove_all(settings);
-    if (!any) std::printf("  [skip] no installed boot image: the real code was not read\n");
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
