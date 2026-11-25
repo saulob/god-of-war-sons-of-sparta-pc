@@ -22,6 +22,7 @@
 #include "updater/update_job.h"
 #include "updater/update_paths.h"
 #include "updater/update_zip.h"
+#include "updater/url_policy.h"
 #include "updater/version.h"
 
 using namespace trg::update;
@@ -573,6 +574,33 @@ void TestReleaseContract() {
   std::printf("  release scripts checked: %d\n", packagers);
 }
 
+void TestUrlPolicy() {
+  std::printf("Update address policy\n");
+  const std::vector<std::string> hosts = GitHubReleaseHosts();
+  CHECK(UrlHostAllowed("https://api.github.com/repos/saulob/god-of-war-sons-of-sparta-pc/releases/latest", hosts));
+  CHECK(UrlHostAllowed("https://release-assets.githubusercontent.com/github-production-release-asset/1?sig=a", hosts));
+  CHECK(UrlHostAllowed("https://objects.githubusercontent.com/x", hosts));
+  CHECK(UrlHostAllowed("HTTPS://GitHub.com:443/saulob", hosts));
+  CHECK(!UrlHostAllowed("http://github.com/saulob", hosts));
+  CHECK(!UrlHostAllowed("https://example.com/github.com", hosts));
+  CHECK(!UrlHostAllowed("https://github.com.example.com/x", hosts));
+  CHECK(!UrlHostAllowed("https://github.com@example.com/x", hosts));
+  CHECK(!UrlHostAllowed("https://github.com:8443/x", hosts));
+  CHECK(!UrlHostAllowed("https://github.com\\@example.com/x", hosts));
+  CHECK(!UrlHostAllowed("https://", hosts));
+  CHECK(!UrlHostAllowed("https://github.com/x", {}));
+
+  const std::string prefix = "https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/download/";
+  CHECK(UrlAllowed(prefix + "v1.1.0/SonsOfSpartaPC-v1.1.0-windows-x64.zip", hosts, prefix));
+  CHECK(UrlAllowed(prefix + "v1.1.0/SonsOfSpartaPC-v1.1.0-x86_64.AppImage.sha256", hosts, prefix));
+  CHECK(!UrlAllowed("https://github.com/someone/else/releases/download/v1/SonsOfSpartaPC-v1-windows-x64.zip", hosts,
+                    prefix));
+  CHECK(!UrlAllowed("https://objects.githubusercontent.com/SonsOfSpartaPC-v1.1.0-windows-x64.zip", hosts, prefix));
+  CHECK(!UrlAllowed("http://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/download/v1.1.0/a.zip", hosts,
+                    prefix));
+  CHECK(UrlAllowed("https://github.com/anything", hosts, ""));
+}
+
 void TestPaths() {
   std::printf("path safety\n");
   CHECK(IsSafeRelativePath("sons_of_sparta.exe"));
@@ -591,6 +619,10 @@ void TestPaths() {
   CHECK(IsProtectedRelativePath("user/sons_of_sparta.ini"));
   CHECK(IsProtectedRelativePath("user/savedata/1/CUSA57767/SAVE0.DAT"));
   CHECK(IsProtectedRelativePath("logs/a.log"));
+  CHECK(IsProtectedRelativePath("logs/sons_of_sparta_005.dmp"));
+  CHECK(IsProtectedRelativePath("logs/sons_of_sparta_005_2.dmp"));
+  CHECK(IsProtectedRelativePath("sons_of_sparta_005.dmp"));
+  CHECK(IsProtectedRelativePath("Crash.DMP"));
   CHECK(IsProtectedRelativePath("cache/CUSA57767/a.spv"));
   CHECK(IsProtectedRelativePath("user/cache/CUSA57767/pipeline.bin"));
   CHECK(IsProtectedRelativePath("content/foo"));
@@ -684,6 +716,7 @@ int main() {
   TestRollback();
   TestPackagingNames();
   TestReleaseContract();
+  TestUrlPolicy();
   TestPaths();
   TestRestartArguments();
   TestAppImageTarget();
