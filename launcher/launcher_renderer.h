@@ -7,7 +7,7 @@
 
 namespace sos {
 
-// SOS_LAUNCHER_RENDERER: "software" or "direct3d11" (experimental, Windows only); anything else is automatic.
+// SOS_LAUNCHER_RENDERER: "software" or "direct3d11" (Windows only); anything else is automatic.
 inline constexpr const char* kLauncherRendererVariable = "SOS_LAUNCHER_RENDERER";
 
 enum class RendererRequest { kAuto, kSoftware, kDirect3D11 };
@@ -35,7 +35,7 @@ inline const char* RendererRequestName(RendererRequest request) {
 }
 
 // SDL renderer names in the order they are tried, each at most once; an empty name lets SDL pick its first working
-// renderer. Windows defaults to software, and Direct3D 11 only on request, always with software behind it.
+// renderer. Windows prefers Direct3D 11, and software is always behind it.
 inline std::vector<std::string_view> LauncherRendererOrder(bool windows, RendererRequest request) {
     if (request == RendererRequest::kSoftware) {
         return {"software"};
@@ -43,10 +43,7 @@ inline std::vector<std::string_view> LauncherRendererOrder(bool windows, Rendere
     if (!windows) {
         return {"", "software"};
     }
-    if (request == RendererRequest::kDirect3D11) {
-        return {"direct3d11", "software"};
-    }
-    return {"software"};
+    return {"direct3d11", "software"};
 }
 
 // System modules a renderer loads that must stay mapped until the process exits: SDL unloads d3d11.dll right after the

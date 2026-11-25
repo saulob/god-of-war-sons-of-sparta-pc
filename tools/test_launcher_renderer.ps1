@@ -22,13 +22,14 @@ $mutations = @(
             pacer_.Reset();' },
     @{ Name = 'the minimized low wake rate is a 1 ms poll'; File = $loop; Old = 'inline constexpr int64_t kMinimizedWakeNs = 100 * kNsPerMs;'; New = 'inline constexpr int64_t kMinimizedWakeNs = 1 * kNsPerMs;' },
     @{ Name = 'the software fallback is removed'; File = $renderer; Old = 'return {"direct3d11", "software"};'; New = 'return {"direct3d11"};' },
-    @{ Name = 'an accelerated renderer is forced on Windows with no override'; File = $renderer; Old = '    return {"software"};
+    @{ Name = 'Windows reverts to software as the primary renderer'; File = $renderer; Old = '    return {"direct3d11", "software"};
 }
 
-// System modules'; New = '    return {"direct3d11"};
+// System modules'; New = '    return {"software"};
 }
 
 // System modules' },
+    @{ Name = 'Direct3D 11 no longer pins its modules'; File = $renderer; Old = 'return {"d3d11.dll", "dxgi.dll"};'; New = 'return {};' },
     @{ Name = 'an unknown override selects Direct3D 11'; File = $renderer; Old = '        return RendererRequest::kDirect3D11;
     }
     return RendererRequest::kAuto;'; New = '        return RendererRequest::kDirect3D11;

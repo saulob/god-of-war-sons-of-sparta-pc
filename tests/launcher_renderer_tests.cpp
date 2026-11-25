@@ -559,12 +559,18 @@ void TestRendererPolicy() {
         }
         return text;
     };
-    Check(names(LauncherRendererOrder(true, R::kAuto)) == "[software]", "Windows defaults to the software renderer");
+    Check(names(LauncherRendererOrder(true, R::kAuto)) == "[direct3d11][software]", "Windows defaults to Direct3D 11 with software behind it");
     Check(names(LauncherRendererOrder(true, R::kSoftware)) == "[software]", "Windows software override is software alone");
-    Check(names(LauncherRendererOrder(true, R::kDirect3D11)) == "[direct3d11][software]", "Windows Direct3D 11 is opt-in and always has software behind it");
+    Check(names(LauncherRendererOrder(true, R::kDirect3D11)) == "[direct3d11][software]", "Windows Direct3D 11 always has software behind it");
     Check(names(LauncherRendererOrder(false, R::kAuto)) == "[][software]", "other platforms keep SDL's first working renderer, then software");
     Check(names(LauncherRendererOrder(false, R::kSoftware)) == "[software]", "other platforms honor the software override");
     Check(names(LauncherRendererOrder(false, R::kDirect3D11)) == "[][software]", "Direct3D 11 is ignored where it does not exist");
+    const std::vector<std::string_view> windows_auto = LauncherRendererOrder(true, R::kAuto);
+    Check(!windows_auto.empty() && windows_auto.front() == "direct3d11" && windows_auto.front() != "software",
+          "Windows is never forced back to software as the primary renderer");
+    const std::vector<std::string_view> pins = RendererModulesToPin("direct3d11");
+    Check(pins.size() == 2 && pins[0] == "d3d11.dll" && pins[1] == "dxgi.dll", "Direct3D 11 requires d3d11.dll and dxgi.dll to stay loaded");
+    Check(RendererModulesToPin("software").empty() && RendererModulesToPin("").empty(), "only Direct3D 11 pins modules");
     Check(ParseRendererRequest(nullptr) == R::kAuto && ParseRendererRequest("") == R::kAuto && ParseRendererRequest("auto") == R::kAuto, "no value and auto are automatic");
     Check(ParseRendererRequest("software") == R::kSoftware && ParseRendererRequest("direct3d11") == R::kDirect3D11, "the two named renderers parse");
     Check(ParseRendererRequest("D3D11") == R::kAuto && ParseRendererRequest("vulkan") == R::kAuto && ParseRendererRequest(" software") == R::kAuto,
@@ -608,14 +614,15 @@ void TestRendererPolicy() {
     {
         Probe probe;
         const RendererSelection s = select(probe, true, R::kAuto);
-        Check(s.created && s.name == "software" && !s.fallback && s.attempts == 1 && s.pinned == 0 && joined(probe) == "create:software,",
-              "software initialization succeeds on the first attempt, nothing pinned");
+        Check(s.created && s.name == "direct3d11" && !s.fallback && s.attempts == 1 && s.pinned == 2 &&
+                  joined(probe) == "pin:d3d11.dll,pin:dxgi.dll,create:direct3d11,",
+              "Windows automatic selection pins both modules, then creates Direct3D 11");
     }
     {
         Probe probe;
         probe.create_fail = {"direct3d11"};
-        const RendererSelection s = select(probe, true, R::kDirect3D11);
-        Check(s.created && s.name == "software" && s.fallback && s.attempts == 2, "an accelerated renderer that fails to initialize falls back to software");
+        const RendererSelection s = select(probe, true, R::kAuto);
+        Check(s.created && s.name == "software" && s.fallback && s.attempts == 2, "automatic selection falls back to software when Direct3D 11 fails");
         Check(joined(probe) == "pin:d3d11.dll,pin:dxgi.dll,create:direct3d11,create:software,", "modules are pinned before the accelerated renderer, each renderer created once");
     }
     {
@@ -628,11 +635,11 @@ void TestRendererPolicy() {
     {
         Probe probe;
         probe.create_fail = {"direct3d11", "software"};
-        const RendererSelection s = select(probe, true, R::kDirect3D11);
+        const RendererSelection s = select(probe, true, R::kAuto);
         Check(!s.created && s.attempts == 2 && Count(joined(probe), "create:") == 2, "when every renderer fails there is no retry loop");
         Probe none;
         none.create_fail = {"software"};
-        const RendererSelection t = select(none, true, R::kAuto);
+        const RendererSelection t = select(none, true, R::kSoftware);
         Check(!t.created && t.attempts == 1 && Count(joined(none), "create:") == 1, "a failing software renderer is attempted once");
     }
     {
@@ -646,10 +653,10 @@ void TestRendererPolicy() {
     }
     {
         Probe a, b;
-        const RendererSelection x = select(a, true, R::kDirect3D11);
-        const RendererSelection y = select(b, true, R::kDirect3D11);
+        const RendererSelection x = select(a, true, R::kAuto);
+        const RendererSelection y = select(b, true, R::kAuto);
         Check(x.name == "direct3d11" && !x.fallback && x.pinned == 2 && x.name == y.name && joined(a) == joined(b),
-              "the experimental renderer behaves deterministically");
+              "the automatic renderer choice is deterministic and pins exactly two modules");
     }
     const std::string line = RendererSelectedLine("software", R::kAuto, false, 0);
     Check(line == "Launcher renderer: selected=software requested=auto fallback=0 pinned_modules=0", "the selection line names renderer, request, fallback and pins");
@@ -672,8 +679,8 @@ void TestWiring() {
     Check(!Has(host, "direct3d") && !Has(host, "d3d11") && !Has(host, "SDL_HINT_RENDER_DRIVER"),
           "Dragon gate: no Direct3D name or render driver hint outside the policy header");
     const std::string order = Between(renderer, "inline std::vector<std::string_view> LauncherRendererOrder", "inline std::vector<std::string_view> RendererModulesToPin");
-    Check(Count(order, "\"direct3d11\"") == 1 && Has(order, "if (request == RendererRequest::kDirect3D11) {\n        return {\"direct3d11\", \"software\"};"),
-          "Dragon gate: the order names Direct3D 11 only behind the explicit request, with software behind it");
+    Check(Count(order, "\"direct3d11\"") == 1 && Count(order, "\"direct3d11\", \"software\"") == 1,
+          "Dragon gate: the Windows order tries Direct3D 11 first, with software behind it");
     const std::string pin = Between(host, "bool PinModule(std::string_view name) {", "int64_t ThreadCpuNs() {");
     Check(Has(pin, "LoadLibraryW(") && Has(pin, "GET_MODULE_HANDLE_EX_FLAG_PIN"), "Dragon gate: the modules are pinned so SDL's unload cannot unmap them");
     Check(Before(renderer, "pin(module)", "create(name)"), "Dragon gate: pinning precedes creation in the selection");
@@ -689,7 +696,7 @@ void TestWiring() {
               Before(close, "SDL_DestroyRenderer(renderer_);", "SDL_DestroyWindow(window_);") && Before(close, "SDL_DestroyWindow(window_);", "SDL_Quit();"),
           "Dragon gate: teardown stays textures, ImGui, renderer, window, SDL");
     Check(Before(launcher, "host_.Close();", "\"closed, starting the game\"") && Has(launcher, "return outcome == Outcome::kPlay ? SOS_LAUNCHER_PLAY : SOS_LAUNCHER_QUIT;"),
-          "Dragon gate: the launcher renderer is still torn down in this process before the game starts, so the default must stay software");
+          "Dragon gate: the launcher renderer is torn down before the game starts, with its modules pinned for the process lifetime");
     Check(!Has(window, "SDL_CreateRenderer") && !Has(window, "SDL_SOFTWARE_RENDERER") && !Has(window, "D3D11CreateDevice") && !Has(window, "d3d11"),
           "Dragon gate: the game window never uses an SDL renderer or Direct3D 11");
     Check(Has(host, "const RendererRequest request = ParseRendererRequest(std::getenv(kLauncherRendererVariable));") &&
