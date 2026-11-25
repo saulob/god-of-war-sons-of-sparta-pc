@@ -146,6 +146,7 @@ constexpr char kSkipIntroHelp[] = "Skips the startup logos and video; the game c
 constexpr char kUnlockHermesModeHelp[] =
     "Unlocks Hermes Mode from the beginning, without completing the campaign or entering the secret code. Existing saves "
     "are not modified.";
+constexpr char kUnlockThePitHelp[] = "Unlock The Pit of Agonies without completing the main story";
 constexpr char kAntiAliasingHelp[] =
     "SMAA smooths jagged edges on the finished picture, at a small cost in performance.";
 constexpr char kAnisotropyHelp[] =
@@ -1015,6 +1016,7 @@ private:
             ui.Toggle("Skip Intro", kSkipIntroHelp, kSkipIntroKey, false, "Off", "On");
         }
         ui.Toggle("Unlock Hermes Mode", kUnlockHermesModeHelp, kUnlockHermesModeKey, false, "Off", "On");
+        ui.Toggle("Unlock The Pit Early", kUnlockThePitHelp, kUnlockThePitKey, false, "Off", "On");
         if (kSeparateGameProcessAvailable) {
             ui.Toggle("Allow overlay programs", kAllowOverlayProgramsHelp, kAllowOverlayProgramsKey, false, "Off", "On");
         }

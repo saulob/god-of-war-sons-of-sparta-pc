@@ -22,9 +22,11 @@
 #include "skip_intro.h"
 #include "sos_skip_intro.h"
 #include "sos_hermes_unlock.h"
+#include "sos_pit_unlock.h"
 #include "sos_exit_game.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
+#include "image_glyphs.h"
 #include "trophies/trophy_runtime.h"
 #include "sos_image_format.h"
 #include "isa_emulate.h"
@@ -885,8 +887,10 @@ int main(int argc, char **argv) {
 
     const int skip_intro_wanted = sos_skip_intro_from_file(settings_file) && sos_skip_intro_supported(paths.image_dir);
     const int hermes_unlock_wanted = sos_hermes_unlock_from_file(settings_file);
+    const int pit_unlock_wanted = sos_pit_unlock_from_file(settings_file);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
-                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES);
+                                        SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
+                                        SOS_IMAGE_GLYPHS_STUB_BYTES);
     image = allocate(round_page(size) + stub_area);
     runtime_set_guest_image(image,size);
     image_size = size;
@@ -1132,6 +1136,13 @@ int main(int argc, char **argv) {
     } else {
         printf("Hermes Mode: early unlock off; the game's own availability is kept\n");
     }
+    if (pit_unlock_wanted) {
+        char pit_message[200] = "unavailable: not a supported game build";
+        if (prompt_key[0]) sos_pit_unlock_apply(image, size, prompt_key, app0, pit_message, sizeof(pit_message));
+        printf("The Pit: %s\n", pit_message);
+    } else {
+        printf("The Pit: early unlock off; the game's own availability is kept\n");
+    }
     if (prompt_style == SOS_PROMPTS_AUTOMATIC && prompt_key[0]) {
         char hook_message[200];
         sos_prompt_hook_arm(prompt_style, prompt_key);
@@ -1162,6 +1173,16 @@ int main(int argc, char **argv) {
             }
         } else {
             printf("Controller prompts: Settings dialogs keep the PlayStation glyphs: %s\n", dialog_message);
+        }
+        char glyphs_message[200];
+        uint8_t *glyph_stubs = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
+                               SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES;
+        if (sos_image_glyphs_install(image, size, prompt_key, prompt_style, glyph_stubs, SOS_IMAGE_GLYPHS_STUB_BYTES, glyphs_message,
+                                     sizeof(glyphs_message))) {
+            sos_image_glyphs_arm(prompt_style, image, prompt_key);
+            printf("Controller prompts: %s\n", glyphs_message);
+        } else {
+            printf("Controller prompts: menus keep their PlayStation glyphs: %s\n", glyphs_message);
         }
     }
     {

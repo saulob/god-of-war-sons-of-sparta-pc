@@ -181,9 +181,10 @@ run_suite "save-backup" bash -c "
 # 11. Launcher headless unit tests (linked against real built sos_launcher_core)
 run_suite "launcher-core" bash -c "
     '$CC' -std=gnu11 -Wall -Wextra -Werror -O1 -c '$root/src/sos_hermes_unlock.c' -o '$tmp/sos_hermes_unlock.o' &&
+    '$CC' -std=gnu11 -Wall -Wextra -Werror -O1 -c '$root/src/sos_pit_unlock.c' -o '$tmp/sos_pit_unlock.o' &&
     '$CXX' -std=c++20 -Wall -Wextra -O1 -no-pie -DSOS_SOURCE_DIR='\"$root\"' -DSOS_PORT_VERSION='\"0.1.0\"' \
         -I'$root/launcher' -I'$root/src' -I'$root/third_party/trg-launcher/include' $sdl_cflags $ssl_cflags \
-        '$root/tests/launcher_tests.cpp' '$tmp/sos_hermes_unlock.o' \
+        '$root/tests/launcher_tests.cpp' '$tmp/sos_hermes_unlock.o' '$tmp/sos_pit_unlock.o' \
         '$build_dir/launcher/libsos_launcher_core.a' '$build_dir/launcher/libtrg_core.a' \
         '$build_dir/libsos_keys.a' '$build_dir/libsos_startup_phase.a' \
         $sdl_libs $ssl_libs $zlib_libs -pthread -ldl -o '$tmp/launcher_tests' &&

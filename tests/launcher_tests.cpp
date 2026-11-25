@@ -377,6 +377,7 @@ void TestSettings() {
         Check(settings.GetBool(kShowLauncherKey, true), "Show this launcher defaults to on");
         Check(settings.Get(kFrameRateKey, "60") == "60", "frame rate defaults to 60");
         Check(!settings.GetBool(kUnlockHermesModeKey, false), "Unlock Hermes Mode defaults to off");
+        Check(!settings.GetBool(kUnlockThePitKey, false), "Unlock The Pit Early defaults to off");
         settings.Set(kDisplayModeKey, "borderless");
         settings.SetBool(kVSyncKey, false);
         settings.SetInt(kSharpenStrengthKey, 40);
@@ -385,6 +386,7 @@ void TestSettings() {
         Check(settings.Save(), "settings save");
     }
     Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 0, "Hermes Mode early unlock defaults off when the key is absent");
+    Check(sos_pit_unlock_from_file(Utf8(file).c_str()) == 0, "The Pit early unlock defaults off when the key is absent");
     const std::string text = ReadFile(file);
     Check(Contains(text, "display_mode = borderless") || Contains(text, "display_mode=borderless"), "display mode written");
     Check(Contains(text, "vsync = 0") || Contains(text, "vsync=0"), "booleans are written as 0/1");
@@ -403,6 +405,7 @@ void TestSettings() {
         Check(settings.Get(kDisplayModeKey, "windowed") == "windowed", "reset puts display mode back");
         Check(settings.Get(kFrameRateKey, "60") == "60", "reset puts frame rate back");
         Check(settings.Get(kUnlockHermesModeKey, "") == "0", "reset puts Hermes Mode early unlock back off");
+        Check(settings.Get(kUnlockThePitKey, "") == "0", "reset puts The Pit early unlock back off");
         Check(settings.Get(kLauncherXKey) == "10" && settings.Get(kLauncherYKey) == "20", "reset keeps the launcher placement");
         Check(settings.Save(), "reset settings save");
     }
@@ -428,15 +431,18 @@ void TestSettings() {
 
     std::set<std::string> managed;
     std::string hermes_default;
+    std::string pit_default;
     for (const ManagedSetting& setting : ManagedSettings()) {
         managed.insert(std::string(setting.key));
         if (setting.key == kUnlockHermesModeKey) hermes_default = setting.default_value;
+        if (setting.key == kUnlockThePitKey) pit_default = setting.default_value;
     }
     Check(hermes_default == "0", "the managed Hermes Mode default is off");
+    Check(pit_default == "0", "the managed The Pit default is off");
     for (const char* key : {kShowLauncherKey, kDisplayModeKey, kWindowWidthKey, kWindowHeightKey, kMonitorKey, kVSyncKey,
                             kPresentationKey, kUpscaleKey, kSharpenKey, kSharpenStrengthKey, kGraphicsCardKey,
                             kAntiAliasingKey, kAnisotropyKey, kFrameRateKey, kShowFpsTitleKey, kShowResolutionTitleKey,
-                            kShowFrameCounterKey, kSkipIntroKey, kUnlockHermesModeKey, kDetailedLoggingKey,
+                            kShowFrameCounterKey, kSkipIntroKey, kUnlockHermesModeKey, kUnlockThePitKey, kDetailedLoggingKey,
                             kAllowOverlayProgramsKey, kLauncherXKey,
                             kLauncherYKey, kLauncherWidthKey, kLauncherHeightKey, kLauncherMaximizedKey,
                             kLauncherFullscreenKey}) {
@@ -499,6 +505,23 @@ void TestSettings() {
         Check(settings.GetBool(kUnlockHermesModeKey, false), "saved Hermes Mode on is read back by the launcher");
     }
     Check(sos_hermes_unlock_from_file(nullptr) == 0, "Hermes Mode early unlock without a file is off");
+    Check(sos_pit_unlock_from_file(Utf8(file).c_str()) == 0, "turning Hermes Mode on leaves The Pit off");
+    {
+        LauncherSettings settings(file);
+        settings.SetBool(kUnlockHermesModeKey, false);
+        settings.SetBool(kUnlockThePitKey, true);
+        settings.Save();
+    }
+    Check(sos_pit_unlock_from_file(Utf8(file).c_str()) == 1, "The Pit early unlock on is read by the loader");
+    Check(sos_hermes_unlock_from_file(Utf8(file).c_str()) == 0, "turning The Pit on leaves Hermes Mode off");
+    {
+        LauncherSettings settings(file);
+        Check(settings.GetBool(kUnlockThePitKey, false), "saved The Pit on is read back by the launcher");
+        settings.SetBool(kUnlockThePitKey, false);
+        settings.Save();
+    }
+    Check(sos_pit_unlock_from_file(Utf8(file).c_str()) == 0, "The Pit early unlock off is read by the loader");
+    Check(sos_pit_unlock_from_file(nullptr) == 0, "The Pit early unlock without a file is off");
 
     Check(LauncherWanted(false, false, false, true), "an unready game always shows the launcher");
     Check(LauncherWanted(true, true, false, false), "Show this launcher on shows it");
@@ -607,7 +630,7 @@ void TestLauncherSource() {
     has("\"Off\", \"SMAA\"", "Anti-aliasing off/SMAA");
     has("{{\"0\", \"Game\"}, {\"2\", \"2x\"}, {\"4\", \"4x\"}, {\"8\", \"8x\"}, {\"16\", \"16x\"}}", "Texture filtering choices");
     for (const char* label : {"\"Frame rate\"", "\"Frame rate in title\"", "\"Render resolution in title\"", "\"Frame counter\"",
-                              "\"Skip Intro\"", "\"Unlock Hermes Mode\"", "\"Allow overlay programs\""}) {
+                              "\"Skip Intro\"", "\"Unlock Hermes Mode\"", "\"Unlock The Pit Early\"", "\"Allow overlay programs\""}) {
         has(label, std::string("Gameplay page row ") + label);
     }
     has("for (const int fps : {30, 60, 90, 120, 144, 165, 240, 0})", "frame rate choices");
@@ -615,10 +638,15 @@ void TestLauncherSource() {
     has("build_ && build_->skip_intro", "Skip Intro only where the build supports it");
     has("ui.Toggle(\"Unlock Hermes Mode\", kUnlockHermesModeHelp, kUnlockHermesModeKey, false, \"Off\", \"On\")",
         "Unlock Hermes Mode toggle defaults off");
+    has("ui.Toggle(\"Unlock The Pit Early\", kUnlockThePitHelp, kUnlockThePitKey, false, \"Off\", \"On\")",
+        "Unlock The Pit Early toggle defaults off");
+    has("Unlock The Pit of Agonies without completing the main story", "Unlock The Pit Early description");
     const size_t skip_intro = source.find("ui.Toggle(\"Skip Intro\"");
     const size_t hermes = source.find("ui.Toggle(\"Unlock Hermes Mode\"");
     const size_t overlay = source.find("ui.Toggle(\"Allow overlay programs\"");
     Check(skip_intro != std::string::npos && skip_intro < hermes && hermes < overlay, "Hermes follows Skip Intro in Gameplay");
+    const size_t pit = source.find("ui.Toggle(\"Unlock The Pit Early\"");
+    Check(pit != std::string::npos && hermes < pit && pit < overlay, "The Pit follows Hermes in Gameplay");
     Check(!Contains(source, "Asian Menu Buttons") && !Contains(source, "Local co-op") && !Contains(source, "kAsianMenuButtons"),
           "Controls has no Asian Menu Buttons or Local co-op");
     Check(!Contains(source, "Not available") && !Contains(source, "Unavailable"), "no unavailable rows");
@@ -662,6 +690,7 @@ void TestDocumentation() {
           "README explains the Hermes Mode option and the original mode");
     Check(Contains(readme, "disabled by default"), "README states the Hermes Mode option is off by default");
     Check(Contains(readme, "cannot be changed afterward"), "README states the save's mode is fixed");
+    Check(Contains(readme, "## The Pit of Agonies") && Contains(readme, "Unlock The Pit Early"), "README explains The Pit option");
 }
 
 void TestNoOnlineBackend() {

@@ -56,6 +56,7 @@ foreach ($name in 'settings', 'platform') {
 Compile $clang @('-std=c11', '-Wall', '-Wextra', '-Werror', '-O1') (Join-Path $root 'src\sos_keys.c') 'sos_keys'
 Compile $clang @('-std=c11', '-Wall', '-Wextra', '-Werror', '-O1') (Join-Path $root 'launcher\controller_prompts.c') 'controller_prompts'
 Compile $clang @('-std=c11', '-Wall', '-Wextra', '-Werror', '-O1') (Join-Path $root 'src\sos_hermes_unlock.c') 'sos_hermes_unlock'
+Compile $clang @('-std=c11', '-Wall', '-Wextra', '-Werror', '-O1') (Join-Path $root 'src\sos_pit_unlock.c') 'sos_pit_unlock'
 
 $exe = Join-Path $temp 'test_launcher.exe'
 & $clangxx $target @objects '-L' (Join-Path $prefix 'lib') '-lSDL3' '-lshell32' '-lole32' '-lcomdlg32' '-lwinhttp' '-lbcrypt' '-o' $exe

@@ -47,6 +47,7 @@ constexpr ManagedSetting kBaseSettings[] = {
     {kShowFrameCounterKey, "0"},
     {kSkipIntroKey, "0"},
     {kUnlockHermesModeKey, "0"},
+    {kUnlockThePitKey, "0"},
     {kDetailedLoggingKey, "1"},
     {kAllowOverlayProgramsKey, "0"},
     {kLauncherXKey, ""},
@@ -251,6 +252,7 @@ std::string SettingsSummary(const LauncherSettings& settings, const GameBuild* b
     line(std::string("Controller prompts ") + sos_prompt_style_label(prompts));
     line(std::string("Skip Intro ") + OnOff(settings.GetBool(kSkipIntroKey, false)));
     line(std::string("Unlock Hermes Mode ") + OnOff(settings.GetBool(kUnlockHermesModeKey, false)));
+    line(std::string("Unlock The Pit Early ") + OnOff(settings.GetBool(kUnlockThePitKey, false)));
     line(std::string("Overlay programs ") +
          (kSeparateGameProcessAvailable ? OnOff(settings.GetBool(kAllowOverlayProgramsKey, false)) : "unsupported"));
     return out;

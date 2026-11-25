@@ -94,9 +94,22 @@ def skip_intro_rows(text):
             for key, _size, fields in re.findall(r'\{"(CUSA\d+-[\d.]+)", (\d+)u((?:, 0x[0-9a-f]+){8})\}', text)}
 
 
-def hermes_unlock_rows(text):
+def unlock_rows(text):
     return {key: len(fields.split(",")) - 1
             for key, _size, fields in re.findall(r'\{"(CUSA\d+-[\d.]+)", (\d+)u((?:, 0x[0-9a-f]+){2})\}', text)}
+
+
+def image_glyph_sites(text):
+    """{version: semantics}: the hooks' lengths and entries, the services' lengths and the object layout."""
+    found = {}
+    for match in re.finditer(r"kImageGlyphs_(\d+)_(\d+) = \{(.*?)\};", text, re.S):
+        body = match.group(3)
+        hooks = re.findall(r"\{0x[0-9a-f]+u, (0x[0-9a-f]+)u, 0x[0-9a-f]+ull, \{([^}]*)\}\}", body)
+        ranges = re.findall(r"\{0x([0-9a-f]+)u, 0x([0-9a-f]+)u\}", body)
+        layout = re.search(r"((?:0x[0-9a-f]+u, ){4}0x[0-9a-f]+u)$", body)
+        if len(hooks) == 4 and len(ranges) == 5 and layout:
+            found[f"{match.group(1)}.{match.group(2)}"] = (tuple(hooks), tuple(int(b, 16) - int(a, 16) for a, b in ranges), byte_list(layout.group(1)))
+    return found
 
 
 def split_versions(text, prefix):
@@ -200,9 +213,17 @@ def check_skip_intro(gate, builds, sources):
 def check_hermes_unlock(gate, builds, sources):
     gate.start("Hermes Mode early unlock")
     keys = {b["key"] for b in builds.values()}
-    rows = hermes_unlock_rows(sources["src/sos_hermes_unlock.c"])
+    rows = unlock_rows(sources["src/sos_hermes_unlock.c"])
     gate.same_builds(rows, keys, "src/sos_hermes_unlock.c site table")
     gate.check(len(set(rows.values())) <= 1, "src/sos_hermes_unlock.c site rows differ in shape between builds")
+
+
+def check_pit_unlock(gate, builds, sources):
+    gate.start("The Pit early unlock")
+    keys = {b["key"] for b in builds.values()}
+    rows = unlock_rows(sources["src/sos_pit_unlock.c"])
+    gate.same_builds(rows, keys, "src/sos_pit_unlock.c site table")
+    gate.check(len(set(rows.values())) <= 1, "src/sos_pit_unlock.c site rows differ in shape between builds")
 
 
 def check_prompts(gate, builds, sources):
@@ -237,6 +258,21 @@ def check_dialog(gate, builds, sources):
     reference = min(builds)
     for version in sorted(set(builds) & set(sites)):
         gate.check(sites[version] == sites.get(reference), f"CUSA57767 {version} dialog site differs from {reference} in prologue, range lengths or object layout")
+
+
+def check_image_glyphs(gate, builds, sources):
+    gate.start("Menu glyph Images")
+    keys = {b["key"] for b in builds.values()}
+    sites = image_glyph_sites(sources["launcher/image_glyphs_sites.h"])
+    gate.same_builds({f"{TITLE}-{v}" for v in sites}, keys, "launcher/image_glyphs_sites.h")
+    dispatch = dispatch_rows(sources["launcher/image_glyphs.c"], "kImageGlyphs")
+    gate.same_builds(dispatch, keys, "launcher/image_glyphs.c build table")
+    for key, symbols in dispatch.items():
+        suffix = "_" + key.rsplit("-", 1)[1].replace(".", "_")
+        gate.check(symbols and all(s.endswith(suffix) for s in symbols), f"launcher/image_glyphs.c routes {key} to another build's site")
+    reference = min(builds)
+    for version in sorted(set(builds) & set(sites)):
+        gate.check(sites[version] == sites.get(reference), f"CUSA57767 {version} glyph hooks differ from {reference} in entry, length or object layout")
 
 
 def check_exit_game(gate, builds, sources):
@@ -274,15 +310,17 @@ def check_resolution(gate, builds, sources):
         gate.check(len(offsets) == 7 and len(set(offsets)) == 7, f"launcher/sos_resolution_sites.h: CUSA57767 {version} needs its 7 distinct SetResolution sites")
 
 
-FEATURES = [check_identity, check_skip_intro, check_hermes_unlock, check_prompts, check_dialog, check_exit_game, check_resolution]
+FEATURES = [check_identity, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution]
 
 # Sources that carry build-keyed data, with the feature that owns them.
 OWNERS = {
     "src/game_build.h": "Build identity", "launcher/game_profile.cpp": "Build identity", "scripts/game_profiles.py": "Build identity",
     "scripts/il2cpp_index.py": "Build identity", "src/sos_skip_intro.c": "Skip Intro",
     "src/sos_hermes_unlock.c": "Hermes Mode early unlock",
+    "src/sos_pit_unlock.c": "The Pit early unlock",
     "launcher/controller_prompts.c": "Xbox controller prompts", "launcher/controller_prompts_sites.h": "Xbox controller prompts",
     "launcher/prompt_dialog.c": "Settings dialog glyphs", "launcher/prompt_dialog_sites.h": "Settings dialog glyphs",
+    "launcher/image_glyphs.c": "Menu glyph Images", "launcher/image_glyphs_sites.h": "Menu glyph Images",
     "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
     "launcher/sos_resolution_sites.h": "Render resolution and True Ultrawide",
 }
@@ -292,8 +330,10 @@ SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save an
 # Tests and checks that must name every supported build, or iterate the inventory.
 COVERAGE = [
     ("tests/skip_intro_tests.cpp", "names"), ("tests/hermes_unlock_tests.cpp", "names"),
+    ("tests/pit_unlock_tests.cpp", "names"), ("scripts/pit_unlock_check.py", "names"),
     ("tests/title_patch_matrix_tests.cpp", "names"), ("tests/controller_prompts_tests.cpp", "names"),
-    ("tests/prompt_dialog_tests.cpp", "names"), ("tests/exit_game_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
+    ("tests/prompt_dialog_tests.cpp", "names"), ("tests/image_glyphs_tests.cpp", "names"),
+    ("scripts/image_glyphs.py", "names"), ("tests/exit_game_tests.cpp", "names"), ("tests/render_resolution_tests.cpp", "inventory"),
     ("scripts/skip_intro_check.py", "names"), ("scripts/hermes_unlock_check.py", "names"),
     ("scripts/title_input_check.py", "names"), ("scripts/map_input_check.py", "names"),
     ("scripts/prompt_sites.py", "names"), ("scripts/prompt_dialog.py", "names"), ("scripts/exit_game_sites.py", "names"),
@@ -480,8 +520,9 @@ def check_crash_path(gate, builds, load=load_image):
 
 def read_sources():
     sources = {path: read(path) for path in (
-        "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "src/sos_hermes_unlock.c",
+        "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "src/sos_hermes_unlock.c", "src/sos_pit_unlock.c",
         "launcher/controller_prompts.c", "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
+        "launcher/image_glyphs.c", "launcher/image_glyphs_sites.h",
         "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h")}
     for name in ("EBOOT_SHA256", "IMAGE_FOLDERS"):
         sources["il2cpp:" + name] = ast_assignment("scripts/il2cpp_index.py", name) or {}
@@ -526,8 +567,11 @@ def self_test():
     expect_failure("a build added to the inventory but missing from every table", lambda b: b.update({"1.02": {"key": f"{TITLE}-1.02", "sha256": "0" * 64, "folder": f"{TITLE}-1.02"}}))
     expect_failure("1.01 dropped from the Skip Intro table", mutate=lambda s: s.update({"src/sos_skip_intro.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_skip_intro.c"])}))
     expect_failure("1.01 dropped from the Hermes Mode table", mutate=lambda s: s.update({"src/sos_hermes_unlock.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_hermes_unlock.c"])}))
+    expect_failure("1.01 dropped from The Pit table", mutate=lambda s: s.update({"src/sos_pit_unlock.c": re.sub(r'\{"CUSA57767-1\.01".*\n', "", s["src/sos_pit_unlock.c"])}))
     expect_failure("1.01 dropped from the prompt dispatch table", mutate=lambda s: s.update({"launcher/controller_prompts.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["launcher/controller_prompts.c"])}))
     expect_failure("1.01 dropped from the dialog dispatch table", mutate=lambda s: s.update({"launcher/prompt_dialog.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["launcher/prompt_dialog.c"])}))
+    expect_failure("1.01 dropped from the menu glyph dispatch table", mutate=lambda s: s.update({"launcher/image_glyphs.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["launcher/image_glyphs.c"])}))
+    expect_failure("a menu glyph layout offset changed in 1.01", mutate=lambda s: s.update({"launcher/image_glyphs_sites.h": re.sub(r"(kImageGlyphs_1_01.*?)0xe0u, 0x20u", r"\g<1>0xe8u, 0x20u", s["launcher/image_glyphs_sites.h"], count=1, flags=re.S)}))
     expect_failure("1.01 dropped from the Exit Game dispatch table", mutate=lambda s: s.update({"src/sos_exit_game.c": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["src/sos_exit_game.c"])}))
     expect_failure("an Exit Game layout offset changed in 1.01", mutate=lambda s: s.update({"src/sos_exit_game_sites.h": re.sub(r"(kExitGame_1_01.*?0x10u, 0xb8u, )0x40u", r"\g<1>0x44u", s["src/sos_exit_game_sites.h"], count=1, flags=re.S)}))
     expect_failure("an Xbox patch byte changed in 1.01", mutate=lambda s: s.update({"launcher/controller_prompts_sites.h": re.sub(

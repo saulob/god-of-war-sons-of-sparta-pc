@@ -40,6 +40,7 @@ expose equivalent functionality.
   - **Skip Intro**
   - **Exit Game** integrated into the title menu
   - **Unlock Hermes Mode** (off by default; see below)
+  - **Unlock The Pit Early** (off by default; see below)
 - **Controllers:** DualShock 4, DualSense, Xbox, and generic SDL3 gamepads, Automatic / PlayStation / Xbox
   button prompts and prepared Xbox glyphs, plus optional `user/gamecontrollerdb.txt` overrides.
 - **Save Data & Trophies:** Native save data with atomic commit and backup support, plus full trophy tracking
@@ -56,6 +57,13 @@ When enabled, Hermes Mode is selectable immediately on the original GAME MODES s
 Erebus Mode without completing the campaign or entering the secret code. Turning the option off restores the
 original unlock requirement; the original cheat-code unlock and existing Hermes saves continue to work normally.
 As in the original game, the selected game mode is stored with the save and cannot be changed afterward.
+
+## The Pit of Agonies
+
+The Pit is the game's original endgame challenge mode and is part of both supported builds. The **Unlock The Pit Early**
+toggle on the launcher's **Gameplay** page, off by default, shows the game's own title menu entry before the main story
+is completed. It marks nothing as completed and is independent of **Unlock Hermes Mode**; turning it off restores the
+original unlock requirement. The original cheat code still works and unlocks both modes.
 
 ## Installing the Game & Official Update
 
