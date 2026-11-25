@@ -35,6 +35,18 @@ Report 'the policy ignores SIGPIPE and nothing else, and is not compiled on Wind
 $winSources = @('compat_win.c', 'compat_win.h') | ForEach-Object { [IO.File]::ReadAllText((Join-Path $root "src\$_")) }
 Report 'no Windows source path uses the POSIX signal API for it' (-not (($winSources -join "`n") -match 'SIGPIPE|sos_ignore_sigpipe'))
 
+function Test-PosixGpuFaults([string]$Text) {
+    $enabled = [regex]::Match($Text, 'dcpgpu_init\(&gpu\) == 0\) \{\n\s*gpu_enabled = 1;').Success
+    $handlerAt = $Text.IndexOf('static void posix_fault_handler(', [StringComparison]::Ordinal)
+    $handler = if ($handlerAt -ge 0) { $Text.Substring($handlerAt, $Text.IndexOf('static void install_posix_fault_handlers', $handlerAt) - $handlerAt) } else { '' }
+    $unblockAt = $handler.IndexOf('pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);', [StringComparison]::Ordinal)
+    $jumpAt = $handler.IndexOf('siglongjmp(*buffer, 1);', [StringComparison]::Ordinal)
+    return ($enabled -and $unblockAt -ge 0 -and $unblockAt -lt $jumpAt)
+}
+Report 'GPU page faults are dispatched on every platform and a recovered fault unblocks its signal' (Test-PosixGpuFaults $loader)
+Report 'mutation detected: GPU faults dispatched on Windows only fail the source gate' (-not (Test-PosixGpuFaults $loader.Replace("            gpu_enabled = 1;`n", "#ifdef _WIN32`n            gpu_enabled = 1;`n#endif`n")))
+Report 'mutation detected: a recovered fault that stays blocked fails the source gate' (-not (Test-PosixGpuFaults $loader.Replace('pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);', '')))
+
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 $posixHost = $false
 function Convert-ToWslPath([string]$Path) {

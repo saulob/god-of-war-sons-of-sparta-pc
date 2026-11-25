@@ -221,13 +221,47 @@ void TestSourceWiring() {
     Check(Contains(swapchain, "if (kind != DcpPresent::SwapResult::Suboptimal || step.recreate || logged_kept_suboptimal)"),
           "a kept SUBOPTIMAL swapchain is logged once");
     const std::string presenter = Source("gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp");
-    Check(Contains(presenter, "if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {\n        swapchain.Recreate("),
+    Check(Contains(presenter, "if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {\n        if (!swapchain.Recreate("),
           "a window resize recreates directly, outside the suppression");
+}
+
+void TestSurfaceWithoutArea() {
+    using DcpPresent::SurfaceHasArea;
+    Check(SurfaceHasArea(1920, 1080, 1920, 1080), "a normal surface can hold a swapchain");
+    Check(!SurfaceHasArea(0, 0, 0, 0) && !SurfaceHasArea(0, 0, 16384, 16384), "a minimized surface cannot");
+    Check(!SurfaceHasArea(1920, 0, 1920, 1080) && !SurfaceHasArea(0, 1080, 1920, 1080), "one empty dimension is enough");
+    Check(SurfaceHasArea(UINT32_MAX, UINT32_MAX, 16384, 16384), "a surface that follows the swapchain can");
+    Check(!SurfaceHasArea(UINT32_MAX, UINT32_MAX, 0, 0), "unless its maximum is empty");
+
+    SwapchainHealth h;
+    h.RequestRecreation();
+    h.Acquire(SwapResult::Success);
+    h.Present(SwapResult::Success);
+    Check(h.NeedsRecreation(), "a recreation held back by an empty surface stays pending");
+    h.Recreated();
+    Check(!h.NeedsRecreation(), "until the swapchain is recreated");
+
+    const std::string swapchain = Source("gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp");
+    const size_t create = swapchain.find("bool Swapchain::Create(");
+    const std::string body = swapchain.substr(create, swapchain.find("SetSurfaceProperties();", create) - create);
+    const size_t guard = body.find("if (!SurfaceHasArea()) {\n        health.RequestRecreation();\n        return false;");
+    Check(guard != std::string::npos && guard < body.find("Destroy();") && guard < body.find("health.Recreated();"),
+          "an empty surface keeps the old swapchain and leaves the recreation pending");
+    const std::string presenter = Source("gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp");
+    const std::string skip = "if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {\n            ";
+    size_t skips = 0;
+    for (size_t at = presenter.find(skip + "free_frame();\n            return;"); at != std::string::npos;
+         at = presenter.find(skip + "free_frame();\n            return;", at + 1)) {
+        ++skips;
+    }
+    Check(skips == 2 && Contains(presenter, skip + "return;"),
+          "a frame that cannot be presented goes back to the free queue, a loading frame is skipped");
 }
 
 } // namespace
 
 int main() {
+    TestSurfaceWithoutArea();
     TestResults();
     TestPersistentSuboptimal();
     TestRequiredOverrides();

@@ -57,7 +57,9 @@ std::optional<Json> ReportSession::call(const std::string& op, Json body, std::s
         }
         if ((*reply)["re"].as_int(-1) != int64_t(seq_)) continue;
         last_reply_ = *reply;
-        if (code) *code = reply->has("code") ? (*reply)["code"].as_string() : std::string("bad_reply");
+        const std::string result = reply->has("code") ? (*reply)["code"].as_string() : std::string("bad_reply");
+        if (code) *code = result;
+        if (result != "ok") return std::nullopt;
         return reply;
     }
 }

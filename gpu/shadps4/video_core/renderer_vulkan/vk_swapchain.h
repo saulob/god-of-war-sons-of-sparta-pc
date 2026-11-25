@@ -24,11 +24,12 @@ public:
     explicit Swapchain(const Instance& instance, const Frontend::WindowSDL& window);
     ~Swapchain();
 
-    /// Creates (or recreates) the swapchain with a given size.
-    void Create(u32 width, u32 height);
+    /// Creates (or recreates) the swapchain with a given size. False, with the old swapchain kept and the recreation
+    /// pending, while the surface has no area.
+    bool Create(u32 width, u32 height);
 
-    /// Recreates the swapchain with a given size and current surface.
-    void Recreate(u32 width, u32 height);
+    /// Recreates the swapchain with a given size and current surface; false as Create.
+    bool Recreate(u32 width, u32 height);
 
     /// Acquires the next image in the swapchain.
     bool AcquireNextImage();
@@ -103,6 +104,8 @@ public:
     }
 
 private:
+    bool SurfaceHasArea() const;
+
     /// Selects the best available swapchain image format
     void FindPresentFormat();
 

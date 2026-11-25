@@ -85,5 +85,18 @@ foreach ($test in @(@{ Name = 'window_fit_tests'; Extra = @() }, @{ Name = 'path
     if ($LASTEXITCODE -ne 0) { $result = $LASTEXITCODE }
 }
 
+# The production resources must give the runtime's narrow file calls the UTF-8 code page.
+$versionParts = $version.Replace('.', ',')
+[IO.File]::WriteAllText((Join-Path $temp 'sos_version.h'),
+    "#define SOS_VERSION_NUMBERS $versionParts,0`n#define SOS_FILE_VERSION_STRING `"$version.0`"`n#define SOS_VERSION_STRING `"$version`"`n")
+$resource = Join-Path $temp 'sons_of_sparta_res.o'
+& (Join-Path $tc.Bin 'windres.exe') '-I' $temp '-I' (Join-Path $root 'src') (Join-Path $root 'src\sons_of_sparta.rc') '-O' 'coff' '-o' $resource
+if ($LASTEXITCODE -ne 0) { throw 'could not compile src\sons_of_sparta.rc' }
+$manifestExe = Join-Path $temp 'manifest_tests.exe'
+& $clang $target '-std=c11' '-Wall' '-Wextra' '-Werror' (Join-Path $root 'tests\manifest_tests.c') $resource '-o' $manifestExe
+if ($LASTEXITCODE -ne 0) { throw 'could not link manifest_tests' }
+& $manifestExe $temp.Replace([IO.Path]::DirectorySeparatorChar, '/')
+if ($LASTEXITCODE -ne 0) { $result = $LASTEXITCODE }
+
 Remove-Item -LiteralPath $temp -Recurse -Force
 exit $result

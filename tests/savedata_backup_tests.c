@@ -24,6 +24,9 @@ const char *runtime_file_user_dir(void) { return user_dir; }
 int runtime_file_mount(const char *guest_path, const char *host_path) { (void)guest_path; (void)host_path; return 0; }
 void runtime_file_unmount(const char *guest_path) { (void)guest_path; }
 void runtime_history_note(const char *api, const char *library, uintptr_t caller) { (void)api; (void)library; (void)caller; }
+enum { POLL_MS = 1000 };
+static uint64_t clock_ms = 1;
+uint64_t runtime_monotonic_ms(void) { return clock_ms; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
     for (size_t i = 0; i < count; ++i) if (!strcmp(table[i].name, name)) return (uintptr_t)table[i].function;
     return 0;
@@ -91,6 +94,7 @@ static int save_with_backup(const char *name, const char *text) {
 }
 static int next_event(uint32_t type, const char *name, int32_t error) {
     Event event;
+    clock_ms += POLL_MS;
     return poll_event(NULL, &event) == 0 && event.type == type && event.error == error && event.user == 1 &&
            !strcmp(event.dir, name);
 }
@@ -132,6 +136,12 @@ static void contract(void) {
     check("the later backup is busy first", poll_result() == ERR_EVENT_BUSY);
     check("the later notification follows", next_event(TYPE_UMOUNT_BACKUP, "GOWSOSSAVE2", 0));
     check("the queue is empty again", poll_result() == ERR_NOT_FOUND);
+
+    check("a save whose unmount meets the running poll is written", save_with_backup("GOWSOSSAVE3", "four"));
+    check("the poll that meets the unmount is busy", poll_result() == ERR_EVENT_BUSY);
+    check("the poll woken by that unmount is busy too", poll_result() == ERR_EVENT_BUSY);
+    check("the notification follows a second later", next_event(TYPE_UMOUNT_BACKUP, "GOWSOSSAVE3", 0));
+    check("it is delivered once", poll_result() == ERR_NOT_FOUND);
 
     const DirName dir = name_of("GOWSOSSAVE0");
     const Backup request = {.user = 1, .dir = &dir};
@@ -178,6 +188,7 @@ static void concurrency(void) {
     int delivered = 0, polls = 0;
     for (; polls < 64; ++polls) {
         Event event;
+        clock_ms += POLL_MS;
         const int32_t r = poll_event(NULL, &event);
         if (r == ERR_NOT_FOUND) break;
         delivered += r == 0;
@@ -187,8 +198,9 @@ static void concurrency(void) {
 
 /* CommitSaveTask of 1.01 arms one flag per step and awaits it with WaitForResponseAsync(15000 ms, 10 ms polls). Every
  * response clears the flag, UpdateState dispatches one queued response per call, and both PS4Controller.Update and the
- * wait itself call it. The notification thread polls after the unmount and again a second later unless nothing is left. */
-typedef struct { double frame, phase, delay, arrival, lag; int immediate; } Timing;
+ * wait itself call it. The notification thread polls after the unmount and again a second later unless nothing is left;
+ * the unmount of the next save ends that second early, so a poll can meet an unmount and be repeated at once. */
+typedef struct { double frame, phase, delay, arrival, lag; int immediate, meets; } Timing;
 enum { RESPONSE_UNMOUNT = 1, RESPONSE_BACKUP = 2, STEP_UNMOUNT = 0, STEP_BACKUP = 1, STEP_DONE = 2 };
 typedef struct { int kind; double at; } Response;
 typedef struct {
@@ -226,6 +238,7 @@ static int commit_completes(const Timing *t, double *elapsed) {
     if (open_save("MODEL", MODE_CREATE2, &result) || !write_text("MODEL", ".sos-work/data.bin", "model")) return 0;
     g.resume = t->delay;
     double next_poll = -1;
+    uint64_t start = clock_ms;
     int unmounted = 0;
     for (long frame = 1; frame < 4000 && g.step != STEP_DONE; ++frame) {
         const double starts[2] = {frame * t->frame, frame * t->frame + t->phase};
@@ -235,12 +248,17 @@ static int commit_completes(const Timing *t, double *elapsed) {
                 unmounted = 1;
                 if (unmount_backup(&result.point)) return 0;
                 push_response(&g, RESPONSE_UNMOUNT, t->arrival);
+                if (t->meets && poll_result() == 0) push_response(&g, RESPONSE_BACKUP, t->arrival);
                 next_poll = t->arrival + t->lag;
             }
             while (next_poll >= 0 && next_poll <= now) {
                 Event event;
+                clock_ms = start + (uint64_t)next_poll;
                 int32_t r = poll_event(NULL, &event);
-                if (r == ERR_EVENT_BUSY && t->immediate) r = poll_event(NULL, &event);
+                if (r == ERR_EVENT_BUSY && t->immediate) {
+                    clock_ms = start += POLL_MS;
+                    r = poll_event(NULL, &event);
+                }
                 if (r == 0) push_response(&g, RESPONSE_BACKUP, next_poll);
                 next_poll = r == ERR_NOT_FOUND ? -1 : next_poll + 1000;
             }
@@ -253,22 +271,26 @@ static int commit_completes(const Timing *t, double *elapsed) {
             }
         }
     }
-    for (int i = 0; i < 64 && poll_result() != ERR_NOT_FOUND; ++i) {}
+    for (int i = 0; i < 64 && poll_result() != ERR_NOT_FOUND; ++i) clock_ms += POLL_MS;
     return g.step == STEP_DONE && !g.lost;
 }
 static void guest_model(void) {
     static const double frames[] = {1000.0 / 60, 1000.0 / 90};
     static const double delays[] = {10, 31.2};
-    int runs = 0, completed = 0, lost_when_immediate = 0;
+    int runs = 0, completed = 0, met = 0, lost_when_immediate = 0;
     double slowest = 0, stalled = 0;
     for (size_t f = 0; f < 2; ++f)
         for (size_t d = 0; d < 2; ++d)
             for (int a = 0; a < 3; ++a) {
-                Timing t = {frames[f], frames[f] * 0.4, delays[d], 40 + a * frames[f] / 3, 0.5, 0};
+                Timing t = {frames[f], frames[f] * 0.4, delays[d], 40 + a * frames[f] / 3, 0.5, 0, 0};
                 double elapsed = 0;
                 ++runs;
                 completed += commit_completes(&t, &elapsed);
                 if (elapsed > slowest) slowest = elapsed;
+                t.meets = 1;
+                met += commit_completes(&t, &elapsed);
+                if (elapsed > slowest) slowest = elapsed;
+                t.meets = 0;
                 t.immediate = 1;
                 elapsed = 0;
                 if (!commit_completes(&t, &elapsed)) {
@@ -279,6 +301,7 @@ static void guest_model(void) {
     printf("  game model: %d timings, slowest save %.0f ms; a notification with the unmount is lost in %d, up to %.1f s each\n",
            runs, slowest, lost_when_immediate, stalled / 1000);
     check("the 1.01 save completes without a lost notification in every timing", completed == runs);
+    check("the 1.01 save completes when the running poll meets its unmount", met == runs);
     check("the 1.01 save completes within two seconds", slowest > 0 && slowest < 2000);
     check("the model reproduces the stall when the notification arrives with the unmount",
           lost_when_immediate > 0 && stalled > 15000);

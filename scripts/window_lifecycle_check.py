@@ -359,7 +359,7 @@ def mutations(area):
             ("launcher/launcher.cpp", "#include \"sos_launcher.h\"", "#include \"sos_launcher.h\"\nstatic void SyntheticF11(HWND w) { PostMessageW(w, WM_KEYDOWN, VK_F11, 0); }", "the launcher posts a synthetic F11"),
             (LOADER, "#include \"runtime.h\"", "#include \"runtime.h\"\nstatic void Press(void) { keybd_event(0x7A, 0, 0, 0); }", "the loader injects a key"),
             (DCPGPU, "g_window_cv.wait(lock, [] { return g_window_ready; });", "", "the presenter no longer waits for the finished window"),
-            (SWAPCHAIN, "Create(window.GetWidth(), window.GetHeight());\n    std::printf", "Create(1280, 720);\n    std::printf", "the first swapchain ignores the window size"),
+            (SWAPCHAIN, "Create(window.GetWidth(), window.GetHeight());\n    ASSERT_MSG(created", "Create(1280, 720);\n    ASSERT_MSG(created", "the first swapchain ignores the window size"),
             (PRESENTER, "window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight() ||\n        swapchain.NeedsRecreation()",
              "DcpSettings::Get().display_mode != 0 || swapchain.NeedsRecreation()", "the swapchain is recreated for the startup mode"),
             (RUNTIME_SETTINGS, 'key == "display_mode"', 'key == "display_style"', "the runtime stops reading the display mode setting"),

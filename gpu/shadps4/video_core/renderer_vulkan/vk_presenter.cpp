@@ -545,7 +545,9 @@ void Presenter::PresentLoadingFrame() {
     swapchain.UpdateVsync();
     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight() ||
         swapchain.NeedsRecreation()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+            return;
+        }
     }
     if (!swapchain.AcquireNextImage()) {
         return;
@@ -692,7 +694,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // Recreate the swapchain if the window was resized.
     swapchain.UpdateVsync();
     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+            free_frame();
+            return;
+        }
     }
 
     bool acquired;
@@ -701,7 +706,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         acquired = swapchain.AcquireNextImage();
     }
     if (!acquired) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+            free_frame();
+            return;
+        }
         if (!swapchain.AcquireNextImage()) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");

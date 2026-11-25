@@ -40,18 +40,17 @@ try {
     $result = $run.Code
 
     $mutations = @(
-        @{ Name = 'the notification arrives with the unmount'; Old = 'if (!events[event_head].announced) {'; New = 'if (0) {' },
-        @{ Name = 'a backup stays busy forever'; Old = '].announced=1;'; New = '].announced=0;' },
-        @{ Name = 'a busy poll covers only the first backup'; Old = 'for (unsigned i=0;i<event_count;++i) events'; New = 'for (unsigned i=0;i<1;++i) events' },
+        @{ Name = 'the notification arrives with the unmount'; Old = 'if (!events[event_head].announced || '; New = 'if (0 && ' },
+        @{ Name = 'a backup stays busy forever'; Old = 'now-events[event_head].announced<BACKUP_BUSY_MS'; New = '1' },
+        @{ Name = 'a poll woken early delivers the notification'; Old = 'now-events[event_head].announced<BACKUP_BUSY_MS'; New = '0' },
+        @{ Name = 'a busy poll covers only the first backup'; Old = 'i<event_count;++i) {'; New = 'i<1;++i) {' },
         @{ Name = 'a reused event slot skips the busy poll'; Old = '    memset(event,0,sizeof(*event));
     event->type=type;'; New = '    event->type=type;' },
         @{ Name = 'the notification is delivered again'; Old = '    --event_count;
     pthread_mutex_unlock(&lock);
     memset(event'; New = '    pthread_mutex_unlock(&lock);
     memset(event' },
-        @{ Name = 'an empty queue is reported as busy'; Old = 'return ERR_NOT_FOUND; }
-    if (!events'; New = 'return ERR_EVENT_BUSY; }
-    if (!events' },
+        @{ Name = 'an empty queue is reported as busy'; Old = 'if (!event_count) { pthread_mutex_unlock(&lock); return ERR_NOT_FOUND; }'; New = 'if (!event_count) { pthread_mutex_unlock(&lock); return ERR_EVENT_BUSY; }' },
         @{ Name = 'the notification loses the backup error'; Old = 'event_push(EVENT_UMOUNT_BACKUP,backup_error,'; New = 'event_push(EVENT_UMOUNT_BACKUP,0,' },
         @{ Name = 'the backup is not written'; Old = 'if (backup_save(host)) backup_error=ERR_INTERNAL;'; New = ';' },
         @{ Name = 'a plain unmount posts a notification'; Old = '    if (with_backup) {'; New = '    if (with_backup || 1) {' }

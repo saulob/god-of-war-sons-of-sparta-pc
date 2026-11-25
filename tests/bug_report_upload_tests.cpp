@@ -117,6 +117,10 @@ void TestLiveSubmission(const std::string& endpoint, const fs::path& temp) {
         const BugReportReceipt receipt2 = FileBugReport(second, *text_only);
         Check(receipt2.outcome == BugReportOutcome::kSent && receipt2.crash == CrashUpload::kNotRequested,
               "a text-only report is filed without an upload");
+        BugReportReceipt limited;
+        for (int i = 0; i < 4; ++i) limited = FileBugReport(second, *text_only);
+        Check(limited.outcome == BugReportOutcome::kRecentLimit && limited.ticket.empty(),
+              "a report over the hourly limit is named as such, never sent");
     }
 }
 

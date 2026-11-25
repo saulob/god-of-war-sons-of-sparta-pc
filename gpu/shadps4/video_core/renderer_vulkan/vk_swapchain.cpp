@@ -51,7 +51,8 @@ Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& windo
     FindPresentFormat();
     FindPresentMode();
 
-    Create(window.GetWidth(), window.GetHeight());
+    const bool created = Create(window.GetWidth(), window.GetHeight());
+    ASSERT_MSG(created, "The window surface has no area at startup");
     std::printf("Swapchain: %s %s, %u images, %ux%u\n", vk::to_string(surface_format.format).c_str(),
                 vk::to_string(surface_format.colorSpace).c_str(), image_count, extent.width, extent.height);
     ImGui::Core::Initialize(instance, window, image_count, surface_format.format);
@@ -62,7 +63,18 @@ Swapchain::~Swapchain() {
     instance.GetInstance().destroySurfaceKHR(surface);
 }
 
-void Swapchain::Create(u32 width_, u32 height_) {
+bool Swapchain::SurfaceHasArea() const {
+    const auto [result, capabilities] = instance.GetPhysicalDevice().getSurfaceCapabilitiesKHR(surface);
+    return result != vk::Result::eSuccess ||
+           DcpPresent::SurfaceHasArea(capabilities.currentExtent.width, capabilities.currentExtent.height,
+                                      capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
+}
+
+bool Swapchain::Create(u32 width_, u32 height_) {
+    if (!SurfaceHasArea()) {
+        health.RequestRecreation();
+        return false;
+    }
     width = width_;
     height = height_;
     health.Recreated();
@@ -111,6 +123,7 @@ void Swapchain::Create(u32 width_, u32 height_) {
     frame_index = 0; // the semaphores are new and sized for the returned image count
     LogImages();
     LogCreation();
+    return true;
 }
 
 // Once per change of the image counts or the present mode: a window resize alone is not logged again.
@@ -126,10 +139,10 @@ void Swapchain::LogImages() {
     std::printf("Swapchain: images %s, extent %ux%u\n", counts, extent.width, extent.height);
 }
 
-void Swapchain::Recreate(u32 width_, u32 height_) {
+bool Swapchain::Recreate(u32 width_, u32 height_) {
     LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
               needs_hdr);
-    Create(width_, height_);
+    return Create(width_, height_);
 }
 
 void Swapchain::SetHDR(bool hdr) {

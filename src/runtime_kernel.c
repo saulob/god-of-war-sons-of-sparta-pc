@@ -134,6 +134,10 @@ static struct timespec process_start;
 __attribute__((constructor)) static void remember_start(void) { clock_gettime(CLOCK_MONOTONIC,&process_start); }
 /* The launcher shares this process: guest process time starts when the guest does. */
 void runtime_reset_process_clock(void) { clock_gettime(CLOCK_MONOTONIC,&process_start); }
+uint64_t runtime_monotonic_ms(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000+(uint64_t)t.tv_nsec/1000000;
+}
 static int host_clock(uint32_t id,clockid_t *out) {
     switch (id) {
     case 0: case 9: case 10: *out=CLOCK_REALTIME; return 1;            /* REALTIME(_PRECISE/_FAST) */

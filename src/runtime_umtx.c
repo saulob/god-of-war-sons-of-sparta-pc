@@ -12,10 +12,9 @@
 enum {
     UMTX_OP_LOCK = 0, UMTX_OP_UNLOCK = 1, UMTX_OP_WAIT = 2, UMTX_OP_WAKE = 3,
     UMTX_OP_MUTEX_TRYLOCK = 4, UMTX_OP_MUTEX_LOCK = 5, UMTX_OP_MUTEX_UNLOCK = 6,
-    UMTX_OP_CMP_REL = 8, UMTX_OP_WAIT_UINT = 11, UMTX_OP_WAIT_UINT_PRIVATE = 12,
-    UMTX_OP_WAKE_PRIVATE = 13, UMTX_OP_MUTEX_WAIT = 14, UMTX_OP_MUTEX_WAIT_PRIVATE = 15,
-    UMTX_OP_MUTEX_WAKE = 16, UMTX_OP_MUTEX_WAKE_PRIVATE = 17, UMTX_OP_SEM_WAIT = 18,
-    UMTX_OP_SEM_WAKE = 19, UMTX_OP_NWAKE_PRIVATE = 20,
+    UMTX_OP_WAIT_UINT = 11, UMTX_OP_WAIT_UINT_PRIVATE = 15, UMTX_OP_WAKE_PRIVATE = 16,
+    UMTX_OP_MUTEX_WAIT = 17, UMTX_OP_MUTEX_WAKE = 18, UMTX_OP_SEM_WAIT = 19, UMTX_OP_SEM_WAKE = 20,
+    UMTX_OP_NWAKE_PRIVATE = 21,
 };
 
 /* Waiters hash by address into a fixed set of queues; a wake is a broadcast, and every waiter rechecks its word, so a
@@ -113,11 +112,15 @@ static ABI int32_t umtx_mutex_unlock(void *obj) {
     return 0;
 }
 
-static ABI int32_t umtx_cmp_rel(void *obj, uint32_t current, uint32_t delta, const void *timeout) {
-    uint32_t expected = current;
-    if (cas32(obj, &expected, current + delta)) return 0;
-    wait_on(obj, expected, timeout, 0, 0);
-    return 0;
+static int32_t posix_error(int error) {
+    *runtime_errno() = runtime_guest_errno(error);
+    return -1;
+}
+
+/* struct _usem: waiters flag at +0, count at +4; the timeout is relative. */
+static int32_t umtx_sem_wait(void *usem, const void *timeout) {
+    store32(usem, 1);
+    return wait_on((unsigned char *)usem + 4, 0, timeout, 0, 0) ? posix_error(ETIMEDOUT) : 0;
 }
 
 /* FreeBSD sem_t: magic at +0, kernel word at +4, count at +8, pshared at +12. */
@@ -134,7 +137,9 @@ static ABI int32_t sem_wait_op(void *sem) {
 static ABI int32_t sem_trywait_op(void *sem) {
     void *value_addr = sem_value_addr(sem);
     uint32_t value = load32(value_addr);
-    return ((int32_t)value > 0 && cas32(value_addr, &value, value - 1)) ? 0 : EAGAIN;
+    while ((int32_t)value > 0)
+        if (cas32(value_addr, &value, value - 1)) return 0;
+    return posix_error(EAGAIN);
 }
 static ABI int32_t sem_post_op(void *sem) {
     void *value_addr = sem_value_addr(sem);
@@ -146,7 +151,7 @@ static ABI int32_t sem_post_op(void *sem) {
     return 0;
 }
 static ABI int32_t sem_init_op(void *sem, int pshared, unsigned int value) {
-    if (!sem) return EINVAL;
+    if (!sem) return posix_error(EINVAL);
     store32(sem, SEM_MAGIC);
     store32((unsigned char *)sem + 4, 0);
     store32(sem_value_addr(sem), value);
@@ -154,7 +159,7 @@ static ABI int32_t sem_init_op(void *sem, int pshared, unsigned int value) {
     return 0;
 }
 static ABI int32_t sem_destroy_op(void *sem) {
-    if (!sem) return EINVAL;
+    if (!sem) return posix_error(EINVAL);
     wake_on(sem_value_addr(sem), 0);
     store32(sem, 0);
     return 0;
@@ -256,7 +261,7 @@ static ABI int32_t umtx_op(void *obj, int op, uint64_t val, void *uaddr1, void *
     case UMTX_OP_UNLOCK: case UMTX_OP_MUTEX_UNLOCK:
         return umtx_mutex_unlock(obj);
     case UMTX_OP_WAIT: case UMTX_OP_WAIT_UINT: case UMTX_OP_WAIT_UINT_PRIVATE:
-    case UMTX_OP_MUTEX_WAIT: case UMTX_OP_MUTEX_WAIT_PRIVATE:
+    case UMTX_OP_MUTEX_WAIT:
     {
         /* uaddr1 is the size of a struct _umtx_time at uaddr2 (timespec, flags, clock id) or zero for a plain timespec. */
         const size_t tsize = (size_t)(uintptr_t)uaddr1;
@@ -264,7 +269,7 @@ static ABI int32_t umtx_op(void *obj, int op, uint64_t val, void *uaddr1, void *
         const uint32_t clock_id = tsize >= 24 && uaddr2 ? *(const uint32_t *)((const unsigned char *)uaddr2 + 20) : 0;
         return wait_on(obj, (uint32_t)(val & 0xffffffffu), uaddr2, flags && (*flags & 1), clock_id) ? GUEST_ETIMEDOUT : 0;
     }
-    case UMTX_OP_WAKE: case UMTX_OP_WAKE_PRIVATE: case UMTX_OP_MUTEX_WAKE: case UMTX_OP_MUTEX_WAKE_PRIVATE:
+    case UMTX_OP_WAKE: case UMTX_OP_WAKE_PRIVATE: case UMTX_OP_MUTEX_WAKE:
         wake_on(obj, (int)val);
         return 0;
     case UMTX_OP_NWAKE_PRIVATE: {
@@ -272,12 +277,11 @@ static ABI int32_t umtx_op(void *obj, int op, uint64_t val, void *uaddr1, void *
         for (unsigned long i = 0; i < val && addresses; ++i) wake_on(addresses[i], 0);
         return 0;
     }
-    case UMTX_OP_CMP_REL:
-        return umtx_cmp_rel(obj, (uint32_t)(val & 0xffffffffu), (uint32_t)((val >> 32) & 0xffffffffu), uaddr1);
     case UMTX_OP_SEM_WAIT:
-        return sem_wait_op(obj);
+        return umtx_sem_wait(obj, uaddr2);
     case UMTX_OP_SEM_WAKE:
-        return sem_post_op(obj);
+        wake_on((unsigned char *)obj + 4, 1);
+        return 0;
     default:
         return EINVAL;
     }

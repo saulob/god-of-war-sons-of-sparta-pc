@@ -333,6 +333,10 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
         if (runtime_fault_recover) {
             sigjmp_buf *buffer = runtime_fault_recover;
             runtime_fault_recover = NULL;
+            sigset_t unblock;
+            sigemptyset(&unblock);
+            sigaddset(&unblock, sig);
+            pthread_sigmask(SIG_UNBLOCK, &unblock, NULL); /* sigsetjmp(buffer, 0) did not save the mask */
             siglongjmp(*buffer, 1);
         }
     }
@@ -959,9 +963,7 @@ int main(int argc, char **argv) {
                              render_target.display_height };
         sos_startup_phase("renderer initialization");
         if (dcpgpu_available() && dcpgpu_init(&gpu) == 0) {
-#ifdef _WIN32
             gpu_enabled = 1;
-#endif
             printf("GPU: window and presenter ready, %u HLE symbols\n", dcpgpu_symbol_count());
             sos_startup_milestone("GPU ready");
         } else

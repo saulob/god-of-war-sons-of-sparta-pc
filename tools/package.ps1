@@ -136,6 +136,9 @@ function Test-ReleaseFolder([string]$Folder, [string]$Version, [string]$Objdump)
         if ($mach -ne 0x8664) { $problems.Add("sons_of_sparta.exe machine is 0x$($mach.ToString('X')) (expected 0x8664 x64)") }
         $vi = (Get-Item -LiteralPath $exe).VersionInfo
         if ($vi.ProductVersion -ne $Version) { $problems.Add("sons_of_sparta.exe ProductVersion='$($vi.ProductVersion)' (expected '$Version')") }
+        if (-not [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe)).Contains('>UTF-8</activeCodePage>')) {
+            $problems.Add('sons_of_sparta.exe has no UTF-8 code page manifest')
+        }
         if ($vi.ProductName -ne 'God of War: Sons of Sparta PC') { $problems.Add("sons_of_sparta.exe ProductName='$($vi.ProductName)'") }
     }
     if (Test-Path -LiteralPath $updater) {

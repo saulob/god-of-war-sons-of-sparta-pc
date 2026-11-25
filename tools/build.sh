@@ -108,6 +108,12 @@ run_suite "guest-entry" bash -c "
 "
 
 # 2. POSIX SIGPIPE startup policy (live socketpair EPIPE check)
+run_suite "umtx" bash -c "
+    '$CC' -std=gnu11 -Wall -Wextra -O1 -pthread -I'$root/src' -I'$root/launcher' -I'$root/gpu/shim' \
+        '$root/tests/umtx_tests.c' '$root/src/runtime_umtx.c' -o '$tmp/umtx_tests' &&
+    '$tmp/umtx_tests'
+"
+
 run_suite "posix-sigpipe" bash -c "
     '$CC' -std=gnu11 -Wall -Wextra -Werror -O2 -I'$root/src' -DSOS_SOURCE_DIR=$root \
         '$root/tests/sigpipe_tests.c' -o '$tmp/posix_sigpipe_tests' &&

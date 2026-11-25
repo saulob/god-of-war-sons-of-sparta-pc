@@ -114,6 +114,7 @@ while (( ${#queue[@]} > 0 )); do
     cur="${queue[0]}"
     queue=("${queue[@]:1}")
     while IFS= read -r line; do
+        [[ $line != *"not found"* ]] || die "unresolved library of $cur: $line"
         [[ $line == *"=>"* ]] || continue
         soname=$(awk '{print $1}' <<<"$line")
         target=$(awk '{print $3}' <<<"$line")

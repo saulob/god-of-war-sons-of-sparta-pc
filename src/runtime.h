@@ -129,6 +129,7 @@ void runtime_sos_set_neo_mode(int on);
 /* Direct memory on top of the retail pool, for the larger GPU heap of a larger render target; before the first query. */
 void runtime_memory_set_direct_extra(uint64_t bytes);
 void runtime_reset_process_clock(void);
+uint64_t runtime_monotonic_ms(void);
 /* The last guest memory maps and unmaps as "Runtime: memory op" lines; a range holding `focus` is marked. */
 size_t runtime_memory_recent(char *out, size_t size, uintptr_t focus);
 void runtime_set_language(int ps4_language);

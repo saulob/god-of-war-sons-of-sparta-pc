@@ -60,6 +60,14 @@ inline std::uint32_t ImageCount(std::uint32_t surface_min, std::uint32_t surface
     return count;
 }
 
+/// A minimized window has a 0x0 surface on Windows while SDL keeps its last pixel size; width UINT32_MAX follows the
+/// swapchain.
+inline bool SurfaceHasArea(std::uint32_t current_width, std::uint32_t current_height, std::uint32_t max_width,
+                           std::uint32_t max_height) {
+    return max_width > 0 && max_height > 0 &&
+           (current_width == UINT32_MAX || (current_width > 0 && current_height > 0));
+}
+
 /// A swapchain acquire or present result as the frame sees it. OutOfDate also covers a lost surface.
 enum class SwapResult { Success, Suboptimal, OutOfDate, Failure };
 
@@ -118,6 +126,10 @@ public:
 
     bool NeedsRecreation() const {
         return recreate;
+    }
+
+    void RequestRecreation() {
+        RequestRequired();
     }
 
 private:

@@ -42,6 +42,15 @@ $version = Get-ProjectVersion
 $distDir = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 $failures = New-Object System.Collections.Generic.List[string]
+$winAsset = "SonsOfSpartaPC-v$version-windows-x64.zip"
+$linAsset = "SonsOfSpartaPC-v$version-x86_64.AppImage"
+$notesOut = Join-Path $distDir "release-notes-v$version.md"
+
+# A failed run must not leave an older build behind under this version's name.
+$stale = @($notesOut)
+if (-not $SkipWindows) { $stale += (Join-Path $distDir $winAsset), (Join-Path $distDir "$winAsset.sha256") }
+if (-not $SkipLinux) { $stale += (Join-Path $distDir $linAsset), (Join-Path $distDir "$linAsset.sha256") }
+foreach ($file in $stale) { if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file -Force } }
 
 if (-not $SkipTests) {
     Write-Step 'Step 1: Windows headless test gate (tools\test.ps1)'
@@ -68,8 +77,6 @@ if (-not $SkipLinux) {
     }
 }
 
-$winAsset = "SonsOfSpartaPC-v$version-windows-x64.zip"
-$linAsset = "SonsOfSpartaPC-v$version-x86_64.AppImage"
 $winSha = 'MISSING'
 $linSha = 'MISSING'
 
@@ -89,14 +96,13 @@ foreach ($pair in @(@($winAsset, 'win'), @($linAsset, 'lin'))) {
 }
 
 $notesTemplate = Join-Path $root 'packaging\release-notes.md'
-if (Test-Path -LiteralPath $notesTemplate) {
+if ($failures.Count -eq 0 -and (Test-Path -LiteralPath $notesTemplate)) {
     $notes = (Get-Content -LiteralPath $notesTemplate -Raw -Encoding UTF8) `
         -replace '@VERSION@', $version `
         -replace '@WINDOWS_ASSET@', $winAsset `
         -replace '@WINDOWS_SHA256@', $winSha `
         -replace '@LINUX_ASSET@', $linAsset `
         -replace '@LINUX_SHA256@', $linSha
-    $notesOut = Join-Path $distDir "release-notes-v$version.md"
     [IO.File]::WriteAllText($notesOut, $notes, (New-Object Text.UTF8Encoding($false)))
     Write-Ok "Wrote $notesOut"
 }

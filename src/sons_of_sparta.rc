@@ -3,6 +3,7 @@
 #include "sos_version.h"
 
 1 ICON "../packaging/icons/app-icon.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "sons_of_sparta.manifest"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION SOS_VERSION_NUMBERS

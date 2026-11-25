@@ -31,6 +31,8 @@ int runtime_log_printf(const char *format, ...) {
 }
 static char user_dir[600];
 static int file_mounts, file_unmounts;
+static uint64_t clock_ms = 1;
+uint64_t runtime_monotonic_ms(void) { return clock_ms; }
 const char *runtime_file_user_dir(void) { return user_dir; }
 int runtime_file_mount(const char *guest_path, const char *host_path) { (void)guest_path; (void)host_path; ++file_mounts; return 0; }
 void runtime_file_unmount(const char *guest_path) { (void)guest_path; ++file_unmounts; }
@@ -278,7 +280,9 @@ static int has_text(const char *path, const char *text) {
     return got == strlen(text) && !memcmp(buffer, text, got);
 }
 static int32_t next_event(Event *event) {
-    return get_event_result(NULL, event) == ERR_EVENT_BUSY ? get_event_result(NULL, event) : ERR_PARAMETER;
+    if (get_event_result(NULL, event) != ERR_EVENT_BUSY) return ERR_PARAMETER;
+    clock_ms += 1000;
+    return get_event_result(NULL, event);
 }
 static void backup_scenarios(void) {
     DirName dir = name_of("BACKUPDIR");
