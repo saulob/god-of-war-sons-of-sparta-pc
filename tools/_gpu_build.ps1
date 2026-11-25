@@ -4,9 +4,9 @@ $script:GpuBuildDir = Join-Path $script:RepoRoot 'build\cmake\clang64'
 $script:GpuLibrary = Join-Path $script:GpuBuildDir 'gpu\libdcpgpu.a'
 
 function Initialize-GpuBuildDirectory {
+    $ffmpeg = (Sync-FFmpeg).Replace('\', '/')
     $cache = Join-Path $script:GpuBuildDir 'CMakeCache.txt'
     if ((Test-Path -LiteralPath (Join-Path $script:GpuBuildDir 'build.ninja')) -and (Test-Path -LiteralPath $cache)) { return $true }
-    $ffmpeg = (Get-FFmpegPrefix).Replace('\', '/')
     Write-Host "  configuring $script:GpuBuildDir (no configuration exists yet)"
     & cmake -S $script:RepoRoot -B $script:GpuBuildDir -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER=clang "-DDCP_FFMPEG_PREFIX=$ffmpeg"
     return ($LASTEXITCODE -eq 0)

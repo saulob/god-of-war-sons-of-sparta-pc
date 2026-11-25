@@ -5,6 +5,8 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 die() { echo "ERROR: $*" >&2; exit 1; }
+port_version=$(sed -nE 's/^project\s*\(\s*sons_of_sparta_pc\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$root/CMakeLists.txt" | tr -d '\r')
+[[ -n $port_version ]] || die "Could not read VERSION from CMakeLists.txt"
 
 config=Release
 run_tests=0
@@ -28,24 +30,11 @@ for tool in "$CC" "$CXX" cmake ninja pkg-config; do
     command -v "$tool" >/dev/null || die "Missing build tool: $tool"
 done
 
-# Ensure FFmpeg is the LGPL 8.1.3 build (either already in /usr/local or built in cache/deps).
-ffmpeg_args=()
-if pkg-config --atleast-version=59.27 libavformat &&
-   pkg-config --atleast-version=59.37 libavcodec &&
-   pkg-config --atleast-version=57.28 libavutil &&
-   pkg-config --atleast-version=6.7 libswscale &&
-   pkg-config --atleast-version=4.7 libswresample; then
-    if [[ -f /usr/local/share/licenses/ffmpeg/COPYING.LGPLv2.1 ]]; then
-        echo "==> Using system-prefix LGPL FFmpeg ($(pkg-config --modversion libavcodec))"
-    else
-        die "Installed FFmpeg lacks /usr/local/share/licenses/ffmpeg/COPYING.LGPLv2.1"
-    fi
-else
-    ff_ver=$(awk '{ gsub(/\r/, "") } $1=="version"{print $2}' "$root/gpu/ffmpeg.txt")
-    ff_prefix="$root/cache/deps/ffmpeg/$ff_ver/linux"
-    bash "$root/tools/build-ffmpeg.sh" "$ff_prefix" "$root/cache/deps/ffmpeg/$ff_ver/work"
-    ffmpeg_args=("-DDCP_FFMPEG_PREFIX=$ff_prefix")
-fi
+echo "==> FFmpeg (gpu/ffmpeg.txt)"
+ff_ver=$(awk '{ gsub(/\r/, "") } $1=="version"{print $2}' "$root/gpu/ffmpeg.txt")
+[[ -n $ff_ver ]] || die "Could not read the FFmpeg version from gpu/ffmpeg.txt"
+ff_prefix="$root/cache/deps/ffmpeg/$ff_ver/linux"
+bash "$root/tools/build-ffmpeg.sh" "$ff_prefix" "$root/cache/deps/ffmpeg/$ff_ver/work"
 
 build_dir="$root/build/cmake/linux-${config,,}"
 if [[ $clean -eq 1 && -d $build_dir ]]; then
@@ -57,7 +46,7 @@ cmake -S "$root" -B "$build_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE="$config" \
     -DCMAKE_C_COMPILER="$CC" \
     -DCMAKE_CXX_COMPILER="$CXX" \
-    "${ffmpeg_args[@]}"
+    "-DDCP_FFMPEG_PREFIX=$ff_prefix"
 
 echo "==> Building sons_of_sparta and dcpgpu_link_smoke"
 ninja -C "$build_dir" sons_of_sparta dcpgpu_link_smoke
@@ -65,6 +54,13 @@ ninja -C "$build_dir" sons_of_sparta dcpgpu_link_smoke
 bin="$build_dir/bin/sons_of_sparta"
 [[ -x $bin ]] || die "Missing built binary $bin"
 echo "  [ok] Built $bin"
+ff_linked=0
+while read -r soname path; do
+    [[ $path == "$ff_prefix"/lib/* ]] || die "$bin resolves $soname to ${path:-nothing}, not to the pinned FFmpeg in $ff_prefix"
+    echo "  [ffmpeg] $soname => $path"
+    ff_linked=$((ff_linked + 1))
+done < <(ldd "$bin" | awk '$1 ~ /^lib(av|sw)[a-z]+\.so/ { print $1, $3 }')
+((ff_linked == 5)) || die "$bin links $ff_linked of the 5 FFmpeg libraries"
 
 if [[ $run_tests -eq 0 ]]; then
     exit 0
@@ -182,7 +178,7 @@ run_suite "save-backup" bash -c "
 run_suite "launcher-core" bash -c "
     '$CC' -std=gnu11 -Wall -Wextra -Werror -O1 -c '$root/src/sos_hermes_unlock.c' -o '$tmp/sos_hermes_unlock.o' &&
     '$CC' -std=gnu11 -Wall -Wextra -Werror -O1 -c '$root/src/sos_pit_unlock.c' -o '$tmp/sos_pit_unlock.o' &&
-    '$CXX' -std=c++20 -Wall -Wextra -O1 -no-pie -DSOS_SOURCE_DIR='\"$root\"' -DSOS_PORT_VERSION='\"0.1.0\"' \
+    '$CXX' -std=c++20 -Wall -Wextra -O1 -no-pie -DSOS_SOURCE_DIR='\"$root\"' -DSOS_PORT_VERSION='\"$port_version\"' \
         -I'$root/launcher' -I'$root/src' -I'$root/third_party/trg-launcher/include' $sdl_cflags $ssl_cflags \
         '$root/tests/launcher_tests.cpp' '$tmp/sos_hermes_unlock.o' '$tmp/sos_pit_unlock.o' \
         '$build_dir/launcher/libsos_launcher_core.a' '$build_dir/launcher/libtrg_core.a' \
@@ -190,6 +186,8 @@ run_suite "launcher-core" bash -c "
         $sdl_libs $ssl_libs $zlib_libs -pthread -ldl -o '$tmp/launcher_tests' &&
     '$tmp/launcher_tests'
 "
+
+run_suite "ffmpeg-pin" bash "$root/tests/linux_ffmpeg_tests.sh" "$tmp/ffmpeg_pin"
 
 # 12. Window lifecycle static checks (shutdown, display, cursor)
 if command -v python3 >/dev/null; then

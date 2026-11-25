@@ -7,10 +7,12 @@
   Builds CMake Release (build\cmake\clang64-release), verifies PE metadata (GUI subsystem 2, ProductVersion ==
   CMakeLists.txt VERSION), splits debug symbols to dist\<name>-symbols\, resolves transitive DLL imports via
   llvm-objdump, verifies LGPL FFmpeg, collects all third-party and MSYS2 licenses, scans for forbidden files,
-  magic bytes, local machine paths (ASCII & UTF-16LE), DEBUG_SAULO, and updater-protected paths, writes
-  dist\<name>.zip + .zip.sha256, and re-extracts the ZIP to verify every file SHA-256. Never publishes anything.
+  magic bytes, local machine paths (ASCII & UTF-16LE), DEBUG_SAULO, and updater-protected paths. The release
+  stage is dist\<name>\, kept after packaging; dist\<name>.zip (+ .zip.sha256) is written from that exact folder and
+  re-extracted to verify every file. Never publishes anything.
 .PARAMETER VerifyOnly
-  Skips building and re-verifies an existing dist\<name>.zip (or folder passed via -Target).
+  Skips building and re-verifies dist\<name>\ (or the folder or ZIP passed via -Target). A ZIP is also compared
+  with the stage next to it.
 #>
 [CmdletBinding()]
 param(
@@ -20,6 +22,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot '_common.ps1')
+. (Join-Path $PSScriptRoot '_stage_zip.ps1')
 $root = $script:RepoRoot
 
 function Get-ProjectVersion {
@@ -265,15 +268,10 @@ function Test-ReleaseZip([string]$ZipPath, [string]$ExpectedPrefix, [string]$Ver
             Stop-Tool "Extracted ZIP verification failed ($($problems.Count) problems)"
         }
         if ($StagedDir) {
-            $stagedFiles = @(Get-ChildItem -LiteralPath $StagedDir -Recurse -File | Sort-Object FullName)
-            $extFiles = @(Get-ChildItem -LiteralPath $extracted -Recurse -File | Sort-Object FullName)
-            if ($stagedFiles.Count -ne $extFiles.Count) {
-                Stop-Tool "ZIP file count mismatch: staged $($stagedFiles.Count) vs extracted $($extFiles.Count)"
-            }
-            for ($i = 0; $i -lt $stagedFiles.Count; $i++) {
-                $h1 = (Get-FileHash -LiteralPath $stagedFiles[$i].FullName -Algorithm SHA256).Hash
-                $h2 = (Get-FileHash -LiteralPath $extFiles[$i].FullName -Algorithm SHA256).Hash
-                if ($h1 -ne $h2) { Stop-Tool "SHA-256 mismatch after ZIP round-trip for $($stagedFiles[$i].Name)" }
+            $differences = @(Compare-ReleaseFolders $StagedDir $extracted)
+            if ($differences.Count -gt 0) {
+                $differences | ForEach-Object { Write-Bad $_ }
+                Stop-Tool "The ZIP does not match its stage ($($differences.Count) differences)"
             }
         }
     } finally {
@@ -287,6 +285,8 @@ $packageFile = "SonsOfSpartaPC-v$version-windows-x64.zip"
 $distDir = Join-Path $root 'dist'
 $zipPath = Join-Path $distDir $packageFile
 $shaPath = "$zipPath.sha256"
+$stageRoot = Join-Path $distDir $packageStem
+$symbolsDir = Join-Path $distDir "$packageStem-symbols"
 
 $tc = Resolve-Toolchain 'auto'
 $env:PATH = "$($tc.Bin);$env:PATH"
@@ -296,13 +296,17 @@ if (-not (Test-Path -LiteralPath $objdump)) { Stop-Tool "Missing $objdump" }
 if (-not (Test-Path -LiteralPath $objcopy)) { Stop-Tool "Missing $objcopy" }
 
 if ($VerifyOnly) {
-    $checkTarget = if ($Target) { $Target } else { $zipPath }
+    $checkTarget = if ($Target) { $Target } else { $stageRoot }
     Write-Step "Verifying $checkTarget"
     if (Test-Path -LiteralPath $checkTarget -PathType Container) {
         $problems = @(Test-ReleaseFolder $checkTarget $version $objdump)
         if ($problems.Count -gt 0) { $problems | ForEach-Object { Write-Bad $_ }; Stop-Tool 'Verification failed' }
+    } elseif (Test-Path -LiteralPath $checkTarget -PathType Leaf) {
+        $sibling = Join-Path (Split-Path -Parent (Get-ReleaseFullPath $checkTarget)) $packageStem
+        $stagedDir = if (Test-Path -LiteralPath $sibling -PathType Container) { $sibling } else { '' }
+        Test-ReleaseZip $checkTarget $packageStem $version $objdump $stagedDir
     } else {
-        Test-ReleaseZip $checkTarget $packageStem $version $objdump
+        Stop-Tool "Nothing to verify at $checkTarget"
     }
     Write-Ok "Verified $checkTarget"
     return
@@ -343,122 +347,118 @@ try {
 if (-not (Test-Path -LiteralPath $exePath)) { Stop-Tool "Missing $exePath" }
 if (-not (Test-Path -LiteralPath $updaterPath)) { Stop-Tool "Missing $updaterPath" }
 Install-FFmpegRuntime $ffmpegPrefix $binDir
+$completed = $false
 
-$stageRoot = Join-Path $root "build\package\$packageStem"
-$symbolsDir = Join-Path $distDir "$packageStem-symbols"
-if (Test-Path -LiteralPath $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }
-if (Test-Path -LiteralPath $symbolsDir) { Remove-Item -LiteralPath $symbolsDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $stageRoot, $symbolsDir, $distDir | Out-Null
+try {
+    foreach ($old in @($stageRoot, $symbolsDir, $zipPath, $shaPath)) { Remove-ReleaseCandidate $distDir $old $packageStem }
+    New-Item -ItemType Directory -Force -Path $stageRoot, $symbolsDir, $distDir | Out-Null
 
-Write-Step 'Staging executables and splitting debug symbols'
-foreach ($bin in $exePath, $updaterPath) {
-    $name = Split-Path $bin -Leaf
-    $staged = Join-Path $stageRoot $name
-    $sym = Join-Path $symbolsDir ([IO.Path]::ChangeExtension($name, '.debug'))
-    Copy-Item -LiteralPath $bin -Destination $staged -Force
-    & $objcopy --only-keep-debug $staged $sym
-    if ($LASTEXITCODE -ne 0) { Stop-Tool "llvm-objcopy --only-keep-debug failed on $name" }
-    & $objcopy --strip-debug $staged
-    if ($LASTEXITCODE -ne 0) { Stop-Tool "llvm-objcopy --strip-debug failed on $name" }
-}
-
-Write-Step 'Resolving transitive DLL dependencies from PE import tables'
-$searchDirs = @($binDir, (Join-Path $ffmpegPrefix 'bin'), $tc.Bin)
-$closure = Get-DllClosure $objdump @((Join-Path $stageRoot 'sons_of_sparta.exe')) $searchDirs
-$msysRoot = Get-Msys2Root
-$pacman = if ($msysRoot) { Join-Path $msysRoot 'usr\bin\pacman.exe' } else { $null }
-$licensesDir = Join-Path $stageRoot 'licenses'
-New-Item -ItemType Directory -Force -Path $licensesDir | Out-Null
-
-$msysPackages = New-Object System.Collections.Generic.HashSet[string]
-foreach ($entry in $closure.GetEnumerator()) {
-    $dllFile = $entry.Value
-    $dllName = Split-Path $dllFile -Leaf
-    Copy-Item -LiteralPath $dllFile -Destination (Join-Path $stageRoot $dllName) -Force
-    Write-Host "  [dll]  $dllName <= $dllFile"
-    if ($pacman -and $dllFile.StartsWith($tc.Bin, [StringComparison]::OrdinalIgnoreCase)) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $pkg = (& $pacman -Qqo ($dllFile -replace '\\', '/') 2>$null | Out-String).Trim()
-            if ($LASTEXITCODE -eq 0 -and $pkg) { [void]$msysPackages.Add($pkg) }
-        } finally { $ErrorActionPreference = $prev }
+    Write-Step 'Staging executables and splitting debug symbols'
+    foreach ($bin in $exePath, $updaterPath) {
+        $name = Split-Path $bin -Leaf
+        $staged = Join-Path $stageRoot $name
+        $sym = Join-Path $symbolsDir ([IO.Path]::ChangeExtension($name, '.debug'))
+        Copy-Item -LiteralPath $bin -Destination $staged -Force
+        & $objcopy --only-keep-debug $staged $sym
+        if ($LASTEXITCODE -ne 0) { Stop-Tool "llvm-objcopy --only-keep-debug failed on $name" }
+        & $objcopy --strip-debug $staged
+        if ($LASTEXITCODE -ne 0) { Stop-Tool "llvm-objcopy --strip-debug failed on $name" }
     }
-}
 
-Write-Step 'Staging assets, README, and licenses'
-New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot 'assets\launcher') | Out-Null
-foreach ($image in 'header-art.png', 'sponsor-heart.png') {
-    Copy-Item -LiteralPath (Join-Path $root "assets\launcher\$image") -Destination (Join-Path $stageRoot "assets\launcher\$image") -Force
-}
-Copy-Item -LiteralPath (Join-Path $root 'packaging\README.txt') -Destination (Join-Path $stageRoot 'README.txt') -Force
-Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE.txt') -Force
-Copy-Item -LiteralPath (Join-Path $root 'packaging\licenses\THIRD-PARTY-LICENSES.txt') -Destination (Join-Path $licensesDir 'THIRD-PARTY-LICENSES.txt') -Force
-$componentsSrc = Join-Path $root 'packaging\licenses\components'
-if (-not (Test-Path -LiteralPath $componentsSrc -PathType Container)) { Stop-Tool "Missing $componentsSrc" }
-Copy-Item -LiteralPath $componentsSrc -Destination $licensesDir -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root 'gpu\VENDOR.txt') -Destination (Join-Path $licensesDir 'VENDOR.txt') -Force
+    Write-Step 'Resolving transitive DLL dependencies from PE import tables'
+    $searchDirs = @($binDir, (Join-Path $ffmpegPrefix 'bin'), $tc.Bin)
+    $closure = Get-DllClosure $objdump @((Join-Path $stageRoot 'sons_of_sparta.exe')) $searchDirs
+    $msysRoot = Get-Msys2Root
+    $pacman = if ($msysRoot) { Join-Path $msysRoot 'usr\bin\pacman.exe' } else { $null }
+    $licensesDir = Join-Path $stageRoot 'licenses'
+    New-Item -ItemType Directory -Force -Path $licensesDir | Out-Null
 
-$ffmpegLicSrc = Join-Path $ffmpegPrefix 'share\licenses\ffmpeg'
-if (Test-Path -LiteralPath $ffmpegLicSrc) {
-    $ffmpegLicDst = Join-Path $licensesDir 'ffmpeg'
-    New-Item -ItemType Directory -Force -Path $ffmpegLicDst | Out-Null
-    foreach ($lf in 'LICENSE.md', 'COPYING.LGPLv2.1', 'BUILD.txt') {
-        $p = Join-Path $ffmpegLicSrc $lf
-        if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ffmpegLicDst $lf) -Force }
-    }
-}
-
-if ($pacman -and $msysPackages.Count -gt 0) {
-    $pkgLines = New-Object System.Collections.Generic.List[string]
-    $pkgLines.Add('MSYS2 CLANG64 runtime packages providing bundled DLLs:')
-    $pkgLines.Add('')
-    $msysLicRoot = Join-Path (Split-Path $tc.Bin -Parent) 'share\licenses'
-    foreach ($pkg in ($msysPackages | Sort-Object)) {
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $ver = (& $pacman -Q $pkg 2>$null | Out-String).Trim()
-            $url = (& $pacman -Qi $pkg 2>$null | Select-String '^URL\s*:\s*(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() } | Select-Object -First 1)
-        } finally { $ErrorActionPreference = $prev }
-        $pkgLines.Add("$ver  $url")
-        $short = $pkg -replace '^mingw-w64-clang-x86_64-', ''
-        $srcLic = Join-Path $msysLicRoot $short
-        if (Test-Path -LiteralPath $srcLic -PathType Container) {
-            $dstLic = Join-Path $licensesDir "msys2\$short"
-            New-Item -ItemType Directory -Force -Path $dstLic | Out-Null
-            Copy-Item -Path (Join-Path $srcLic '*') -Destination $dstLic -Recurse -Force
+    $msysPackages = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($entry in $closure.GetEnumerator()) {
+        $dllFile = $entry.Value
+        $dllName = Split-Path $dllFile -Leaf
+        Copy-Item -LiteralPath $dllFile -Destination (Join-Path $stageRoot $dllName) -Force
+        Write-Host "  [dll]  $dllName <= $dllFile"
+        if ($pacman -and $dllFile.StartsWith($tc.Bin, [StringComparison]::OrdinalIgnoreCase)) {
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $pkg = (& $pacman -Qqo ($dllFile -replace '\\', '/') 2>$null | Out-String).Trim()
+                if ($LASTEXITCODE -eq 0 -and $pkg) { [void]$msysPackages.Add($pkg) }
+            } finally { $ErrorActionPreference = $prev }
         }
     }
-    [IO.File]::WriteAllText((Join-Path $licensesDir 'MSYS2-PACKAGES.txt'), ($pkgLines -join "`r`n") + "`r`n", (New-Object Text.UTF8Encoding($false)))
-}
 
-Write-Step 'Verifying staged Windows release folder'
-$problems = @(Test-ReleaseFolder $stageRoot $version $objdump)
-if ($problems.Count -gt 0) {
-    $problems | ForEach-Object { Write-Bad $_ }
-    Stop-Tool "Staged release verification failed ($($problems.Count) problems)"
-}
-Write-Ok 'Staged release folder passed all checks'
-
-Write-Step "Creating $zipPath"
-if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-Add-Type -AssemblyName System.IO.Compression
-$archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
-try {
-    foreach ($f in (Get-ChildItem -LiteralPath $stageRoot -Recurse -File | Sort-Object FullName)) {
-        $rel = $f.FullName.Substring($stageRoot.Length + 1).Replace('\', '/')
-        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, "$packageStem/$rel", [IO.Compression.CompressionLevel]::Optimal)
+    Write-Step 'Staging assets, README, and licenses'
+    New-Item -ItemType Directory -Force -Path (Join-Path $stageRoot 'assets\launcher') | Out-Null
+    foreach ($image in 'header-art.png', 'sponsor-heart.png') {
+        Copy-Item -LiteralPath (Join-Path $root "assets\launcher\$image") -Destination (Join-Path $stageRoot "assets\launcher\$image") -Force
     }
-} finally {
-    $archive.Dispose()
-}
+    Copy-Item -LiteralPath (Join-Path $root 'packaging\README.txt') -Destination (Join-Path $stageRoot 'README.txt') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE.txt') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'packaging\licenses\THIRD-PARTY-LICENSES.txt') -Destination (Join-Path $licensesDir 'THIRD-PARTY-LICENSES.txt') -Force
+    $componentsSrc = Join-Path $root 'packaging\licenses\components'
+    if (-not (Test-Path -LiteralPath $componentsSrc -PathType Container)) { Stop-Tool "Missing $componentsSrc" }
+    Copy-Item -LiteralPath $componentsSrc -Destination $licensesDir -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $root 'gpu\VENDOR.txt') -Destination (Join-Path $licensesDir 'VENDOR.txt') -Force
 
-Write-Step 'Reopening and verifying ZIP archive round-trip'
-Test-ReleaseZip $zipPath $packageStem $version $objdump $stageRoot
-$hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-[IO.File]::WriteAllText($shaPath, "$hash  $packageStem.zip`n", (New-Object Text.UTF8Encoding($false)))
-$sizeMb = [Math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 2)
-Write-Ok "Created $zipPath ($sizeMb MiB)"
-Write-Ok "SHA-256: $hash"
+    $ffmpegLicSrc = Join-Path $ffmpegPrefix 'share\licenses\ffmpeg'
+    if (Test-Path -LiteralPath $ffmpegLicSrc) {
+        $ffmpegLicDst = Join-Path $licensesDir 'ffmpeg'
+        New-Item -ItemType Directory -Force -Path $ffmpegLicDst | Out-Null
+        foreach ($lf in 'LICENSE.md', 'COPYING.LGPLv2.1', 'BUILD.txt') {
+            $p = Join-Path $ffmpegLicSrc $lf
+            if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination (Join-Path $ffmpegLicDst $lf) -Force }
+        }
+    }
+
+    if ($pacman -and $msysPackages.Count -gt 0) {
+        $pkgLines = New-Object System.Collections.Generic.List[string]
+        $pkgLines.Add('MSYS2 CLANG64 runtime packages providing bundled DLLs:')
+        $pkgLines.Add('')
+        $msysLicRoot = Join-Path (Split-Path $tc.Bin -Parent) 'share\licenses'
+        foreach ($pkg in ($msysPackages | Sort-Object)) {
+            $prev = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $ver = (& $pacman -Q $pkg 2>$null | Out-String).Trim()
+                $url = (& $pacman -Qi $pkg 2>$null | Select-String '^URL\s*:\s*(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() } | Select-Object -First 1)
+            } finally { $ErrorActionPreference = $prev }
+            $pkgLines.Add("$ver  $url")
+            $short = $pkg -replace '^mingw-w64-clang-x86_64-', ''
+            $srcLic = Join-Path $msysLicRoot $short
+            if (Test-Path -LiteralPath $srcLic -PathType Container) {
+                $dstLic = Join-Path $licensesDir "msys2\$short"
+                New-Item -ItemType Directory -Force -Path $dstLic | Out-Null
+                Copy-Item -Path (Join-Path $srcLic '*') -Destination $dstLic -Recurse -Force
+            }
+        }
+        [IO.File]::WriteAllText((Join-Path $licensesDir 'MSYS2-PACKAGES.txt'), ($pkgLines -join "`r`n") + "`r`n", (New-Object Text.UTF8Encoding($false)))
+    }
+
+    Write-Step 'Verifying staged Windows release folder'
+    $problems = @(Test-ReleaseFolder $stageRoot $version $objdump)
+    if ($problems.Count -gt 0) {
+        $problems | ForEach-Object { Write-Bad $_ }
+        Stop-Tool "Staged release verification failed ($($problems.Count) problems)"
+    }
+    Write-Ok 'Staged release folder passed all checks'
+
+    Write-Step "Creating $zipPath"
+    [void](New-ReleaseZip $stageRoot $zipPath $packageStem)
+
+    Write-Step 'Reopening and verifying ZIP archive round-trip'
+    Test-ReleaseZip $zipPath $packageStem $version $objdump $stageRoot
+    $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText($shaPath, "$hash  $packageStem.zip`n", (New-Object Text.UTF8Encoding($false)))
+    $sizeMb = [Math]::Round((Get-Item -LiteralPath $zipPath).Length / 1MB, 2)
+    Write-Ok "Created $zipPath ($sizeMb MiB)"
+    Write-Ok "SHA-256: $hash"
+    $completed = $true
+} catch {
+    Stop-Tool $_.Exception.Message
+} finally {
+    if (-not $completed) {
+        foreach ($old in @($stageRoot, $symbolsDir, $zipPath, $shaPath)) { try { Remove-ReleaseCandidate $distDir $old $packageStem } catch { Write-Bad $_.Exception.Message } }
+    }
+}

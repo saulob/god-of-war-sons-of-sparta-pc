@@ -8,7 +8,7 @@ God of War: Sons of Sparta PC targets **Linux x86_64** with a minimum baseline o
 
 - Compiler: Clang (C11 / C++23), CMake 3.24+, Ninja
 - Libraries: SDL3, Vulkan loader/headers, VulkanMemoryAllocator, FreeType, libpng, zlib, OpenSSL (libssl/libcrypto), fmt, Boost headers, tsl::robin_map, Zydis, libxxhash, glslang
-- Video decoder: LGPL-2.1-or-later FFmpeg 8.1.3, either the same build installed under `/usr/local` or built from `gpu/ffmpeg.txt` (`tools/build-ffmpeg.sh`) — never a GPL-3.0 distribution build
+- Video decoder: LGPL-2.1-or-later FFmpeg 8.1.3, always built from `gpu/ffmpeg.txt` by `tools/build-ffmpeg.sh` into `cache/deps/ffmpeg` and never taken from `/usr/local` or the distribution — never a GPL-3.0 distribution build
 - Packaging tools: `patchelf`, `readelf`, `objcopy`, `rsync`, pinned `appimagetool 1.9.1`, and the pinned static musl type-2 AppImage runtime (`patches/appimage-runtime/baseline.env`)
 
 ## Building & Headless Tests

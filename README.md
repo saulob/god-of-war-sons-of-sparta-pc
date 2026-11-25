@@ -1,180 +1,221 @@
-# God of War: Sons of Sparta — PC Port (v0.1.0)
+<div align="center">
 
-Native Windows x64 and Linux x86_64 PC port of the PlayStation 4 release of *God of War: Sons of Sparta*
-(`CUSA57767`, USA): the game's original x86-64 code runs directly on the PC with replacement PS4 system
-libraries and a Vulkan renderer derived from shadPS4.
+# God of War: Sons of Sparta - PC Port
 
-**No game files are included.** You must supply your own legally obtained PS4 package (`.pkg`) and install it
-through the launcher.
+### The PS4 version of God of War: Sons of Sparta running natively on Windows, and experimentally on Linux and Steam Deck, with True Ultrawide, up to 4K, high frame rates, The Pit of Agonies and its local co-op from the start, and the TRG launcher
 
-## Versions
+[![Latest release](https://img.shields.io/github/v/release/saulob/god-of-war-sons-of-sparta-pc?style=for-the-badge&label=release&color=e0bb32&labelColor=07101f&include_prereleases&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/saulob/god-of-war-sons-of-sparta-pc/total?style=for-the-badge&color=e0bb32&labelColor=07101f&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20experimental%20%7C%20Steam%20Deck%20experimental-00acc1?style=for-the-badge&labelColor=07101f)
 
-- **PC port version:** `0.1.0` (single authoritative source: `CMakeLists.txt`)
-- **Supported PS4 game builds:**
-  - `CUSA57767` **1.00 USA** (base package)
-  - `CUSA57767` **1.01 USA** (official update 1.01 installed on top of 1.00)
+<sub>The game's original PS4 x86-64 code runs directly on the PC, with replacement PS4 system libraries and a Vulkan renderer derived from <a href="https://github.com/shadps4-emu/shadPS4">shadPS4</a>. It is not an emulator. <b>The game itself is not included</b>: bring your own legally obtained God of War: Sons of Sparta PS4 package.</sub>
 
-The PC port version (`0.1.0`) identifies the native port, launcher, runtime, and renderer. The PS4 game build
-version (`1.00` or `1.01`) identifies the original game content installed from your `.pkg` files. Both builds
-expose equivalent functionality.
+</div>
 
-## Platforms & Requirements
-
-- **Windows x64:** Windows 10 / 11 (64-bit) with a Vulkan 1.3-capable GPU and up-to-date graphics drivers.
-- **Linux x86_64 AppImage:** Built on Ubuntu 20.04 (`glibc 2.31+`) with automatic extract-and-run fallback when
-  FUSE is unavailable. Requires a Vulkan 1.3-capable GPU and host Vulkan ICD drivers. See [docs/LINUX.md](docs/LINUX.md).
-- **Steam Deck / Linux status:** Experimental. The Linux x86_64 AppImage is built and verified against the
-  headless test gate and packaging checks; live Linux and Steam Deck gameplay validation is performed manually.
+<img width="1080" alt="God of War: Sons of Sparta PC launcher art" src="assets/launcher/header-art-source.png" />
 
 ## Features
 
-- **Display & True Ultrawide Hor+:** Configurable render resolutions, Windowed / Borderless display modes,
-  and 16:9, 21:9, and 32:9 True Ultrawide Hor+. True Ultrawide expands the horizontal field of view while
-  preserving vertical view and HUD proportions (boot splash video stays 16:9; because the original game was
-  authored for 16:9, some 2D backgrounds may reveal their original edges).
-- **Graphics:** SMAA anti-aliasing, configurable anisotropic texture filtering (Game, 2x, 4x, 8x, 16x),
-  optional FSR 1 upscaling and sharpening, VSync, and GPU selection.
-- **Frame Rate:** 30, 60, 90, 120, 144, 165, 240 FPS, or Unlimited, with drift-free frame pacing and optional
-  frame counter / title-bar FPS and resolution display.
-- **Gameplay:**
-  - **Skip Intro**
-  - **Exit Game** integrated into the title menu
-  - **Unlock Hermes Mode** (off by default; see below)
-  - **Unlock The Pit Early** (off by default; see below)
-- **Controllers:** DualShock 4, DualSense, Xbox, and generic SDL3 gamepads, Automatic / PlayStation / Xbox
-  button prompts and prepared Xbox glyphs, plus optional `user/gamecontrollerdb.txt` overrides.
-- **Save Data & Trophies:** Native save data with atomic commit and backup support, plus full trophy tracking
-  (`NPWR58134_00`, 36 trophies) viewable in the launcher.
-- **Launcher & Updater:** Built-in installer, settings, controls, trophies, a Bug Report page with a
-  privacy scrubber, optional crash dump and My reports, and a release updater.
-
-## Hermes Mode
-
-Hermes Mode is the game's original speedrun mode. The PC port provides an **Unlock Hermes Mode** toggle on
-the launcher's **Gameplay** page, **disabled by default**.
-
-When enabled, Hermes Mode is selectable immediately on the original GAME MODES screen alongside Campaign and
-Erebus Mode without completing the campaign or entering the secret code. Turning the option off restores the
-original unlock requirement; the original cheat-code unlock and existing Hermes saves continue to work normally.
-As in the original game, the selected game mode is stored with the save and cannot be changed afterward.
+- **True Ultrawide Hor+**: 21:9 and 32:9 show more of the world at the sides with the same vertical view, without stretching the gameplay image. The HUD and menus keep their proportions
+- **Up to 4K**: render at 720p, Native (1080p), 1440p, 1800p or 4K. Above 1080p the game runs in its PlayStation 4 Pro mode
+- **High frame rates**: 30, 60 (Original, default), 90, 120, 144, 165, 240 or Unlimited frames per second, with drift-free frame pacing
+- **The Pit of Agonies from the beginning**: the game's own challenge mode, reachable without finishing the story first. See [The Pit of Agonies](#the-pit-of-agonies)
+- **Local two-player co-op in The Pit**: the original local co-op, with Kratos and Deimos on the same PC. The story campaign stays single-player
+- **Unlock The Pit Early** and **Unlock Hermes Mode**: two independent launcher options, off by default, that open The Pit and the game's own Hermes Mode from the start. Your campaign save is never modified. See [Hermes Mode](#hermes-mode)
+- **Skip Intro**: skips the startup logos and video and continues to the title screen
+- **Controllers**: DualShock 4, DualSense, Xbox and other SDL gamepads. **Controller prompts: Automatic** shows Xbox symbols while an Xbox controller is used and PlayStation symbols otherwise, or can be forced to either; the Xbox A/B/X/Y, LB/RB and LT/RT glyphs appear in the game's menus and dialogs, including the Settings dialog, the campfire menu and The Pit
+- **Graphics**: SMAA anti-aliasing, anisotropic texture filtering (Game, 2x, 4x, 8x, 16x), AMD FSR 1 upscaling and RCAS sharpening, VSync and graphics card selection
+- **Display**: Windowed and Borderless Fullscreen (**F11** switches while playing), monitor selection, and the 16:9 Original, 16:10, 21:9 Ultrawide, 32:9 Super Ultrawide, 4:3 and 5:4 shapes
+- **Exit Game** in the title menu
+- **Local PS4 trophies** (`NPWR58134_00`, 36 trophies), offline on this PC, shown on the launcher's Trophies page
+- **SaveData** with atomic writes and backups
+- **Bug Report page** in the launcher, with a scrubbed log preview, an optional crash report and **My reports**. See [Reporting problems](#reporting-problems)
+- **Self-updater**: the launcher can install a newer release of the port; the installed game files and the `user` and `logs` folders are kept
+- **Native builds**: Windows x64, and an experimental native Linux x86-64 AppImage that needs no Proton or Wine
 
 ## The Pit of Agonies
 
-The Pit is the game's original endgame challenge mode and is part of both supported builds. The **Unlock The Pit Early**
-toggle on the launcher's **Gameplay** page, off by default, shows the game's own title menu entry before the main story
-is completed. It marks nothing as completed and is independent of **Unlock Hermes Mode**; turning it off restores the
-original unlock requirement. The original cheat code still works and unlocks both modes.
+The Pit of Agonies is the game's original challenge mode and is part of both supported builds. The **Unlock The Pit Early**
+option on the launcher's **Gameplay** page, off by default, shows the game's own title menu entry before the main story is
+completed. The Pit keeps its original local two-player co-op for Kratos and Deimos. The option marks nothing as completed
+and is independent of **Unlock Hermes Mode**; turning it off restores the original unlock requirement. The original cheat
+code still works and unlocks both modes.
 
-## Installing the Game & Official Update
+## Hermes Mode
 
-1. Extract the Windows ZIP to a writable folder (or mark the Linux `.AppImage` executable with `chmod +x`).
-2. Start `sons_of_sparta.exe` (Windows) or `SonsOfSpartaPC-v0.1.0-x86_64.AppImage` (Linux).
-3. On the **Play** page, click **Install game...** and select your legally obtained `CUSA57767` 1.00 `.pkg`.
-4. *(Optional)* Click **Install update...** and select your official `CUSA57767` 1.01 update `.pkg`. You can
-   return to 1.00 at any time using **Remove Update...** without touching your saves.
-5. Click **Play** to start the game. Hold `Shift` while starting (or pass `--launcher`) to reopen the launcher
-   if you turned off **Show this launcher**.
+Hermes Mode is the game's original speedrun mode. The **Unlock Hermes Mode** option on the launcher's **Gameplay** page,
+off by default, makes it selectable immediately on the original GAME MODES screen alongside Campaign and Erebus Mode,
+without completing the campaign or entering the secret code. Turning the option off restores the original unlock
+requirement; the original cheat-code unlock and existing Hermes saves keep working. As in the original game, the selected
+game mode is stored with the save and cannot be changed afterwards.
 
-## Save Data & User Files
+## What you need
 
-The port is portable by default:
+- Windows 10 or 11, 64-bit
+- **Or, experimental:** 64-bit Linux on x86-64, including the Steam Deck, with glibc 2.31 or newer (see [Linux and Steam Deck](#linux-and-steam-deck))
+- A graphics card and driver with **Vulkan 1.3**
+- **Your own legally obtained God of War: Sons of Sparta PS4 package** of a supported build:
 
-- **Windows:** `user/`, `game/`, and `logs/` sit next to `sons_of_sparta.exe`.
-- **Linux AppImage:** `user/`, `game/`, and `logs/` sit in the folder containing the `.AppImage` file. If that
-  folder is read-only, data is stored under `$XDG_DATA_HOME/SonsOfSpartaPC` (default `~/.local/share/SonsOfSpartaPC`).
-  Set `SOS_PORTABLE_DIR` to override the location.
-- **Saves:** Stored under `user/data/savedata/` (with atomic swaps and backup copies).
-- **Settings:** Stored in `user/sons_of_sparta.ini`.
+| Build | Package |
+| --- | --- |
+| `CUSA57767` USA **1.00** | The base game package |
+| `CUSA57767` USA **1.01** | The official 1.01 update, installed over 1.00 |
 
-## Bug Reports
+Both builds have the same features. The PC port version (`0.1.0`) identifies the port, launcher, runtime and renderer; the
+game build (`1.00` or `1.01`) identifies the original game content installed from your own `.pkg` files.
 
-The launcher's **Bug Report** page sends one gameplay log, your description and, when the **Attach crash report**
-box is ticked, the matching crash dump. The box is offered for a session with a valid paired dump; clear it to send
-the log alone. The log is scrubbed before either the preview or the report is built: user and computer names,
-private folders, addresses and secrets become placeholders, while crash and GPU diagnostics stay. The preview shows
-exactly the package that is sent.
+## Installing
 
-Every report returns a **Report ID** and a private receipt. The receipt stays in `user/bug_reports.json` and is
-never shown in the report, the log or the dashboard. **My reports** on the same page checks the status, shows
-developer replies, offers the player test answer (`Yes, fixed` / `No, still happening`) when a fix awaits it,
-and can resend a crash dump that failed to upload. It needs no account and no online gameplay.
+1. Download **SonsOfSpartaPC-v&lt;version&gt;-windows-x64.zip** from the [latest release](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest) and extract it into a folder you can write to.
+2. Run **sons_of_sparta.exe**. The launcher opens.
+3. On the **Play** page click **Install game...** and select your own `CUSA57767` 1.00 `.pkg` file.
+4. *(Optional)* Click **Install update...** and select your own official `CUSA57767` 1.01 update `.pkg`. **Remove Update...** returns to 1.00 at any time; your saves are kept.
+5. Press **PLAY**. To bring the launcher back after turning **Show this launcher** off, hold **Shift** while starting or start with `--launcher`.
 
-The service is the standalone Sons Cloudflare Worker at
-`wss://sons-of-sparta-bug-report.saulobenigno.workers.dev/ws`, with a SQLite Durable Object under
-`server/bug-report`. A clean installation works without any endpoint configuration. `SOS_BUG_REPORT_URL` and
-`user/bug_report_url.txt` remain available as development or local overrides. The private `/admin` dashboard
-needs the dashboard token; players never do. See [docs/BUG_REPORT.md](docs/BUG_REPORT.md) for the protocol,
-privacy model, deployment and overrides.
+**The game itself is not included**: the release contains no game package or executable, and the port does not download the game.
 
-## Adding to Steam (Non-Steam Game)
+### Linux and Steam Deck
 
-Adding the port to Steam does not require bundling or moving original game files:
+**Experimental.** This is a native Linux build, not Proton or Wine, with the same launcher and options as Windows; the only
+Windows-only option is **Allow overlay programs**. The AppImage is built on Ubuntu 20.04 and passes the automated Linux
+tests and packaging checks, but it has not yet been runtime-tested on real Linux or Steam Deck hardware. Please report
+Linux-specific problems with the log (see [Reporting problems](#reporting-problems)).
 
-1. In Steam, choose **Games → Add a Non-Steam Game to My Library...** and browse to `sons_of_sparta.exe`
-   (Windows) or `SonsOfSpartaPC-v0.1.0-x86_64.AppImage` (Linux / Steam Deck Desktop Mode).
-2. On Linux / Steam Deck, ensure the AppImage is executable (`chmod +x`) and keep it in a writable folder (or
-   set `SOS_PORTABLE_DIR`). Do **not** force Proton compatibility—this is a native Linux binary.
-3. Optional custom Steam artwork (vertical cover `600x900`, header `920x430`, hero `3840x1240`, transparent
-   logo, and icon) can be set in Steam by right-clicking the library entry (**Manage → Set custom artwork /
-   Set custom background / Set custom logo**). See [docs/STEAM-ARTWORK.md](docs/STEAM-ARTWORK.md) for the
-   asset list and the artwork still awaiting an approved source.
+1. Download **SonsOfSpartaPC-v&lt;version&gt;-x86_64.AppImage** from the [latest release](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest) and make it executable (right-click > **Properties** > **Permissions** > **Is executable**, or `chmod +x`).
+2. Run it. The launcher opens.
+3. Install your own game package from the **Play** page, exactly as on Windows, then press **PLAY**.
 
-## Known Limitations & Troubleshooting
+An AppImage normally mounts itself with FUSE. Where that is not possible, it extracts itself and runs from there
+automatically. Requirements and details are in [docs/LINUX.md](docs/LINUX.md).
 
-- **Vulkan 1.3 required:** Update your GPU drivers if Vulkan device creation fails. On laptops with multiple
-  GPUs, select the discrete GPU on the launcher's **Display** page.
-- **Overlays:** Third-party Vulkan overlays (e.g., RivaTuner, Bandicam, OBS hooks) can interfere with graphics
-  initialization. Keep **Allow overlay programs** off unless needed.
-- **Linux / Steam Deck:** Live runtime gameplay is experimental in v0.1.0. If FUSE is unavailable on your
-  system, the AppImage automatically falls back to extract-and-run.
-- **Reporting issues:** Use the launcher's **Bug Report** page (see [docs/BUG_REPORT.md](docs/BUG_REPORT.md)):
-  choose the log of the session that failed, describe what happened and, if a crash dump was written, attach it.
-  The log and preview are scrubbed in the launcher. A release build already points at the production service; if
-  the service cannot be reached, the page says so, keeps your text and never claims the report was sent. You can
-  also open the report ID later from **My reports**.
+### Adding to Steam
 
-## Building from Source
+1. In Steam, choose **Games > Add a Non-Steam Game to My Library...** and browse to `sons_of_sparta.exe` (Windows) or the
+   AppImage (Linux, or Steam Deck Desktop Mode).
+2. On Linux and Steam Deck keep the AppImage executable and in a writable folder (or set `SOS_PORTABLE_DIR`). Do **not**
+   force Proton: it is a native Linux program.
+3. Optional custom Steam artwork can be set by right-clicking the library entry. See [docs/STEAM-ARTWORK.md](docs/STEAM-ARTWORK.md).
+
+### Windows SmartScreen
+
+Windows may warn the first time you run the program, because the release is not digitally signed. If you downloaded it
+from this repository's releases page, choose **More info**, then **Run anyway**. The SHA-256 and VirusTotal link of every
+release file are in its release notes.
+
+### Saves and settings
+
+Everything is kept next to the program, so copying the whole folder to another PC takes your data with it:
+
+| Folder | Contents |
+| --- | --- |
+| `user/sons_of_sparta.ini` | Launcher and game settings |
+| `user/data/savedata/` | Your saves, written atomically with backup copies |
+| `user/bug_reports.json` | The receipts of the Bug Reports you sent |
+| `logs/` | One log per run |
+| `game/` | The installed game, unpacked from your own package |
+
+On Linux these folders sit next to the AppImage file when that folder is writable, and under
+`$XDG_DATA_HOME/SonsOfSpartaPC` (default `~/.local/share/SonsOfSpartaPC`) otherwise. `SOS_PORTABLE_DIR` chooses
+another folder.
+
+## Reporting problems
+
+The easiest way is the launcher's **Bug Report** page: describe the problem, choose the log of that session and press
+**Send report**. The log is scrubbed before the preview and the report are built: user and computer names, private
+folders, addresses and secrets become placeholders, while crash and GPU diagnostics stay. The preview shows exactly what
+is sent. When a crash dump was written, **Attach crash report** adds it; clear the box to send the log alone.
+
+Every report returns a **Report ID**. **My reports** on the same page shows its status and developer replies, and offers
+the player test answer (`Yes, fixed` / `No, still happening`) when a fix awaits it. It needs no account. If the service
+cannot be reached, the page says so and keeps your text. See [docs/BUG_REPORT.md](docs/BUG_REPORT.md) for the protocol
+and privacy model.
+
+You can also open an [issue](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues) and attach the newest log
+from the `logs` folder.
+
+## Known limitations
+
+- **Linux and Steam Deck** are experimental: built and checked automatically, not yet runtime-tested on real hardware.
+- **Shapes other than 16:9** are labelled experimental in the launcher: the game was authored for 16:9, so some 2D scenes
+  may show the edges of their original backgrounds. The boot splash video stays 16:9.
+- **4K and the other resolutions above 1080p** need a powerful graphics card.
+- **Vulkan 1.3 is required**: update the graphics driver if Vulkan device creation fails. On laptops with two graphics
+  cards, choose the discrete one on the launcher's **Display** page.
+- **Overlays**: third-party Vulkan overlays (RivaTuner, Bandicam, OBS hooks) can interfere with graphics start-up. Keep
+  **Allow overlay programs** off unless you need it.
+
+## Building it yourself
 
 ### Windows (MSYS2 CLANG64)
 
 ```powershell
-.\tools\setup.ps1                # check prerequisites
-.\tools\build.ps1                # incremental RelWithDebInfo build
-.\tools\test.ps1                 # complete headless validation suite
-.\tools\package.ps1              # Release build + verified Windows ZIP in dist\
-.\tools\package-release.ps1      # local Windows + Linux release build & verification (never publishes)
+.\tools\setup.ps1                # checks the prerequisites
+.\tools\build.ps1                # incremental development build
+.\tools\test.ps1                 # the complete headless test suite
+.\tools\package.ps1              # Release build, dist\SonsOfSpartaPC-v<version>-windows-x64\ and its verified ZIP
+.\tools\package-release.ps1      # the whole local release: test gate, Windows ZIP, Linux AppImage, notes
 ```
 
-`tools\test.ps1` checks both supported builds from the sources and needs no game version installed. A boot image
-(`build\image`, or a research copy in `build\research\image`) or game folder on the machine only adds evidence; its
-absence is reported as `DATA UNAVAILABLE` in the run summary, never as a pass or a failure.
+`tools\test.ps1` checks both supported builds from the sources and needs no game installed; a local boot image or game
+folder only adds evidence, and its absence is reported as `DATA UNAVAILABLE`, never as a pass or a failure.
 
-### Linux (Ubuntu 20.04 / x86_64)
+`tools\package-release.ps1` builds the Linux AppImage in an Ubuntu 20.04 WSL2 distribution (`-WslDistro <name>` picks it,
+see [docs/LINUX.md](docs/LINUX.md)), fails if either platform fails, and writes every VirusTotal entry as PENDING. After the
+four files have been scanned and their URLs recorded, `tools\package-release.ps1 -NotesOnly` regenerates the notes without
+building or touching any package (see [docs/RELEASE_SECURITY.md](docs/RELEASE_SECURITY.md)). Nothing uploads, tags or
+publishes anything. The release version is the project `VERSION` in `CMakeLists.txt`.
+
+### Linux (Ubuntu 20.04, x86-64)
 
 ```sh
 ./tools/build.sh --release --test
 ./tools/package-linux.sh
 ```
 
-See [docs/LINUX.md](docs/LINUX.md) for full Linux build and AppImage details.
+See [docs/LINUX.md](docs/LINUX.md) for the full Linux build and AppImage details.
 
-## Repository Layout
+### Repository layout
 
 | Path | Purpose |
-|---|---|
-| `src/` | Native loader, PS4 compatibility runtime, patches, and trophy engine |
+| --- | --- |
+| `src/` | Native loader, PS4 compatibility runtime, patches and trophy engine |
 | `gpu/` | shadPS4-derived Vulkan video core, shader recompiler, GnmDriver, VideoOut, AvPlayer |
-| `launcher/` | TRG launcher: Play/install, Display/Graphics/Gameplay/Controls/Trophies/About/Bug Report & updater |
-| `tools/` | Build, headless test, and local release packaging scripts (Windows & Linux) |
-| `scripts/` | Build parity, graphics/PRX import preflight, lifecycle, and patch verification gates |
+| `launcher/` | TRG launcher: install, settings, controls, trophies, Bug Report and updater |
+| `tools/` | Build, headless test and local release packaging scripts (Windows and Linux) |
+| `scripts/` | Build parity, import preflight, lifecycle and patch verification gates |
 | `tests/` | Headless unit and mutation test suites |
-| `server/bug-report/` | Standalone Cloudflare Worker, SQLite Durable Object, admin dashboard and tests |
-| `packaging/` | Application icons, Linux desktop/AppRun/AppStream metadata, packaged README, and licenses |
-| `assets/launcher/` | Launcher icons and sponsor heart artwork (`icons/SOURCES.md`) |
-| `docs/` | Platform, import, and engineering documentation |
+| `server/bug-report/` | Standalone Cloudflare Worker for Bug Reports, with its admin dashboard and tests |
+| `packaging/` | Application icons, Linux desktop and AppStream metadata, packaged README and licenses |
+| `assets/launcher/` | Launcher art and icons |
+| `docs/` | Platform, import and engineering documentation |
+
+## Sponsoring
+
+God of War: Sons of Sparta PC is maintained and developed in my free time. If you enjoy the project or find it useful, consider supporting its continued development.
+
+<p align="center">
+<a href="https://github.com/sponsors/saulob" target="_blank"><img src="https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
+</p>
+
+## Credits
+
+- God of War and God of War: Sons of Sparta belong to their respective rights holders. This is an unofficial fan-made PC port. It is not affiliated with or endorsed by Sony Interactive Entertainment, Santa Monica Studio or any other rights holder, and it contains no game package or executable.
+- [shadPS4](https://github.com/shadps4-emu/shadPS4) for the Vulkan renderer, shader recompiler, GnmDriver, VideoOut, AvPlayer and kernel event queues the video core is built on (GPL-2.0-or-later; see `gpu/VENDOR.txt`)
+- [gow3_pc](https://github.com/FelipePrado0/gow3_pc) and its lineage, MediEvil PC and uncharted-ndc-native, through which the video core came to this port
+- The Dragon's Crown Pro PC port, the base of the loader, launcher and renderer, and the dreams-pc and catherine-full-body-pc ports for parts of the PS4 system library stubs (see [docs/INVESTIGATION.md](docs/INVESTIGATION.md))
+- [TRG Launcher](https://github.com/TekRantGaming/trg-launcher), the launcher interface, pinned at v1.1.0, licensed under the MIT License
+- [SMAA](https://github.com/iryoku/smaa) by Jorge Jimenez et al., and AMD FidelityFX Super Resolution 1
+- [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9) by Alex Barney for ATRAC9 audio decoding
+- The licenses of the libraries the release includes are in the `licenses` folder of the ZIP
+
+## AI disclosure
+
+AI tools were used to assist with code analysis, development, debugging and documentation. Changes were directed, tested and reviewed by the maintainer.
 
 ## License
 
-This port is licensed under the GNU General Public License v2.0 (see `LICENSE`). Third-party notices are
-listed in `packaging/licenses/THIRD-PARTY-LICENSES.txt`, with the full component license texts in
-`packaging/licenses/components/`.
+Original code in this project is licensed under the GNU General Public License v2.0 or later (GPL-2.0-or-later). See [LICENSE](LICENSE).
+
+Third-party components retain their respective licenses and notices. See [packaging/licenses/THIRD-PARTY-LICENSES.txt](packaging/licenses/THIRD-PARTY-LICENSES.txt), with the full component license texts in `packaging/licenses/components/`.
+
+The game package and executable are not included. God of War: Sons of Sparta and its assets are not covered by this project's license.

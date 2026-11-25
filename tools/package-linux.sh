@@ -24,10 +24,13 @@ out_sha="${out_appimage}.sha256"
 APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
 source "$root/patches/appimage-runtime/baseline.env"
 
-for tool in readelf objcopy patchelf ldd sha256sum diff dpkg-query; do
+for tool in readelf objcopy patchelf ldd sha256sum diff dpkg-query perl; do
     command -v "$tool" >/dev/null || die "Missing packaging tool: $tool"
 done
 [[ -x $bin ]] || die "Missing Linux Release binary: $bin (run tools/build.sh --release first)"
+ff_ver=$(awk '{ gsub(/\r/, "") } $1=="version"{print $2}' "$root/gpu/ffmpeg.txt")
+ff_prefix="$root/cache/deps/ffmpeg/$ff_ver/linux"
+bash "$root/tools/build-ffmpeg.sh" --check "$ff_prefix"
 
 # Verify host glibc baseline <= 2.31
 host_glibc=$(ldd --version | head -n1 | grep -oE '[0-9]+\.[0-9]+$' || true)
@@ -96,14 +99,8 @@ cp -f "$root/packaging/licenses/THIRD-PARTY-LICENSES.txt" "$appdir/usr/share/doc
 cp -R "$root/packaging/licenses/components" "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/"
 cp -f "$root/gpu/VENDOR.txt" "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/VENDOR.txt"
 
-# Bundle FFmpeg LGPL licenses
-for ff_lic in /usr/local/share/licenses/ffmpeg "$root/cache/deps/ffmpeg/"*/linux/share/licenses/ffmpeg; do
-    if [[ -d $ff_lic ]]; then
-        mkdir -p "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/ffmpeg"
-        cp -f "$ff_lic"/{LICENSE.md,COPYING.LGPLv2.1,BUILD.txt} "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/ffmpeg/" 2>/dev/null || true
-        break
-    fi
-done
+mkdir -p "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/ffmpeg"
+cp -f "$ff_prefix"/share/licenses/ffmpeg/{LICENSE.md,COPYING.LGPLv2.1,BUILD.txt} "$appdir/usr/share/doc/sons-of-sparta-pc/licenses/ffmpeg/"
 
 # Bundle non-host shared libraries (transitive ldd closure)
 echo "==> Collecting shared library closure"
@@ -125,6 +122,9 @@ while (( ${#queue[@]} > 0 )); do
             continue
         fi
         real=$(readlink -f -- "$target")
+        if [[ $soname =~ ^lib(av|sw)[a-z]+\.so && $real != "$ff_prefix"/lib/* ]]; then
+            die "$soname comes from $real, not from the pinned FFmpeg in $ff_prefix"
+        fi
         lib_owner[$soname]=$real
         if [[ $soname == libstdc++.so.* || $soname == libgcc_s.so.* ]]; then
             cp -f "$real" "$appdir/usr/lib/compat/$soname"
@@ -189,6 +189,7 @@ done
 
 # Enforce DT_RPATH (not RUNPATH) and strip debug sections on bundled libs
 # patchelf 0.10 keeps an existing RUNPATH unless it is removed first.
+build_rpath=$(patchelf --print-rpath "$appdir/usr/bin/sons_of_sparta")
 patchelf --remove-rpath "$appdir/usr/bin/sons_of_sparta"
 patchelf --force-rpath --set-rpath '$ORIGIN/../lib' "$appdir/usr/bin/sons_of_sparta"
 for lib in "$appdir/usr/lib"/*.so*; do
@@ -196,6 +197,10 @@ for lib in "$appdir/usr/lib"/*.so*; do
     patchelf --remove-rpath "$lib" || true
     patchelf --force-rpath --set-rpath '$ORIGIN' "$lib" || true
 done
+# patchelf leaves the removed RUNPATH behind as an unreferenced string
+if [[ -n $build_rpath ]]; then
+    LC_ALL=C perl -0777 -pi -e 'BEGIN { $p = shift } s/\0\Q$p\E\0/"\0" x (length($p) + 2)/ge' -- "$build_rpath" "$appdir/usr/bin/sons_of_sparta"
+fi
 
 # Compute GLIBCXX / GCC minimum versions needed for AppRun compat fallback
 glibcxx_need=$(readelf --version-info -W "$appdir/usr/bin/sons_of_sparta" "$appdir/usr/lib"/*.so* 2>/dev/null \
@@ -248,6 +253,8 @@ check_appdir() {
         check_glibc_max "$elf"
         if grep -aq 'DEBUG_SAULO' "$elf"; then die "DEBUG_SAULO marker in $elf"; fi
         if grep -aq 'VisualStudio' "$elf"; then die "Local Windows path in $elf"; fi
+        if grep -aqF -- "$root" "$elf"; then die "Build folder $root in $elf"; fi
+        if grep -aqF -- "$HOME/.cache" "$elf"; then die "Local cache path in $elf"; fi
     done < <(find "$dir/usr/bin" "$dir/usr/lib" -maxdepth 2 -type f \( -name 'sons_of_sparta' -o -name '*.so*' \) -print0)
 
     # Ensure no forbidden files (game data, saves, logs, renderdoc, debug symbols)
