@@ -2,7 +2,7 @@
 
 # God of War: Sons of Sparta - PC Port
 
-### The PS4 version of God of War: Sons of Sparta running natively on Windows, and experimentally on Linux and Steam Deck, with True Ultrawide, up to 4K, high frame rates, The Pit of Agonies and its local co-op from the start, and the TRG launcher
+### The PS4 version of God of War: Sons of Sparta running natively on Windows, and experimentally on Linux and Steam Deck, with True Ultrawide, up to 4K, high frame rates, The Pit of Agonies DLC and its local co-op from the start, and the TRG launcher
 
 [![Latest release](https://img.shields.io/github/v/release/saulob/god-of-war-sons-of-sparta-pc?style=for-the-badge&label=release&color=e0bb32&labelColor=07101f&include_prereleases&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/saulob/god-of-war-sons-of-sparta-pc/total?style=for-the-badge&color=e0bb32&labelColor=07101f&cacheSeconds=300)](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases)
@@ -12,7 +12,7 @@
 
 </div>
 
-<img width="1080" alt="God of War: Sons of Sparta PC launcher art" src="assets/launcher/header-art-source.png" />
+<img width="1918" height="811" alt="2026-11-25_18-02" src="https://github.com/user-attachments/assets/a2f109ac-be18-44a5-89b5-9ad51de1db1d" />
 
 ## Features
 
@@ -40,6 +40,8 @@ option on the launcher's **Gameplay** page, off by default, shows the game's own
 completed. The Pit keeps its original local two-player co-op for Kratos and Deimos. The option marks nothing as completed
 and is independent of **Unlock Hermes Mode**; turning it off restores the original unlock requirement. The original cheat
 code still works and unlocks both modes.
+
+<img width="1918" height="813" alt="2026-11-25_18-06" src="https://github.com/user-attachments/assets/251dd2f8-5ff0-417a-ad4e-231f2e249efb" />
 
 ## Hermes Mode
 
@@ -73,6 +75,12 @@ game build (`1.00` or `1.01`) identifies the original game content installed fro
 5. Press **PLAY**. To bring the launcher back after turning **Show this launcher** off, hold **Shift** while starting or start with `--launcher`.
 
 **The game itself is not included**: the release contains no game package or executable, and the port does not download the game.
+
+## Screenshots
+
+<img width="1918" height="816" alt="2026-11-25_18-05" src="https://github.com/user-attachments/assets/08df1988-706b-437a-bb17-773cad726463" />
+
+<img width="1918" height="819" alt="2026-11-25_18-05_1" src="https://github.com/user-attachments/assets/9dfbd707-bdf2-45b6-8176-74500ece230d" />
 
 ### Linux and Steam Deck
 
