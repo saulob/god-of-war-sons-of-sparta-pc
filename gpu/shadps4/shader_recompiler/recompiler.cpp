@@ -3,6 +3,8 @@
 
 #include <unordered_map>
 
+#include <iterator>
+#include "common/gpu_trace.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -140,6 +142,11 @@ IR::Program CloneProgram(const IR::Program& program, Pools& pools) {
 
 IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Info& info,
                              RuntimeInfo& runtime_info, const Profile& profile) {
+    // dcp: every translation in the GPU crash trace, with its hardware stage.
+    constexpr const char* hw_stage_tags[] = {"fragment", "vertex", "geometry", "export", "hull", "local", "compute"};
+    const u32 hw_stage = u32(info.hw_stage);
+    Common::GpuTrace::Record(Common::GpuTrace::Event::ShaderCompile, info.pgm_hash,
+                             Common::GpuTrace::Tag(hw_stage < std::size(hw_stage_tags) ? hw_stage_tags[hw_stage] : "?"));
     // Ensure first instruction is expected.
     constexpr u32 token_mov_vcchi = 0xBEEB03FF;
     if (code[0] != token_mov_vcchi) {

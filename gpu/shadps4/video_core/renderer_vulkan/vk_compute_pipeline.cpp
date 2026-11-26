@@ -5,6 +5,7 @@
 
 #include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -108,8 +109,26 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
     };
     auto [pipeline_result, pipe] =
         instance.GetDevice().createComputePipelineUnique(pipeline_cache, compute_pipeline_ci);
-    ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create compute pipeline: {}",
-               vk::to_string(pipeline_result));
+    // dcp: as the graphics pipelines: one clean retry without the shared pipeline cache, then a
+    // PipelineCreationFailed the caller decides about (warm-up: skip the entry; game: retry once
+    // with the warm-up paused, then fatal).
+    if (pipeline_result != vk::Result::eSuccess) {
+        const auto hash = std::hash<ComputePipelineKey>{}(compute_key);
+        LOG_WARNING(Render_Vulkan,
+                    "Compute pipeline {}: {:#x} failed with {}, retrying without the pipeline "
+                    "cache ({})",
+                    preloading ? "warm-up" : "creation", hash, vk::to_string(pipeline_result),
+                    debug_str);
+        auto [clean_result, clean] =
+            instance.GetDevice().createComputePipelineUnique(nullptr, compute_pipeline_ci);
+        if (clean_result != vk::Result::eSuccess) {
+            throw PipelineCreationFailed{
+                clean_result, fmt::format("compute pipeline {:#x} ({}): clean creation failed: {}",
+                                          hash, debug_str, vk::to_string(clean_result))};
+        }
+        LOG_WARNING(Render_Vulkan, "Compute pipeline {:#x}: clean retry succeeded", hash);
+        pipe = std::move(clean);
+    }
     pipeline = std::move(pipe);
     SetObjectName(device, *pipeline, "Compute Pipeline {}", debug_str);
 }

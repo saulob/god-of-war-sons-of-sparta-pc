@@ -16,6 +16,7 @@ typedef struct {
     int32_t width, height;      /* initial window size */
     uint32_t features;          /* DCP_GPU_FEATURE_*: what the game build supports (the Options menu shows only those) */
     int32_t display_width, display_height; /* the display sceVideoOutGetResolutionStatus reports; 0: 1920x1080 */
+    const char *version;        /* the game build's APP_VER ("1.01"): each build keeps its own pipeline cache; "" or NULL if unknown */
 } DcpGpuConfig;
 #define DCP_GPU_FEATURE_RENDER_RESOLUTION (1u << 0)
 #define DCP_GPU_FEATURE_TRUE_ULTRAWIDE (1u << 1)
@@ -57,6 +58,12 @@ int dcpgpu_overlay_captures_input(void);
 /* DCP_INPUT_LATENCY_TRACE=1: 1 when set; the SDL_GetTicksNS time of the newest host button or key press. */
 int dcpgpu_latency_trace_enabled(void);
 uint64_t dcpgpu_latency_press_ns(void);
+/* SteamOS Gamescope touchscreen (src/sos_touch_gamescope.h): up to two screen contacts as DualShock 4 touchpad points
+ * (x 0..1919, y 0..942, arrays of 2) and the PS4 buttons a tap adds. Returns the contact count; 0 off that route. One
+ * call per game read of player 1. */
+int dcpgpu_touchscreen_sample(uint16_t *x, uint16_t *y, uint8_t *id, uint32_t *buttons);
+/* Gives each Gamescope root its touch click mode back. Every exit path calls it before the process ends; any thread. */
+void dcpgpu_touch_release(void);
 
 /* 1 while the final presenter should black out the ultrawide side extensions for the frame being built: the real
  * loading/saving fade is drawn, or the fixed-screen transition fallback is active. Set once per guest frame. */

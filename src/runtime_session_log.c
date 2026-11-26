@@ -14,7 +14,14 @@ int runtime_log_should_remove(int detailed, int clean, int crashed) {
 
 void runtime_log_set_detailed(int enabled) { detailed_logging = enabled != 0; }
 
-void runtime_log_mark_clean_exit(void) { clean_exit = 1; }
+void runtime_log_mark_clean_exit(void) {
+    if (!clean_exit) {
+        /* The closing record a Bug Report looks for: without it, a log that stops is "ended without a closing record". */
+        fputs("Session: normal exit\n", stdout);
+        fflush(stdout);
+    }
+    clean_exit = 1;
+}
 
 void runtime_log_mark_crash(void) { crash_reported = 1; }
 

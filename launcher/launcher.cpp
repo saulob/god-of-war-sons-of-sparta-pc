@@ -36,6 +36,7 @@
 #include "game_files.h"
 #include "game_install.h"
 #include "game_process.h"
+#include "graphics_probe.h"
 #include "header_art.h"
 #include "host.h"
 #include "launcher_escape.h"
@@ -81,6 +82,11 @@ ImU32 Col32(int rgb) { return IM_COL32((rgb >> 16) & 255, (rgb >> 8) & 255, rgb 
 
 const ImVec4 kAccent = Hex(palette::kAccent);
 constexpr double kPlayFeedbackSeconds = 0.0;
+// PLAY's steps as startup phases (the watchdog budgets them by the "play:" prefix).
+constexpr const char kPlayRecheckStage[] = "play: game files recheck";
+constexpr const char kPlayGraphicsStage[] = "play: graphics preflight";
+constexpr const char kPlaySaveStage[] = "play: settings save";
+constexpr const char kPlayStartingStage[] = "play: starting";
 constexpr char kPortTitle[] = "God of War: Sons of Sparta PC";
 constexpr char kInstallTitle[] = "Select your Sons of Sparta base game package";
 constexpr char kInstallUpdateTitle[] = "Select your Sons of Sparta update package";
@@ -339,7 +345,6 @@ public:
             return false;
         }
         displays_ = ListDisplays();
-        gpu_names_ = DcpGraphics::GpuChoices(ListGpuNames());
         if (!FinishInterruptedRemovals(RootsOf(paths_))) {
             Log("an interrupted update removal could not be finished yet");
         }
@@ -375,6 +380,8 @@ public:
         Log("shown");
         sos_startup_phase("launcher running");
 
+        const double shown_at = ImGui::GetTime();
+        int frames_shown = 0;
         while (outcome == Outcome::kRunning) {
             if (!host_.WaitForFrame()) {
                 outcome = Outcome::kQuit;
@@ -383,6 +390,11 @@ public:
             host_.BeginFrame();
             outcome = Frame();
             host_.EndFrame(LauncherTheme().bg);
+            // Never after PLAY: the game is starting, and the probe would only delay it and mislabel the phase.
+            if (cards_.state == GraphicsProbeState::kPending && outcome == Outcome::kRunning && !play_.starting() &&
+                GraphicsProbeDue(++frames_shown, ImGui::GetTime() - shown_at)) {
+                DetectGraphics();
+            }
         }
         sos_startup_phase("launcher loop ended");
         if (outcome == Outcome::kPlay) sos_startup_milestone("launcher closing");
@@ -398,7 +410,9 @@ public:
         }
         launcher_.reset();
         trophy_page_.reset();
+        sos_startup_phase("launcher renderer teardown");
         host_.Close();
+        sos_startup_stage_result("launcher host closed", true, "%s", "window, renderer and SDL released");
         Log(outcome == Outcome::kPlay ? "closed, starting the game" : "closed");
         return true;
     }
@@ -419,8 +433,11 @@ private:
             if (StartGameProcess(config_, error)) {
                 skip_finish_save_ = true;
                 game_process_started_ = true;
+                sos_startup_event("Runtime handoff: separate game process created");
                 return Outcome::kPlay;
             }
+            sos_startup_event("PLAY failed: the game process could not be started");
+            sos_startup_phase("launcher running");
             play_.Cancel();
             launcher_->SetStatus(Tr("Could not start the game. ") + TrValue(error), 10.0);
         }
@@ -514,32 +531,72 @@ private:
         return false;
     }
 
-    // PLAY saves the settings once here, then starts the transition. A failed save keeps the launcher open.
+    void NotePlayAvailability(const std::string& refusal) {
+        if (refusal == play_refusal_) {
+            return;
+        }
+        play_refusal_ = refusal;
+        if (refusal.empty()) {
+            Log("PLAY available");
+        } else {
+            Log("PLAY unavailable: %s", refusal.c_str());
+        }
+    }
+
+    // PLAY saves the settings once here, then starts the transition. A failed save keeps the launcher open. Each step
+    // logs a flushed "Stage:" line with its result, so a session that ends here still names the step.
     void RequestPlay() {
         if (play_.starting()) {
+            Log("PLAY pressed again while the game is starting (ignored)");
             return;
         }
         sos_startup_play();
+        sos_startup_event("PLAY requested input=%s", InputKindName(host_.LastInput()));
+        sos_startup_phase(kPlayRecheckStage);
         Recheck();
-        if (files_ == GameFileState::kValid && !GraphicsUsable()) {
-            return;
+        sos_startup_stage_result(kPlayRecheckStage, files_ == GameFileState::kValid, "%s", StateName(files_));
+        if (files_ == GameFileState::kValid) {
+            sos_startup_phase(kPlayGraphicsStage);
+            const bool usable = GraphicsUsable();
+            sos_startup_stage_result(kPlayGraphicsStage, usable, "%s",
+                                     usable ? "Vulkan usable" : "this system cannot run the game");
+            if (!usable) {
+                sos_startup_event("PLAY blocked: graphics preflight failed");
+                sos_startup_phase("launcher running");
+                return;
+            }
         }
-        switch (play_.Request(install_.running(), files_ == GameFileState::kValid, [this] { return launcher_->Save(); })) {
+        sos_startup_phase(kPlaySaveStage);
+        bool save_attempted = false;
+        const PlayRequest request = play_.Request(install_.running(), files_ == GameFileState::kValid, [&] {
+            save_attempted = true;
+            return launcher_->Save();
+        });
+        if (save_attempted) {
+            sos_startup_stage_result(kPlaySaveStage, request != PlayRequest::kSaveFailed, "%s",
+                                     request == PlayRequest::kSaveFailed ? "the settings could not be written" : "saved");
+        }
+        switch (request) {
         case PlayRequest::kStarting:
             play_started_ = ImGui::GetTime();
             launcher_->SetStatus("", 0.0);
             Log("settings saved, starting the game");
-            break;
+            sos_startup_phase(kPlayStartingStage);
+            return;
         case PlayRequest::kFilesNotReady:
+            sos_startup_event("PLAY blocked: game files %s", StateName(files_));
             launcher_->SetStatus(std::string(StatusTitle(files_)) + Tr(". Install the game files first."), 6.0);
             break;
         case PlayRequest::kBusy:
+            sos_startup_event("PLAY blocked: game file changes in progress");
             launcher_->SetStatus("Wait for the game file changes to finish.", 6.0);
             break;
         case PlayRequest::kSaveFailed:
             Log("could not save the settings");
+            sos_startup_event("PLAY blocked: settings save failed");
             break;
         }
+        sos_startup_phase("launcher running");
     }
 
     bool GraphicsUsable() {
@@ -619,7 +676,7 @@ private:
         c.settings = &settings_;
         c.save_on_play = false;
         c.theme = LauncherTheme();
-        c.hints = "Enter  Play     Alt+F4  Quit     Ctrl+S  Save";
+        c.hints = kLauncherHints;
         c.fonts = fonts_;
         c.branding.title = "GOD OF WAR: SONS OF SPARTA";
         c.branding.fade_into_page = false;
@@ -640,14 +697,16 @@ private:
             c.pages.push_back(MakePage(page));
             c.pages.back().icon = [this, page](int pixels) { return PageIconTexture(page, pixels); };
         }
+        // TRG asks every frame and refuses PLAY without a word in the log, so each change of the answer is logged.
         c.can_play = [this] {
+            trg::PlayCheck check;
             if (install_.running()) {
-                return trg::PlayCheck{false, "Wait for the installation to finish.", 0};
+                check = trg::PlayCheck{false, "Wait for the installation to finish.", 0};
+            } else if (files_ != GameFileState::kValid) {
+                check = trg::PlayCheck{false, "The game files are not ready: see the Play page.", 0};
             }
-            if (files_ != GameFileState::kValid) {
-                return trg::PlayCheck{false, "The game files are not ready: see the Play page.", 0};
-            }
-            return trg::PlayCheck{};
+            NotePlayAvailability(check.ok ? std::string() : check.reason);
+            return check;
         };
         return c;
     }
@@ -961,9 +1020,28 @@ private:
         }
     }
 
+    // After the window has drawn a few frames: a driver that hangs or ends the process here is named in the log, and the
+    // marker makes the next start skip the probe once.
+    void DetectGraphics() {
+        const char* const kProbeStage = "launcher graphics probe";
+        cards_ = DetectGraphicsCards(UserDir() / kGpuProbeMarker,
+                                     [kProbeStage] { sos_startup_phase(kProbeStage); },
+                                     [] { return ListGpuNames(); });
+        if (cards_.state == GraphicsProbeState::kInterrupted) {
+            Log("graphics card detection skipped: the last one did not finish (%s); it runs again next time",
+                kGpuProbeMarker);
+        } else {
+            sos_startup_stage_result(kProbeStage, true, "%zu usable graphics card(s)", cards_.names.size());
+        }
+        gpu_names_ = DcpGraphics::GpuChoices(cards_.names);
+        if (!play_.starting()) {
+            sos_startup_phase("launcher running");
+        }
+    }
+
     void GraphicsCardCombo() {
         if (gpu_names_.empty()) {
-            ImGui::TextUnformatted(Tr("No graphics card found"));
+            ImGui::TextUnformatted(Tr(GraphicsCardsText(cards_)));
             return;
         }
         const std::string current = settings_.Get(kGraphicsCardKey);
@@ -1167,6 +1245,7 @@ private:
     std::map<std::pair<PageId, int>, ImTextureID> page_icons_;
     std::vector<Display> displays_;
     std::vector<std::string> gpu_names_;
+    GraphicsCards cards_;
     trg::Fonts fonts_;
     std::unique_ptr<trg::Launcher> launcher_;
     std::unique_ptr<trg::update::UpdateController> updater_;
@@ -1183,6 +1262,7 @@ private:
     PackageKind browsing_for_ = PackageKind::kBase;
     std::string install_failure_;
     std::string install_failure_text_;
+    std::string play_refusal_;
     bool skip_finish_save_ = false;
     bool game_process_started_ = false;
     bool has_installed_updates_ = false;
@@ -1269,6 +1349,8 @@ void RunWithPreparingWindow(const std::function<void()>& work) {
             draw();
             host.EndFrame(theme.bg);
             host.Show();
+            // The window's own startup phases are done; the long part is the work it waits for.
+            sos_startup_phase("controller icon preparation");
             bool open = true;
             while (!finished) {
                 if (open && !host.WaitForFrame()) open = false;
@@ -1282,6 +1364,8 @@ void RunWithPreparingWindow(const std::function<void()>& work) {
             }
         }
     }
+    // The window may have failed to open or closed early (its teardown set launcher phases): the work goes on.
+    sos_startup_phase("controller icon preparation");
     worker.join();
 }
 

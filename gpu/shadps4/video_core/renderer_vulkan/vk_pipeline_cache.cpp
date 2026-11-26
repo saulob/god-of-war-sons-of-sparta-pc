@@ -364,6 +364,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes} {
     sel.regs = &liverpool->regs;
     const auto& vk12_props = instance.GetVk12Properties();
+    gpu_caps = instance.GetGpuCapabilities();
+    const auto interpolation = GpuCompat::ChooseInterpolation(gpu_caps);
+    static std::atomic_flag summary_printed{};
+    if (!summary_printed.test_and_set()) {
+        std::printf("%s\n", GpuCompat::Summary(gpu_caps).c_str());
+        std::fflush(stdout);
+    }
     profile = Shader::Profile{
         .max_viewport_width = instance.GetMaxViewportWidth(),
         .max_viewport_height = instance.GetMaxViewportHeight(),
@@ -411,11 +418,10 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             instance_.IsAmdShaderExplicitVertexParameterSupported(),
         .supports_fragment_shader_barycentric = instance_.IsFragmentShaderBarycentricSupported(),
         .supports_shader_subgroup_clock = instance_.IsShaderSubgroupClockSupported(),
-        .needs_manual_interpolation = instance.IsFragmentShaderBarycentricSupported() &&
-                                      instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
-        // dcp: older NVIDIA GPUs (Pascal) have no barycentrics.
-        .needs_integer_interpolation_fix = !instance.IsFragmentShaderBarycentricSupported() &&
-                                           instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
+        // dcp: vk_gpu_compat.h. The integer fix is on wherever the driver interpolates (no AMD
+        // explicit vertex parameter, no manual barycentric path): Pascal, Intel, NVK, ...
+        .needs_manual_interpolation = interpolation.manual_interpolation,
+        .needs_integer_interpolation_fix = interpolation.integer_fix,
         .needs_lds_barriers = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary ||
                               instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_buffer_offsets = instance.StorageMinAlignment() > 4,
@@ -733,6 +739,23 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+// dcp: a pipeline the game asks for holds a game slot of the build gate, so it never waits behind
+// queued warm-up builds; the driver refusing it gets one more try with the warm-up paused, and a
+// second refusal is as fatal as it always was.
+template <typename Make>
+auto PipelineCache::CreateGamePipeline(std::string_view kind, Make&& make) {
+    return PipelineCachePolicy::BuildGamePipeline(
+        build_gate, std::forward<Make>(make),
+        [this](const PipelineCachePolicy::BuildFailed& error) {
+            LOG_WARNING(Render_Vulkan, "Pipeline: {}; retrying with the warm-up paused",
+                        error.what());
+            PauseParallelWarmUp();
+        },
+        [kind](const PipelineCachePolicy::BuildFailed& error) {
+            ASSERT_MSG(false, "Failed to create {} pipeline: {}", kind, error.what());
+        });
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
                                                            const PreparedDraw* prepared) {
     SeedWorkerCaches();
@@ -801,7 +824,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         CompileTimer timer;
 
         GraphicsPipeline::SerializationSupport sdata{};
-        it.value() = CreateGamePipeline(sdata);
+        it.value() = CreateGamePipeline("graphics", [&] {
+            sdata = {};
+            return std::make_unique<GraphicsPipeline>(
+                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
+                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+        });
 
         RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
@@ -825,28 +853,6 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     return result;
 }
 
-std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGamePipeline(
-    GraphicsPipeline::SerializationSupport& sdata) {
-    using namespace PipelineCachePolicy;
-    for (bool retried = false;; retried = true) {
-        try {
-            const BuildGate::Slot slot{build_gate};
-            return std::make_unique<GraphicsPipeline>(
-                instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache,
-                sel.infos, sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
-        } catch (const PipelineCreationFailed& error) {
-            if (OnPipelineFailure(PipelineOrigin::Game, retried) == FailureAction::Fatal) {
-                ASSERT_MSG(false, "Failed to create graphics pipeline: {}", error.what());
-                throw;
-            }
-            LOG_WARNING(Render_Vulkan, "Pipeline: {}; retrying with the warm-up paused",
-                        error.what());
-            PauseParallelWarmUp();
-            sdata = {};
-        }
-    }
-}
-
 const ComputePipeline* PipelineCache::GetComputePipeline() {
     PublishShaders();
     PublishGraphics();
@@ -861,9 +867,11 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         CompileTimer timer;
 
         ComputePipeline::SerializationSupport sdata{};
-        it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
-                                                       *pipeline_cache, compute_key, *sel.infos[0],
-                                                       sel.modules[0], sdata, false);
+        it.value() = CreateGamePipeline("compute", [&] {
+            return std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
+                                                     *pipeline_cache, compute_key, *sel.infos[0],
+                                                     sel.modules[0], sdata, false);
+        });
         RegisterPipelineData(compute_key, sdata);
         ++num_new_pipelines;
 

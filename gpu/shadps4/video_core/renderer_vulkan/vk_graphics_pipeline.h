@@ -14,6 +14,7 @@
 #include "video_core/amdgpu/regs_color.h"
 #include "video_core/amdgpu/regs_depth.h"
 #include "video_core/amdgpu/regs_primitive.h"
+#include "video_core/pipeline_cache_policy.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
 
 namespace VideoCore {
@@ -33,10 +34,11 @@ class DescriptorHeap;
 template <typename T>
 using VertexInputs = boost::container::static_vector<T, MaxVertexBufferCount>;
 
-/// dcp: the driver refused a graphics pipeline even without the shared pipeline cache.
-struct PipelineCreationFailed : std::runtime_error {
+/// dcp: the driver refused a graphics or compute pipeline even without the shared pipeline
+/// cache. A BuildFailed, so PipelineCachePolicy::BuildGamePipeline retries it once.
+struct PipelineCreationFailed : PipelineCachePolicy::BuildFailed {
     PipelineCreationFailed(vk::Result result_, const std::string& message)
-        : std::runtime_error{message}, result{result_} {}
+        : BuildFailed{message}, result{result_} {}
     vk::Result result;
 };
 

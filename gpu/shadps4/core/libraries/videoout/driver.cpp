@@ -105,9 +105,18 @@ VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
     main_port.resolution.pane_width = width;
     main_port.resolution.pane_height = height;
     const auto& settings = DcpSettings::Get();
-    EmulatorSettings.SetVblankFrequency(DcpFramePacing::GuestVblankHz(
-        settings.frame_rate.load(), settings.vsync.load(), settings.display_refresh_hz.load()));
-    // A 120 Hz+ vblank is reported as a 119.88 Hz display.
+    // Gamescope shows one image per refresh whatever the present mode: frames above the display are never seen.
+    const bool display_paced =
+        DcpFramePacing::DisplayPacesPresents(settings.vsync.load(), DcpPresent::GamescopeSession());
+    const int frame_rate = settings.frame_rate.load();
+    const double display_hz = settings.display_refresh_hz.load();
+    EmulatorSettings.SetVblankFrequency(DcpFramePacing::GuestVblankHz(frame_rate, display_paced, display_hz));
+    // From here on the window thread follows the display refresh with the same policy (DcpFramePacing::RefreshFollower).
+    DcpFramePacing::g_live_vblank.policy.store(DcpFramePacing::PackPolicy(
+        frame_rate, display_paced, display_hz > 0.0 ? unsigned(DcpFramePacing::NominalHz(display_hz)) : 0u));
+    // A 120 Hz+ vblank is reported as a 119.88 Hz display. The report is decided once and never follows a later vblank
+    // change: the game reads sceVideoOutGetResolutionStatus when it opens the port and times itself with
+    // sceKernelGetProcessTimeCounter, never with the reported rate, and a PS4 never changes it under a running game.
     if (EmulatorSettings.GetVblankFrequency() >= 120) {
         main_port.resolution.refresh_rate = SCE_VIDEO_OUT_REFRESH_RATE_119_88HZ;
     }
@@ -116,27 +125,29 @@ VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
     DcpStartupWatch::StartWatch();
 }
 
-void VideoOutDriver::RunPresenter(std::function<void()> work, bool if_idle) {
+void VideoOutDriver::RunPresenter(std::function<void()> work, bool redraw) {
     {
         std::scoped_lock lock{swap_mutex};
-        if (if_idle && (swap_busy || !swap_queue.empty())) {
-            return; // a redraw of the last frame is pointless while frames are queued
+        if (!redraw) {
+            swap_queue.PushFlip(std::move(work));
+        } else if (!swap_queue.PushRedraw(std::move(work))) {
+            return; // a redraw of the last frame is pointless while frames are queued or presenting
         }
-        swap_queue.push_back(std::move(work));
-        DcpStartupWatch::SetGauge(DcpStartupWatch::SwapQueue, swap_queue.size());
+        DcpStartupWatch::SetGauge(DcpStartupWatch::SwapQueue, swap_queue.Size());
     }
     swap_cv.notify_one();
 }
 
 // Gamescope only: its frame limit (30 FPS) runs below the vblank and must delay the guest's flips, as presenting on
-// the vblank thread did; otherwise frames pile up in the swap queue.
+// the vblank thread did; otherwise frames pile up in the swap queue. Only a queued flip is backlog: a queued redraw of
+// the last frame must never hold back a new one.
 bool VideoOutDriver::FlipWaitsForPresenter() {
     if (!DcpPresent::GamescopeSession()) {
         return false;
     }
     {
         std::scoped_lock lock{swap_mutex};
-        if (swap_queue.empty()) {
+        if (!swap_queue.FlipQueued()) {
             return false;
         }
     }
@@ -159,14 +170,12 @@ void VideoOutDriver::SwapThread(std::stop_token token) {
         std::function<void()> work;
         {
             std::unique_lock lock{swap_mutex};
-            swap_busy = false;
-            if (!swap_cv.wait(lock, token, [this] { return !swap_queue.empty(); })) {
+            swap_queue.Finished();
+            if (!swap_cv.wait(lock, token, [this] { return !swap_queue.Empty(); })) {
                 return;
             }
-            work = std::move(swap_queue.front());
-            swap_queue.pop_front();
-            DcpStartupWatch::SetGauge(DcpStartupWatch::SwapQueue, swap_queue.size());
-            swap_busy = true;
+            work = swap_queue.Take();
+            DcpStartupWatch::SetGauge(DcpStartupWatch::SwapQueue, swap_queue.Size());
         }
         work();
     }
@@ -716,6 +725,25 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
     DcpStartupWatch::Mark(DcpStartupWatch::FlipPrepared);
 }
 
+// Present thread, on a settled display refresh change. The next vblank comes at most one new period after the last one
+// and lateness is dropped (no catch-up burst, no drift kept); the guest just sees vblanks at the new rate. Its clock and
+// the game's 1/60 s physics step do not follow the vblank, so only the new frames a second change. The reported
+// refresh rate stays the one decided at startup.
+static void ApplyDisplayRefresh(Common::AccurateTimer& timer, u64 live, unsigned& display_hz, unsigned& lines) {
+    const unsigned from = EmulatorSettings.GetVblankFrequency();
+    const unsigned to = DcpFramePacing::RetimeHz(from, live);
+    if (to != 0) {
+        timer.Retime(std::chrono::nanoseconds(1000000000 / to));
+        EmulatorSettings.SetVblankFrequency(to);
+    }
+    char line[128];
+    if (DcpFramePacing::RefreshChangeLine(lines, display_hz, DcpFramePacing::LiveDisplayHz(live), from,
+                                          to != 0 ? to : from, line, sizeof(line))) {
+        std::printf("%s\n", line);
+    }
+    display_hz = DcpFramePacing::LiveDisplayHz(live);
+}
+
 void VideoOutDriver::PresentThread(std::stop_token token) {
     const std::chrono::nanoseconds vblank_period(1000000000 /
                                                  EmulatorSettings.GetVblankFrequency());
@@ -725,11 +753,13 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     Common::AccurateTimer timer{vblank_period};
     const int target_fps = DcpSettings::Get().frame_rate.load();
-    std::printf("VideoOut: vblank %u Hz, frame rate %s, new frames up to %u a second, VSync %s\n",
+    const bool gamescope = DcpPresent::GamescopeSession();
+    std::printf("VideoOut: vblank %u Hz, frame rate %s, new frames up to %u a second, VSync %s%s\n",
                 EmulatorSettings.GetVblankFrequency(), DcpFramePacing::ModeName(target_fps).c_str(),
-                DcpFramePacing::ShownFramesPerSecond(target_fps, DcpSettings::Get().vsync,
-                                                     DcpSettings::Get().display_refresh_hz),
-                DcpSettings::Get().vsync ? "on" : "off");
+                DcpFramePacing::ShownFramesPerSecond(
+                    target_fps, DcpFramePacing::DisplayPacesPresents(DcpSettings::Get().vsync, gamescope),
+                    DcpSettings::Get().display_refresh_hz),
+                DcpSettings::Get().vsync ? "on" : "off", gamescope ? " (Gamescope paces presents)" : "");
     if (DcpLatencyTrace::enabled) {
         std::printf("Latency trace: on (DCP_INPUT_LATENCY_TRACE=1), pad and present lines every 5 s\n");
     }
@@ -745,7 +775,16 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         return {};
     };
 
+    u64 applied_refresh = 0;
+    unsigned display_hz = unsigned(DcpFramePacing::g_live_vblank.policy.load() & 0xffffu);
+    unsigned refresh_lines = 0;
     while (!token.stop_requested()) {
+        // One relaxed load per vblank: a display refresh change the window thread saw settle retimes the vblank.
+        if (const u64 live = DcpFramePacing::g_live_vblank.target.load(std::memory_order_relaxed);
+            live != applied_refresh) [[unlikely]] {
+            applied_refresh = live;
+            ApplyDisplayRefresh(timer, live, display_hz, refresh_lines);
+        }
         timer.Start();
         DcpStartupWatch::Mark(DcpStartupWatch::Vblank);
         if (DebugState.IsGuestThreadsPaused()) {

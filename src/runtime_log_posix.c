@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static int echo_source = -1, echo_target = -1, log_fd = -1;
@@ -90,6 +91,19 @@ static void write_all(int fd, const char *data, ssize_t size) {
     }
 }
 
+/* The console copy never waits: a terminal or a parent (Steam, a pipe nobody reads) that stops taking output must not
+ * stall the log file, and through the full pipe every thread that prints. write_all gives up on EAGAIN, so what the
+ * console cannot take now is dropped from the console copy only.
+ * A private non-blocking copy of `fd` when it is a pipe or a terminal, else -1 (a file or /dev/null never blocks). The
+ * flag is never set on `fd` itself: its open file description is shared with the parent (a shell's terminal). */
+int runtime_log_echo_nonblocking(int fd) {
+    struct stat info;
+    if (fd < 0 || fstat(fd, &info) || !(S_ISFIFO(info.st_mode) || S_ISCHR(info.st_mode))) return -1;
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+    return open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+}
+
 static void *echo_log(void *unused) {
     (void)unused;
     char buffer[4096];
@@ -119,7 +133,14 @@ int runtime_log_start(const char *dir, const char *file, char *path, size_t size
         return 0;
     }
     fflush(NULL);
-    echo_target = dup(1);
+    /* The console as it was (blocking), kept to put it back if the log cannot start; the echo uses its own
+     * non-blocking copy when there is one. */
+    const int saved_output = dup(1);
+    echo_target = saved_output;
+    {
+        const int nonblocking = runtime_log_echo_nonblocking(saved_output);
+        if (nonblocking >= 0) echo_target = nonblocking;
+    }
     const int saved_error = dup(2);
     echo_source = pipes[0];
     pthread_t thread;
@@ -128,14 +149,17 @@ int runtime_log_start(const char *dir, const char *file, char *path, size_t size
     close(pipes[1]);
     if (!redirected) {
         /* Nothing would read the pipe: put the console back. */
-        if (echo_target >= 0) dup2(echo_target, 1);
+        if (saved_output >= 0) dup2(saved_output, 1);
         if (saved_error >= 0) dup2(saved_error, 2);
         close(pipes[0]);
         close(log_fd);
+        if (echo_target >= 0 && echo_target != saved_output) close(echo_target);
+        echo_target = -1;
         echo_source = log_fd = -1;
     } else {
         pthread_detach(thread);
     }
+    if (saved_output >= 0 && saved_output != echo_target) close(saved_output);
     if (saved_error >= 0) close(saved_error);
     return redirected;
 }
@@ -147,12 +171,18 @@ int runtime_log_continue(const char *file, char *path, size_t size) {
 
 void runtime_log_release(void) {}
 
-void runtime_log_flush(void) {
-    fflush(NULL);
+/* Async-signal-safe: no stdio, only ioctl and nanosleep. At most 2 s. */
+void runtime_log_drain(void) {
     if (echo_source < 0) return;
+    const struct timespec pause = {0, 5000000};
     for (int wait = 0; wait < 400; ++wait) {
         int pending = 0;
         if (!ioctl(echo_source, FIONREAD, &pending) && !pending && !atomic_load(&echo_busy)) return;
-        usleep(5000);
+        nanosleep(&pause, NULL);
     }
+}
+
+void runtime_log_flush(void) {
+    fflush(NULL);
+    runtime_log_drain();
 }

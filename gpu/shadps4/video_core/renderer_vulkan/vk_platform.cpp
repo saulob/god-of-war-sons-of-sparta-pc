@@ -13,8 +13,11 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <vector>
+#include <SDL3/SDL_video.h>
 #include <fmt/ranges.h>
 
 #include "common/assert.h"
@@ -60,12 +63,46 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
     return VK_FALSE;
 }
 
+// dcp: the SDL video driver the window came from, for surface diagnostics.
+static const char* SdlVideoDriverName() {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    return driver ? driver : "none";
+}
+
+// dcp: whether the Vulkan loader offers an instance extension (enabled or not).
+static bool InstanceExtensionOffered(const char* name) {
+    const auto [result, properties] = vk::enumerateInstanceExtensionProperties();
+    if (result != vk::Result::eSuccess) {
+        return false;
+    }
+    return std::ranges::any_of(properties, [name](const vk::ExtensionProperties& property) {
+        return std::strcmp(property.extensionName, name) == 0;
+    });
+}
+
+// dcp: a surface entry point the instance did not load (its extension is missing): name what is
+// missing instead of calling a null function pointer. The caller stops as before.
+static void ReportMissingSurfaceExtension(const char* extension, const char* hint) {
+    LOG_CRITICAL(Render_Vulkan,
+                 "Cannot create the window surface: {} is not available from the Vulkan driver "
+                 "(SDL video driver {}){}",
+                 extension, SdlVideoDriverName(), hint);
+    std::printf("GPU: cannot create the window surface: %s is not available (SDL video driver "
+                "%s)%s\n",
+                extension, SdlVideoDriverName(), hint);
+    std::fflush(stdout);
+}
+
 vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& emu_window) {
     const auto& window_info = emu_window.GetWindowInfo();
     vk::SurfaceKHR surface{};
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
     if (window_info.type == Frontend::WindowSystemType::Windows) {
+        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateWin32SurfaceKHR) {
+            ReportMissingSurfaceExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, "");
+            UNREACHABLE();
+        }
         const vk::Win32SurfaceCreateInfoKHR win32_ci = {
             .hinstance = nullptr,
             .hwnd = static_cast<HWND>(window_info.render_surface),
@@ -78,6 +115,15 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& e
     }
 #elif defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_WAYLAND_KHR)
     if (window_info.type == Frontend::WindowSystemType::X11) {
+        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateXlibSurfaceKHR) {
+            ReportMissingSurfaceExtension(
+                VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+                InstanceExtensionOffered(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME)
+                    ? "; VK_KHR_wayland_surface is available: start under Wayland "
+                      "(SDL_VIDEO_DRIVER=wayland)"
+                    : "");
+            UNREACHABLE();
+        }
         const vk::XlibSurfaceCreateInfoKHR xlib_ci = {
             .dpy = static_cast<Display*>(window_info.display_connection),
             .window = reinterpret_cast<Window>(window_info.render_surface),
@@ -93,6 +139,15 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& e
                       "RenderDoc is not compatible with Wayland, use an X11 window instead.");
         }
 
+        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateWaylandSurfaceKHR) {
+            ReportMissingSurfaceExtension(
+                VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+                InstanceExtensionOffered(VK_KHR_XLIB_SURFACE_EXTENSION_NAME)
+                    ? "; VK_KHR_xlib_surface is available: start under X11 "
+                      "(SDL_VIDEO_DRIVER=x11)"
+                    : "");
+            UNREACHABLE();
+        }
         const vk::WaylandSurfaceCreateInfoKHR wayland_ci = {
             .display = static_cast<wl_display*>(window_info.display_connection),
             .surface = static_cast<wl_surface*>(window_info.render_surface),
@@ -106,6 +161,10 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& e
     }
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
     if (window_info.type == Frontend::WindowSystemType::Metal) {
+        if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateMetalSurfaceEXT) {
+            ReportMissingSurfaceExtension(VK_EXT_METAL_SURFACE_EXTENSION_NAME, "");
+            UNREACHABLE();
+        }
         const vk::MetalSurfaceCreateInfoEXT macos_ci = {
             .pLayer = static_cast<const CAMetalLayer*>(window_info.render_surface),
         };
@@ -485,6 +544,11 @@ vk::ResultValue<vk::UniqueInstance> CreateProbeInstance() {
 }
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance) {
+    // dcp: VK_EXT_debug_utils is dropped from the instance when the loader lacks it.
+    if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDebugUtilsMessengerEXT) {
+        LOG_WARNING(Render_Vulkan, "VK_EXT_debug_utils unavailable: no validation messages");
+        return {};
+    }
     const vk::DebugUtilsMessengerCreateInfoEXT msg_ci = {
         .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
                            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |

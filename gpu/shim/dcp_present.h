@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <span>
 #include <string>
+#include <utility>
 
 namespace DcpPresent {
 
@@ -68,6 +70,116 @@ inline bool SurfaceHasArea(std::uint32_t current_width, std::uint32_t current_he
            (current_width == UINT32_MAX || (current_width > 0 && current_height > 0));
 }
 
+inline constexpr int kSurfaceLostResult = -1000000000; ///< VK_ERROR_SURFACE_LOST_KHR
+
+/// What vkGetPhysicalDeviceSurfaceCapabilitiesKHR says about the surface. Another error is left to the creation, which
+/// reports the real result.
+enum class SurfaceState { HasArea, NoArea, Lost };
+
+inline SurfaceState ClassifySurface(int result, std::uint32_t current_width, std::uint32_t current_height,
+                                    std::uint32_t max_width, std::uint32_t max_height) {
+    if (result == kSurfaceLostResult) {
+        return SurfaceState::Lost;
+    }
+    if (result != 0) {
+        return SurfaceState::HasArea;
+    }
+    return SurfaceHasArea(current_width, current_height, max_width, max_height) ? SurfaceState::HasArea
+                                                                                : SurfaceState::NoArea;
+}
+
+/// A lost window surface is replaced by a new one on the same window. A surface that keeps getting lost before any frame
+/// reaches the screen is a broken window system: after kMaxInARow replacements without a successful present the swapchain
+/// gives up with a diagnosis instead of looping.
+class SurfaceRecovery {
+public:
+    static constexpr unsigned kMaxInARow = 3;
+
+    /// The surface was lost: true when one more replacement may be tried.
+    bool Lost() {
+        if (in_a_row >= kMaxInARow) {
+            return false;
+        }
+        ++in_a_row;
+        ++replaced;
+        return true;
+    }
+
+    /// A frame reached the screen on the current surface.
+    void Presented() {
+        in_a_row = 0;
+    }
+
+    unsigned InARow() const {
+        return in_a_row;
+    }
+
+    unsigned Replaced() const {
+        return replaced;
+    }
+
+private:
+    unsigned in_a_row = 0;
+    unsigned replaced = 0;
+};
+
+/// Work for the swap thread; the caller locks. Only a queued flip is backlog: a redraw shows an old frame and must never
+/// hold back a new one. A real flip always runs before a redraw: a flip queued behind a redraw drops it.
+template <typename Work>
+class SwapQueue {
+public:
+    void PushFlip(Work work) {
+        if (queued_flips == 0) {
+            entries.clear(); // only a redraw can be queued without a flip, and the new frame replaces it
+        }
+        entries.push_back({std::move(work), true});
+        ++queued_flips;
+    }
+
+    /// Refused while anything is queued or running.
+    bool PushRedraw(Work work) {
+        if (busy || !entries.empty()) {
+            return false;
+        }
+        entries.push_back({std::move(work), false});
+        return true;
+    }
+
+    Work Take() {
+        Entry entry = std::move(entries.front());
+        entries.pop_front();
+        queued_flips -= entry.flip ? 1 : 0;
+        busy = true;
+        return std::move(entry.work);
+    }
+
+    void Finished() {
+        busy = false;
+    }
+
+    bool Empty() const {
+        return entries.empty();
+    }
+
+    std::size_t Size() const {
+        return entries.size();
+    }
+
+    bool FlipQueued() const {
+        return queued_flips != 0;
+    }
+
+private:
+    struct Entry {
+        Work work;
+        bool flip;
+    };
+
+    std::deque<Entry> entries;
+    std::size_t queued_flips = 0;
+    bool busy = false;
+};
+
 /// A swapchain acquire or present result as the frame sees it. OutOfDate also covers a lost surface.
 enum class SwapResult { Success, Suboptimal, OutOfDate, Failure };
 
@@ -78,9 +190,13 @@ struct SwapStep {
 
 /// Suboptimal is a Vulkan success code: the image was acquired or presented and the frame goes on. It asks for one
 /// recreation; a replacement that is suboptimal again is kept until a clean frame, or a compositor that always reports
-/// it (Gamescope) would get a new swapchain every frame.
+/// it (Gamescope) would get a new swapchain every frame. Suboptimal recreations are also kept kOptionalSpacing presents
+/// apart, so a surface alternating clean and suboptimal frames cannot recreate every other frame (a device wait each
+/// time). A required recreation (out of date, lost surface, resize, VSync, HDR, restore) is never held back.
 class SwapchainHealth {
 public:
+    static constexpr std::uint32_t kOptionalSpacing = 240;
+
     SwapStep Acquire(SwapResult result) {
         clean_acquire = result == SwapResult::Success;
         switch (result) {
@@ -99,6 +215,7 @@ public:
     }
 
     SwapStep Present(SwapResult result) {
+        presents_since_optional = std::min(presents_since_optional + 1, kOptionalSpacing);
         switch (result) {
         case SwapResult::Success:
             if (clean_acquire) {
@@ -118,7 +235,9 @@ public:
     }
 
     void Recreated() {
-        replaced_suboptimal = recreate && suboptimal_only;
+        const bool optional = recreate && suboptimal_only;
+        replaced_suboptimal = optional;
+        presents_since_optional = optional ? 0 : kOptionalSpacing;
         recreate = false;
         suboptimal_only = false;
         clean_acquire = false;
@@ -134,7 +253,7 @@ public:
 
 private:
     void RequestForSuboptimal() {
-        if (!replaced_suboptimal && !recreate) {
+        if (!replaced_suboptimal && !recreate && presents_since_optional >= kOptionalSpacing) {
             recreate = true;
             suboptimal_only = true;
         }
@@ -149,6 +268,175 @@ private:
     bool suboptimal_only = false;     ///< only a suboptimal result asked for the pending recreation
     bool replaced_suboptimal = false; ///< this swapchain replaced a suboptimal one and stays even if suboptimal
     bool clean_acquire = false;
+    std::uint32_t presents_since_optional = kOptionalSpacing;
+};
+
+/// What the window thread learns from SDL. Focus is not part of it: an unfocused window still has a surface.
+/// Maximized also ends a minimize: a window maximized before it was minimized may come back with only MAXIMIZED (and
+/// SHOWN) on some SDL3 backends, never RESTORED.
+enum class WindowEvent { Minimized, Restored, Hidden, Shown, Maximized };
+
+struct WindowVisibility {
+    bool minimized = false;
+    bool hidden = false;
+
+    void Apply(WindowEvent event) {
+        switch (event) {
+        case WindowEvent::Minimized:
+            minimized = true;
+            break;
+        case WindowEvent::Restored:
+        case WindowEvent::Maximized:
+            minimized = false;
+            break;
+        case WindowEvent::Hidden:
+            hidden = true;
+            break;
+        case WindowEvent::Shown:
+            hidden = false;
+            break;
+        }
+    }
+
+    bool Visible() const {
+        return !minimized && !hidden;
+    }
+
+    /// The window's own state wins over the event stream, whatever events a backend sent or left out: the window
+    /// thread re-reads SDL_GetWindowFlags after every window event.
+    void Sync(bool minimized_now, bool hidden_now) {
+        minimized = minimized_now;
+        hidden = hidden_now;
+    }
+
+    std::uint8_t Pack() const {
+        return std::uint8_t((minimized ? 1 : 0) | (hidden ? 2 : 0));
+    }
+
+    static WindowVisibility Unpack(std::uint8_t bits) {
+        return {(bits & 1) != 0, (bits & 2) != 0};
+    }
+};
+
+enum class Lifecycle : int { Presentable, Minimized, Hidden, WindowSizeZero, SurfaceSizeZero, Restoring };
+
+inline const char* LifecycleName(Lifecycle lifecycle) {
+    switch (lifecycle) {
+    case Lifecycle::Presentable:
+        return "presentable";
+    case Lifecycle::Minimized:
+        return "minimized";
+    case Lifecycle::Hidden:
+        return "hidden";
+    case Lifecycle::WindowSizeZero:
+        return "window size zero";
+    case Lifecycle::SurfaceSizeZero:
+        return "surface size zero";
+    case Lifecycle::Restoring:
+        return "restoring";
+    }
+    return "unknown";
+}
+
+/// Whether the presenter may acquire, record and queue a present. Swap thread only. While suspended the frame goes back
+/// to the free queue and the guest's flips and vblanks go on; the first presentable frame after it asks for one
+/// recreation (the old swapchain may be stale after a minimize), and the first successful present ends the restore.
+class PresentGate {
+public:
+    struct Inputs {
+        WindowVisibility visibility; ///< ignored (default) under Gamescope, which has no minimize of its own
+        std::uint32_t window_width;
+        std::uint32_t window_height;
+        bool surface_zero; ///< only consulted while suspended or a recreation is pending
+    };
+
+    struct Step {
+        bool present;    ///< acquire and present may go on
+        bool recreate;   ///< presentation just became possible again: one recreation before the next acquire
+        bool transition; ///< the lifecycle changed: log it
+        Lifecycle lifecycle;
+    };
+
+    bool Suspended() const {
+        return suspended;
+    }
+
+    Step Update(const Inputs& in) {
+        const Lifecycle reason = ReasonFor(in);
+        if (reason != Lifecycle::Presentable) {
+            return Suspend(reason);
+        }
+        if (suspended) {
+            suspended = false;
+            restoring = true;
+            current = Lifecycle::Restoring;
+            return {true, true, true, current};
+        }
+        return {true, false, false, current};
+    }
+
+    /// A recreation found no usable surface.
+    Step SurfaceUnavailable() {
+        return Suspend(Lifecycle::SurfaceSizeZero);
+    }
+
+    /// A frame was presented: true once, when that ends a restore.
+    bool Presented() {
+        if (!restoring) {
+            return false;
+        }
+        restoring = false;
+        current = Lifecycle::Presentable;
+        return true;
+    }
+
+    Lifecycle Current() const {
+        return current;
+    }
+
+private:
+    static Lifecycle ReasonFor(const Inputs& in) {
+        if (in.visibility.minimized) {
+            return Lifecycle::Minimized;
+        }
+        if (in.visibility.hidden) {
+            return Lifecycle::Hidden;
+        }
+        if (in.window_width == 0 || in.window_height == 0) {
+            return Lifecycle::WindowSizeZero;
+        }
+        return in.surface_zero ? Lifecycle::SurfaceSizeZero : Lifecycle::Presentable;
+    }
+
+    Step Suspend(Lifecycle reason) {
+        const bool changed = !suspended || current != reason;
+        suspended = true;
+        restoring = false;
+        current = reason;
+        return {false, false, changed, reason};
+    }
+
+    bool suspended = false;
+    bool restoring = false;
+    Lifecycle current = Lifecycle::Presentable;
+};
+
+/// Lifecycle lines: every transition up to kMaxLines, then one note that further ones are not logged (a user who
+/// minimizes and restores a hundred times must not flood the log).
+class LifecycleLog {
+public:
+    static constexpr unsigned kMaxLines = 32;
+    enum class Action { None, Log, LastNote };
+
+    Action Observe(bool transition) {
+        if (!transition || lines > kMaxLines) {
+            return Action::None;
+        }
+        return ++lines > kMaxLines ? Action::LastNote : Action::Log;
+    }
+
+private:
+    unsigned lines = 0;
 };
 
 struct Size {

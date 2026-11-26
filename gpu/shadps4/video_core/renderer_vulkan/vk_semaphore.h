@@ -8,6 +8,7 @@
 #include <thread>
 #include <queue>
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
@@ -63,6 +64,8 @@ void WaitForTick(TimelineTicks& ticks, Common::DeviceLost::Monitor& monitor, u64
         ticks.gpu_tick.load(std::memory_order_acquire) >= tick) {
         return;
     }
+    Common::GpuTrace::Record(Common::GpuTrace::Event::BlockingWait, tick,
+                             ticks.gpu_tick.load(std::memory_order_relaxed), u64(ticks.timeline));
     const s32 result = WaitWhileHealthy(monitor, Operation::WaitSemaphores, "semwait", tick, ticks.timeline, wait_once);
     if (result != Success) {
         fail("semwait", result, tick);

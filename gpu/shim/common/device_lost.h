@@ -37,6 +37,7 @@ enum class Operation : u32 {
     DeviceWaitIdle,
     QueryPoolResults,
     Checked,
+    CreateSwapchain,
     Count,
 };
 
@@ -89,6 +90,8 @@ struct RootCause {
 
 struct Hooks {
     void (*print)(const char* line);
+    // The bounded GPU trace of the root cause (common/gpu_trace.h), on the detecting thread, before the fault query.
+    void (*capture)(const RootCause& root);
     void (*query_fault)(FaultInfo& info);
     // Ends the process with `summary` as the reason; tests return from it.
     void (*shutdown)(const char* summary, int status);

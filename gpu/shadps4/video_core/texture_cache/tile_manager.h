@@ -21,6 +21,7 @@ namespace VideoCore {
 
 struct ImageInfo;
 struct Image;
+class BufferCache;
 
 class TileManager {
     struct TilingKey {
@@ -56,6 +57,13 @@ public:
     std::pair<const Buffer*, u64> DetileImage(const VideoCore::Buffer* in_buffer, u64 in_offset,
                                               const ImageInfo& info);
 
+    /// dcp: DetileImage of a buffer cache binding: the params copy and the staging request can
+    /// wait for the GPU, and faults processed then may migrate a fully resident source arena, so
+    /// the binding is refreshed before the dispatch reads it.
+    std::pair<const Buffer*, u64> DetileImage(const BufferCache& buffer_cache,
+                                              const VideoCore::Buffer* in_buffer, u64 in_offset,
+                                              const ImageInfo& info);
+
     [[nodiscard]] static bool CanMergeGuestPages(const ImageInfo& info);
 
     [[nodiscard]] static boost::container::small_vector<vk::BufferImageCopy, 14> MipCopies(
@@ -66,7 +74,18 @@ public:
     void MergeGuestPages(Image& image, const Buffer* guest, u64 guest_offset,
                          std::span<const ByteRange> ranges);
 
+    /// dcp: MergeGuestPages of a buffer cache binding, refreshed like DetileImage's.
+    void MergeGuestPages(const BufferCache& buffer_cache, Image& image, const Buffer* guest,
+                         u64 guest_offset, std::span<const ByteRange> ranges);
+
 private:
+    std::pair<const Buffer*, u64> DetileImageFrom(const BufferCache* buffer_cache,
+                                                  const VideoCore::Buffer* in_buffer,
+                                                  u64 in_offset, const ImageInfo& info);
+
+    void MergeGuestPagesFrom(const BufferCache* buffer_cache, Image& image, const Buffer* guest,
+                             u64 guest_offset, std::span<const ByteRange> ranges);
+
     void RecordTilingDispatch(vk::Pipeline pipeline, const vk::DescriptorBufferInfo& tiled,
                               const vk::DescriptorBufferInfo& linear,
                               const vk::DescriptorBufferInfo& params, u32 dim_x);

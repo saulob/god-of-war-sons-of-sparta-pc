@@ -129,6 +129,13 @@ void Mark(Stage stage) {
         if (stage == VideoOutOpen || stage == GpuSubmission) {
             sos_startup_milestone("first %s", kStageNames[stage]);
         }
+        // The first frame of the game itself on screen: the start is over (the earlier "first present" is the loading
+        // screen drawn while the renderer starts, before guest entry). From here the session is play, not a stage
+        // the watchdog may time.
+        if (stage == Present) {
+            sos_startup_milestone("first game frame presented");
+            sos_startup_phase("game running");
+        }
     }
 }
 

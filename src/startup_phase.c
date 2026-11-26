@@ -12,8 +12,13 @@
 #endif
 
 #define MAX_CHECKPOINT_LINES 96
+#define MAX_STAGE_LINES 192
 
 static const char *current_phase = "process start";
+static const char *completed_phase = "";
+static int64_t phase_started_us;
+static unsigned stage_lines;
+static void (*stage_flush)(void);
 static int display_width, display_height;
 static char display_resolution[16], display_aspect[16], video_path[160];
 static char last_checkpoint[2][160];
@@ -26,13 +31,172 @@ static void copy_text(char *to, size_t size, const char *from) {
     to[length] = 0;
 }
 
+static int64_t monotonic_us(void);
+static double process_ms(void);
+
+void sos_startup_set_flush(void (*flush)(void)) { __atomic_store_n(&stage_flush, flush, __ATOMIC_RELEASE); }
+
+static void flush_stage_line(void) {
+    void (*flush)(void) = __atomic_load_n(&stage_flush, __ATOMIC_ACQUIRE);
+    if (flush) flush();
+    else fflush(stdout);
+}
+
+/* The launcher's own phases (repeated PLAY refusals toggle them) have a share of their own, so they can never use up the
+ * lines the game's start needs. */
+static unsigned launcher_stage_lines;
+#define MAX_LAUNCHER_STAGE_LINES 96
+
+static int launcher_phase(const char *phase) {
+    return !strncmp(phase, "launcher ", 9) || !strncmp(phase, "play:", 5);
+}
+
+/* One bounded, flushed line per change of phase, so a session that ends without a word still names where it was. */
 void sos_startup_phase(const char *phase) {
-    __atomic_store_n(&current_phase, phase, __ATOMIC_RELEASE);
+    if (!phase) phase = "";
+    const char *seen = __atomic_load_n(&current_phase, __ATOMIC_ACQUIRE);
+    if (seen == phase || (seen && !strcmp(seen, phase))) return;
+    /* The start time is published before the phase, so the watchdog never pairs a new phase with an old start. */
+    const int64_t now = monotonic_us();
+    const int64_t started = __atomic_exchange_n(&phase_started_us, now, __ATOMIC_ACQ_REL);
+    const char *previous = __atomic_exchange_n(&current_phase, phase, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&completed_phase, previous ? previous : "", __ATOMIC_RELEASE);
+    if (launcher_phase(phase) && __atomic_add_fetch(&launcher_stage_lines, 1, __ATOMIC_RELAXED) > MAX_LAUNCHER_STAGE_LINES)
+        return;
+    if (__atomic_add_fetch(&stage_lines, 1, __ATOMIC_RELAXED) > MAX_STAGE_LINES) return;
+    printf("Stage: %s started +%.0f ms (after %s, %.0f ms)\n", phase, process_ms(), previous ? previous : "-",
+           started ? (double)(now - started) / 1000.0 : 0.0);
+    flush_stage_line();
 }
 
 const char *sos_startup_phase_current(void) {
     return __atomic_load_n(&current_phase, __ATOMIC_ACQUIRE);
 }
+
+const char *sos_startup_phase_completed(void) {
+    return __atomic_load_n(&completed_phase, __ATOMIC_ACQUIRE);
+}
+
+double sos_startup_phase_elapsed_ms(void) {
+    const int64_t started = __atomic_load_n(&phase_started_us, __ATOMIC_ACQUIRE);
+    return started ? (double)(monotonic_us() - started) / 1000.0 : 0.0;
+}
+
+void sos_startup_stage_result(const char *stage, int ok, const char *format, ...) {
+    char detail[200] = "";
+    if (format) {
+        va_list args;
+        va_start(args, format);
+        vsnprintf(detail, sizeof(detail), format, args);
+        va_end(args);
+    }
+    const char *current = sos_startup_phase_current();
+    char took[32] = "";
+    if (stage && current && !strcmp(stage, current)) snprintf(took, sizeof(took), " in %.0f ms", sos_startup_phase_elapsed_ms());
+    if (ok) {
+        __atomic_store_n(&completed_phase, stage ? stage : "", __ATOMIC_RELEASE);
+        printf("Stage: %s completed%s%s%s\n", stage ? stage : "-", took, detail[0] ? ": " : "", detail);
+    } else {
+        printf("Stage: %s failed%s%s%s\n", stage ? stage : "-", took, detail[0] ? ": " : "", detail);
+    }
+    flush_stage_line();
+}
+
+void sos_startup_event(const char *format, ...) {
+    char text[240];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    printf("Stage event: %s +%.0f ms\n", text, process_ms());
+    flush_stage_line();
+}
+
+/* Seconds a phase may legitimately last before the watchdog reports it; 0 for phases that wait for the player. */
+unsigned sos_startup_phase_budget_seconds(const char *phase) {
+    static const struct { const char *prefix; unsigned seconds; } budgets[] = {
+        {"launcher loop active", 0}, {"launcher running", 0}, {"first present", 0}, {"game running", 0}, {"guest exit", 0},
+        {"guest abort", 0}, {"process exit", 0}, {"runtime window closed", 0}, {"process start", 0},
+        /* Legitimately long on a first run (shader compiles, icon bundle rewrite): named, never reported. */
+        {"pipeline cache warm-up", 0}, {"controller icon preparation", 0},
+        {"play: starting", 15}, {"play:", 15}, {"launcher closing", 15}, {"launcher loop ended", 15},
+        {"launcher destroying", 15}, {"launcher SDL shutdown", 15}, {"launcher host closed", 15},
+        {"launcher returned", 15}, {"launcher handoff", 0}, {"launcher ", 30},
+        {"guest entry", 120}, {"linked modules initialization", 90}, {"module registration", 60},
+    };
+    if (!phase) return 0;
+    for (size_t i = 0; i < sizeof(budgets) / sizeof(*budgets); ++i)
+        if (!strncmp(phase, budgets[i].prefix, strlen(budgets[i].prefix))) return budgets[i].seconds;
+    return 45;
+}
+
+/* Reports at the budget and at 2x, 4x and 8x it, then stays quiet for that phase. Never stops the process. */
+int sos_startup_watchdog_poll(const char *phase, double elapsed_ms, const char **watched, unsigned *reports) {
+    if (*watched != phase) {
+        *watched = phase;
+        *reports = 0;
+    }
+    const unsigned budget = sos_startup_phase_budget_seconds(phase);
+    if (!budget || *reports >= 4) return 0;
+    const double due = (double)budget * 1000.0 * (double)(1u << *reports);
+    if (elapsed_ms < due) return 0;
+    ++*reports;
+    return 1;
+}
+
+static void watchdog_tick(const char **watched, unsigned *reports) {
+    const char *phase = sos_startup_phase_current();
+    const double elapsed = sos_startup_phase_elapsed_ms();
+    if (!sos_startup_watchdog_poll(phase, elapsed, watched, reports)) return;
+    printf("Stage watchdog: %s still running after %.1f s (expected under %u s); last completed: %s; last checkpoint: %s\n",
+           phase, elapsed / 1000.0, sos_startup_phase_budget_seconds(phase),
+           sos_startup_phase_completed()[0] ? sos_startup_phase_completed() : "-",
+           sos_checkpoint_last()[0] ? sos_checkpoint_last() : "none");
+    flush_stage_line();
+}
+
+#ifdef _WIN32
+static DWORD WINAPI watchdog_thread(LPVOID unused) {
+    (void)unused;
+    const char *watched = NULL;
+    unsigned reports = 0;
+    for (;;) {
+        Sleep(500);
+        watchdog_tick(&watched, &reports);
+    }
+    return 0;
+}
+void sos_startup_watchdog_start(void) {
+    static LONG started;
+    process_ms();
+    if (InterlockedExchange(&started, 1)) return;
+    HANDLE thread = CreateThread(NULL, 64 * 1024, watchdog_thread, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
+}
+#else
+static void *watchdog_thread(void *unused) {
+    (void)unused;
+    const char *watched = NULL;
+    unsigned reports = 0;
+    for (;;) {
+        const struct timespec pause = {0, 500000000};
+        nanosleep(&pause, NULL);
+        watchdog_tick(&watched, &reports);
+    }
+    return NULL;
+}
+void sos_startup_watchdog_start(void) {
+    static int started;
+    process_ms();
+    if (__atomic_exchange_n(&started, 1, __ATOMIC_ACQ_REL)) return;
+    pthread_t thread;
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    pthread_attr_setstacksize(&attributes, 128 * 1024);
+    if (!pthread_create(&thread, &attributes, watchdog_thread, NULL)) pthread_detach(thread);
+    pthread_attr_destroy(&attributes);
+}
+#endif
 
 void sos_crash_context_set_display(int width, int height, const char *resolution, const char *aspect_ratio) {
     display_width = width;
@@ -147,6 +311,16 @@ void sos_startup_play(void) { play_at = now_ms(); }
 void sos_startup_inherit_play(void) {}
 static double since_play_ms(void) { return play_at < 0 ? -1 : now_ms() - play_at; }
 #endif
+
+static int64_t monotonic_us(void) {
+#ifdef _WIN32
+    return (int64_t)(ticks_ms(now_ticks()) * 1000.0);
+#else
+    struct timespec spec;
+    clock_gettime(CLOCK_MONOTONIC, &spec);
+    return (int64_t)spec.tv_sec * 1000000 + spec.tv_nsec / 1000;
+#endif
+}
 
 static double elapsed_seconds(void) {
     const double play = since_play_ms();

@@ -6,6 +6,7 @@
 #include <span>
 #include <unordered_map>
 
+#include "video_core/renderer_vulkan/vk_gpu_compat.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #define TRACY_VK_USE_SYMBOL_TABLE
@@ -203,6 +204,32 @@ public:
     /// Returns true when VK_EXT_provoking_vertex is supported.
     bool IsProvokingVertexSupported() const {
         return provoking_vertex;
+    }
+
+    /// dcp: the capabilities the renderer's compatibility routes depend on (vk_gpu_compat.h).
+    GpuCompat::Capabilities GetGpuCapabilities() const {
+        return {
+            .vendor_id = GetVendorID(),
+            .nvidia_proprietary = driver_id == vk::DriverId::eNvidiaProprietary,
+            .amd_explicit_vertex_parameter = amd_shader_explicit_vertex_parameter,
+            .fragment_shader_barycentric = fragment_shader_barycentric,
+            .mixed_depth_samples = IsMixedDepthSamplesSupported(),
+            .provoking_vertex = provoking_vertex,
+        };
+    }
+
+    /// dcp: sparse buffer binding as the buffer cache uses it: device features and the queue.
+    bool IsSparseBufferBindingSupported() const {
+        return GpuCompat::SparseBuffersSupported(features.sparseBinding,
+                                                 features.sparseResidencyBuffer,
+                                                 queue_sparse_binding);
+    }
+
+    /// dcp: what IsSparseBufferBindingSupported() misses, "" when nothing.
+    std::string MissingSparseBufferRequirements() const {
+        return GpuCompat::MissingSparseRequirements(features.sparseBinding,
+                                                    features.sparseResidencyBuffer,
+                                                    queue_sparse_binding);
     }
 
     /// Returns true when VK_AMD_shader_image_load_store_lod is supported.
@@ -570,8 +597,10 @@ private:
     bool supports_memory_budget{};
     bool device_fault{};
     bool supports_block_texel_view{};
+    bool queue_sparse_binding{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;
+    mutable GpuCompat::HeapBudgetTracker heap_budget_tracker;
 };
 
 } // namespace Vulkan

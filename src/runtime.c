@@ -284,6 +284,7 @@ static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     runtime_finalize(NULL);
     runtime_report();
     runtime_online_leave();
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     if (status == 0) runtime_log_mark_clean_exit();
     runtime_log_finalize();
     runtime_exit(status);
@@ -293,6 +294,7 @@ static ABI __attribute__((noreturn)) void guest_quick_exit(int status) {
     runtime_log_exit_request("quick_exit",status,(uintptr_t)__builtin_return_address(0));
     runtime_report();
     runtime_online_leave();
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     if (status==0) runtime_log_mark_clean_exit();
     runtime_log_finalize();
     runtime_exit(status);
@@ -301,6 +303,7 @@ static ABI __attribute__((noreturn)) void guest_abort(void) {
     sos_startup_phase("guest abort requested");
     runtime_log_exit_request("abort",134,(uintptr_t)__builtin_return_address(0));
     runtime_report();
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     runtime_log_mark_crash();
     runtime_log_finalize();
     runtime_exit(134);

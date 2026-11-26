@@ -18,8 +18,10 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 #include "common/thread.h"
 #include "imgui/renderer/texture_manager.h"
+#include "startup_phase.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "dcp_threads.h"
@@ -130,6 +132,7 @@ namespace {
 enum class RenderingMismatch { EndWithoutBegin, BeginWhileOpen, OpenAtSubmit };
 
 void ReportRenderingMismatch(RenderingMismatch kind) {
+    Common::GpuTrace::Record(Common::GpuTrace::Event::RenderingMismatch, u64(kind));
     static std::atomic<u32> reported{};
     if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
         LOG_WARNING(Render_Vulkan, "Unpaired dynamic rendering in the command buffer ({})",
@@ -506,11 +509,27 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     ImGui::Core::TextureManager::Submit();
     const s32 submit_result = Common::DeviceLost::CallWhileHealthy(
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueueSubmit, "submit",
-        signal_value, work_semaphore.GetTimeline(),
-        [&] { return instance.GetGraphicsQueue().submit(submit_info, info.fence); });
+        signal_value, work_semaphore.GetTimeline(), [&] {
+            const vk::Result result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+            // Before a loss report: the trace then names the submission that met it.
+            Common::GpuTrace::Record(Common::GpuTrace::Event::Submit, signal_value, info.num_wait_semas,
+                                     info.num_wait_semas ? info.wait_ticks[0] : 0,
+                                     u64(u32(result)) | u64(work_semaphore.GetTimeline()) << 32);
+            return result;
+        });
+    if (submit_result != Common::DeviceLost::Success) {
+        Common::GpuTrace::VulkanFailure("submit", submit_result, signal_value, work_semaphore.GetTimeline());
+    }
     ASSERT_MSG(submit_result == Common::DeviceLost::Success, "Queue submit failed: {}",
                vk::to_string(vk::Result(submit_result)));
     Common::DeviceLost::Global().NoteSubmitted(work_semaphore.GetTimeline(), signal_value);
+    Common::GpuTrace::NoteSubmitted(work_semaphore.GetTimeline(), signal_value);
+    if (work_semaphore.GetTimeline() == Common::DeviceLost::Timeline::Draw) {
+        Common::GpuTrace::SetPendingWork(num_pending_ops.load(std::memory_order_relaxed),
+                                         queued_chunks.load(std::memory_order_relaxed));
+    }
+    static const bool first_submission = (sos_checkpoint("GPU: first Vulkan queue submission"), true);
+    (void)first_submission;
 
     work_semaphore.Refresh();
     AllocateWorkerCommandBuffers();

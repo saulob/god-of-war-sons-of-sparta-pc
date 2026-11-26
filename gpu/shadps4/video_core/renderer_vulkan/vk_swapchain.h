@@ -28,8 +28,18 @@ public:
     /// pending, while the surface has no area.
     bool Create(u32 width, u32 height);
 
-    /// Recreates the swapchain with a given size and current surface; false as Create.
+    /// Recreates the swapchain with a given size and current surface (a new surface when it was lost); false as Create.
     bool Recreate(u32 width, u32 height);
+
+    /// The swapchain is stale although Vulkan has not said so yet (the window came back): recreate before the next
+    /// acquire.
+    void RequestRecreation() {
+        health.RequestRecreation();
+    }
+
+    /// The surface can hold a swapchain (a minimized window on Windows has a 0x0 surface); a lost one counts as able,
+    /// the recreation replaces it.
+    bool SurfaceHasArea() const;
 
     /// Acquires the next image in the swapchain.
     bool AcquireNextImage();
@@ -104,7 +114,8 @@ public:
     }
 
 private:
-    bool SurfaceHasArea() const;
+    DcpPresent::SurfaceState QuerySurface() const;
+    void ReplaceSurface();
 
     /// Selects the best available swapchain image format
     void FindPresentFormat();
@@ -162,6 +173,8 @@ private:
     u32 image_index = 0;
     u32 frame_index = 0;
     DcpPresent::SwapchainHealth health;
+    bool surface_lost = false; ///< VK_ERROR_SURFACE_LOST_KHR seen: the next creation replaces the surface
+    DcpPresent::SurfaceRecovery surface_recovery;
     bool logged_kept_suboptimal = false;
     std::string surface_summary;
     unsigned logged_creations = 0;

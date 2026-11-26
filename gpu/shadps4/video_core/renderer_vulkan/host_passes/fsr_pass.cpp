@@ -157,7 +157,7 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         CreateImages(img);
     }
 
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && Vulkan::DebugLabelsAvailable()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
             .pLabelName = "Host/FSR",
         });
@@ -380,7 +380,7 @@ vk::ImageView FsrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input,
         .pImageMemoryBarriers = return_barrier.data(),
     });
 
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && Vulkan::DebugLabelsAvailable()) {
         cmdbuf.endDebugUtilsLabelEXT();
     }
 

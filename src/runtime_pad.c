@@ -305,6 +305,14 @@ static void sample_host(int slot, PadData *d) {
     if (dcpgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
     const bool *k=slot==0 && SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     load_button_maps();
+    /* A touchscreen under Gamescope (SteamOS) is player 1's touchpad: its contacts come first, a controller touchpad
+     * fills what is left of the two, and a tap adds the touchpad click. Elsewhere there are none. */
+    if (slot==0) {
+        uint16_t tx[2], ty[2]; uint8_t tid[2]; uint32_t tap=0;
+        const int screen=dcpgpu_touchscreen_sample(tx,ty,tid,&tap);
+        for (int i=0;i<screen && i<2;++i) d->touches[d->touch_count++]=(PadTouch){.x=tx[i],.y=ty[i],.id=tid[i]};
+        d->buttons|=tap;
+    }
     if (g) {
         /* L3 and R3 together belong to the Options menu: the game never sees the pair. */
         const bool chord=SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_RIGHT_STICK);

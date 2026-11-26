@@ -129,6 +129,8 @@ THREAD_LOCALS = {
     "gpu/shim/dcp_copy_pool.cpp": [
         "thread_local bool in_copy_thread", "thread_local const std::uint32_t tag", "thread_local Batch batch"],
     "gpu/shim/dcp_write_log.cpp": ["static thread_local const std::uint32_t tid"],
+    # The crash trace caches each thread's OS id; a trivially destructible integer, nothing to tear down.
+    "gpu/shim/common/gpu_trace.cpp": ["static thread_local const u32 tid"],
 }
 
 

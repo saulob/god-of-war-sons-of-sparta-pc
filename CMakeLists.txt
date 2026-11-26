@@ -47,7 +47,8 @@ target_link_libraries(sos_keys PUBLIC SDL3::SDL3)
 target_compile_options(sos_keys PRIVATE -Wall -Wextra -Werror)
 
 # The stage the process is in, for the crash report: used by the launcher, the loader and the window thread.
-add_library(sos_startup_phase STATIC src/startup_phase.c)
+add_library(sos_startup_phase STATIC src/startup_phase.c
+    src/system_report.c)
 target_include_directories(sos_startup_phase PUBLIC src)
 target_compile_options(sos_startup_phase PRIVATE -Wall -Wextra -Werror)
 
@@ -128,7 +129,7 @@ if (WIN32)
     set(SOS_PLATFORM_SOURCES src/compat_win.c src/crash_guard.c src/runtime_log.c src/runtime_session_log.c
         src/sons_of_sparta.rc)
 else()
-    set(SOS_PLATFORM_SOURCES src/runtime_log_posix.c src/runtime_session_log.c)
+    set(SOS_PLATFORM_SOURCES src/runtime_log_posix.c src/runtime_session_log.c src/fault_signal_posix.c)
 endif()
 
 add_executable(sons_of_sparta WIN32 src/loader.c ${SOS_RUNTIME_SOURCES} ${SOS_PLATFORM_SOURCES})

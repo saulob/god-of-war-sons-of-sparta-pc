@@ -58,7 +58,8 @@ try {
         'gpu/shadps4/common/singleton.h',
         'gpu/shadps4/common/polyfill_thread.h',
         'gpu/shim/core/libraries/kernel/kernel.h',
-        'gpu/shim/core/libraries/libs.h'
+        'gpu/shim/core/libraries/libs.h',
+        'gpu/shim/dcp_present.h'
     )
 
     $assertStub = @'

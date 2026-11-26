@@ -338,6 +338,68 @@ void TestDeviceLostDiagnostics() {
     Check(!pdl.crash_detected, "manual report without fatal exit does not fabricate crash_detected");
 }
 
+// The GPU trace (gpu/shim/common/gpu_trace.cpp) prints one "GPU trace: summary: " line per process. The report keeps it
+// bounded, carries it after a device loss in device_fault_summary (no new field: the deployed service refuses unknown
+// ones), never lets it replace the root cause and never calls an assertion's trace a device loss.
+void TestGpuTraceSummary(const fs::path& dir) {
+    const std::string summary =
+        "Vulkan device lost; last event: draw submit tick 812, 1 waits (first 299), result -4; unfinished draw tick 810 "
+        "(2 unfinished), 3 pipelines: cs 0x7d39f28a, vs 0xba848b76 ps 0xb1b00b34";
+    std::string trace = "GPU trace: Vulkan device lost, detected on thread 4242 (GpuCommandProcessor)\n"
+                        "GPU trace: summary: " + summary + "\n";
+    for (int i = 0; i < 900; ++i) {
+        trace += "GPU trace:   #" + std::to_string(i) + " tid 4242 blocking wait for draw tick 810 (completed 809)\n";
+    }
+    trace += "GPU trace: summary: a later summary is never the failure's\nGPU trace: end (903 lines)\n";
+    const std::string root =
+        "GPU device lost: first detected in vkQueueSubmit (site submit), VkResult VK_ERROR_DEVICE_LOST (-4), thread 4242, "
+        "draw tick 812, last submitted draw tick 811\nGPU timelines: draw submitted 811 completed 809\n";
+    const std::string end = "Runtime: GPU device lost: first detected in vkQueueSubmit; the process ends with status 25\n";
+
+    const LogDiagnostics plain = AnalyzeLogDiagnostics(root + trace + "Device fault: unavailable (no VK_EXT_device_fault)\n" + end);
+    Check(plain.device_lost && plain.crash_kind == CrashKind::kDeviceLost, "a long GPU trace keeps the device-lost exit");
+    Check(plain.gpu_trace_summary == summary, "the first GPU trace summary line is extracted");
+    Check(plain.device_fault_summary == "GPU trace: " + summary, "without driver fault data the trace summary is the fault detail");
+    Check(plain.device_lost_reason.starts_with("GPU device lost: first detected in vkQueueSubmit (site submit)") &&
+              plain.device_lost_reason.find("GPU trace") == std::string::npos,
+          "the trace never replaces the device-lost root cause");
+
+    const LogDiagnostics faulted = AnalyzeLogDiagnostics(root + trace + "Device fault: " + std::string(600, 'B') +
+                                                         "\nDevice fault: invalid read at 0xdeadbeef (precision 0x1000)\n" + end);
+    Check(faulted.device_fault_available && faulted.device_fault_summary.size() <= 512, "fault and trace stay within 512");
+    Check(faulted.device_fault_summary.starts_with("BBBB") &&
+              faulted.device_fault_summary.find("; GPU trace: " + summary) != std::string::npos,
+          "the driver's fault comes first and the trace summary keeps its room");
+
+    const std::string long_summary(400, 'L');
+    const LogDiagnostics bounded = AnalyzeLogDiagnostics(root + "GPU trace: summary: " + long_summary + "\n" + end);
+    Check(bounded.gpu_trace_summary.size() == 200, "the trace summary is bounded to 200 characters");
+
+    const LogDiagnostics assertion = AnalyzeLogDiagnostics(
+        "GPU trace: summary: GPU assertion failed; last event: heap 1 went over its budget\n"
+        "STOP: GPU library assertion failed (see GPU log above)\n");
+    Check(assertion.gpu_trace_summary.starts_with("GPU assertion failed") && !assertion.device_lost &&
+              assertion.device_fault_summary.empty(),
+          "an assertion's trace summary is read without calling it a device loss");
+
+    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    const fs::path logs = dir / "trace_logs";
+    fs::create_directories(logs);
+    WriteFile(logs / "sons_of_sparta_007.log", "[run] God of War: Sons of Sparta PC\nRuntime: Unity bootstrap entered\n" +
+                                                   root + trace + "Device fault: unavailable (no VK_EXT_device_fault)\n" + end);
+    const std::vector<GameLog> found = FindGameLogs(logs, {}, kMostGameLogs, now);
+    Check(found.size() == 1, "the traced log is found");
+    if (found.size() != 1) return;
+    const auto package = BuildBugReportPackage("The game stopped in combat.", found[0], SampleFacts(), PrivateFacts{}, false, now);
+    Check(package.has_value(), "a report of the traced log builds");
+    if (!package) return;
+    Check(package->Value("device_lost") == "yes" && package->Value("device_fault_available") == "no" &&
+              package->Value("device_fault_summary") == "GPU trace: " + summary,
+          "the report carries the trace summary in device_fault_summary without driver fault data");
+    const std::string json = BugReportRequestJson(*package);
+    Check(json.find("gpu_trace") == std::string::npos, "the request carries no new field for the trace");
+}
+
 void TestScrubberPrivacy() {
     PrivateFacts facts;
     facts.user_names = {"SauloSecretUser"};
@@ -366,6 +428,7 @@ int main() {
     TestDumpValidationRules(temp);
     TestSameExecutionAndOptionalAttachment(temp);
     TestDeviceLostDiagnostics();
+    TestGpuTraceSummary(temp);
     TestScrubberPrivacy();
     std::error_code ec;
     fs::remove_all(temp, ec);

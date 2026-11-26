@@ -266,6 +266,7 @@ th { color: var(--text-secondary); font-weight: 600; }
 #bug-list td.col-build, #bug-list td.col-os { white-space: normal; overflow-wrap: anywhere; }
 #bug-list td.col-build { max-width: 12em; }
 #bug-list td.col-os { max-width: 10em; }
+#bug-list td.col-outcome { max-width: 10em; white-space: normal; }
 #bug-list td.bug-summary { white-space: normal; overflow-wrap: anywhere; width: 100%; min-width: 14em; }
 @media (max-width: 1000px) {
   #bug-list .col-os { display: none; }
@@ -489,6 +490,8 @@ export const ADMIN_JS = String.raw`(function () {
     bugFact(facts, 'Operating system', r.operating_system);
     bugFact(facts, 'Original log file', r.log_file);
     bugFact(facts, 'Log clipped', r.log_clipped === 'yes' ? 'Yes, only its end was sent' : 'No');
+    bugFact(facts, 'Session outcome', r.session_outcome_label
+      ? r.session_outcome_label + (r.session_outcome_detail ? ' (' + r.session_outcome_detail + ')' : '') : '-');
     bugFact(facts, 'Crash detected', r.crash_detected === 'yes' ? 'Yes' : 'No');
     bugFact(facts, 'Crash classification', r.crash_kind || '-');
     bugFact(facts, 'Last startup stage', r.last_startup_stage);
@@ -584,8 +587,16 @@ export const ADMIN_JS = String.raw`(function () {
     });
   }
 
-  var BUG_COLUMNS = ['Report ID', 'Status', 'Player feedback', 'Submitted', 'Launcher', 'Game build', 'Operating system', 'Description'];
-  var BUG_COLUMN_CLASSES = ['col-id', 'col-status', 'col-feedback', 'col-submitted', 'col-launcher', 'col-build', 'col-os', ''];
+  var BUG_COLUMNS = ['Report ID', 'Status', 'Player feedback', 'Submitted', 'Launcher', 'Game build', 'Operating system', 'Outcome', 'Description'];
+  var BUG_COLUMN_CLASSES = ['col-id', 'col-status', 'col-feedback', 'col-submitted', 'col-launcher', 'col-build', 'col-os', 'col-outcome', ''];
+  // Short names of the session outcomes (src/session_outcome.js); the detail view shows the full label.
+  var OUTCOME_SHORT = {
+    launcher_no_play: 'No PLAY', play_blocked: 'PLAY blocked', graphics_preflight_failed: 'Graphics check failed',
+    settings_save_failed: 'Settings not saved', launcher_close_hang: 'Launcher close hang',
+    runtime_handoff_failed: 'Handoff failed', startup_hang: 'Startup hang', startup_crash: 'Startup crash',
+    black_screen: 'Black screen', device_lost: 'Device lost', memory_failure: 'Out of memory', crash: 'Crash',
+    normal_exit: 'Normal exit', ended_unexpectedly: 'No closing record', unknown: '-'
+  };
 
   function removeBugReport(ticket) {
     bugReports = bugReports.filter(function (r) { return r.ticket !== ticket; });
@@ -658,7 +669,7 @@ export const ADMIN_JS = String.raw`(function () {
     showNewCount();
     table($('bug-list'), BUG_COLUMNS, shown.map(function (r) {
       return [bugTicketCell(r), BUG_STATUSES[r.status][0], bugFeedbackCell(r), stampLabel.format(r.ms), r.launcher_version, r.game_build || '-',
-        r.operating_system, el('td', 'bug-summary', r.preview)];
+        r.operating_system, OUTCOME_SHORT[r.session_outcome] || '-', el('td', 'bug-summary', r.preview)];
     }), function (i) { return shown[i].ticket === bugTicket ? 'selected' : ''; }, BUG_COLUMN_CLASSES);
     $('bug-count').textContent = !bugReports.length ? 'No reports yet.'
       : shown.length === bugReports.length ? fmt(shown.length) + ' reports' : fmt(shown.length) + ' of ' + fmt(bugReports.length) + ' reports';

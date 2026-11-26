@@ -4,12 +4,14 @@
 #include "common/debug.h"
 #include "common/device_lost.h"
 #include "common/elf_info.h"
+#include "common/gpu_trace.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
+#include "startup_phase.h"
 #include "video_core/allocation_fallback.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
@@ -151,10 +153,15 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     if (rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
         return;
     }
+    // dcp: its own startup stage: a first-run warm-up on a Steam Deck can outlast the swapchain creation budget.
+    sos_startup_phase("pipeline cache warm-up");
     DcpOverlay::SetLoading(true, 0, 0);
     PresentLoadingFrame();
     auto last = std::chrono::steady_clock::now();
+    u32 warmed = 0, warm_total = 0;
     rasterizer->GetPipelineCache().WarmUp([&](u32 done, u32 total) {
+        warmed = done;
+        warm_total = total;
         const auto now = std::chrono::steady_clock::now();
         if (now - last < std::chrono::milliseconds(250)) {
             return;
@@ -164,6 +171,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         PresentLoadingFrame();
     });
     DcpOverlay::SetLoading(false, 0, 0);
+    sos_startup_stage_result("pipeline cache warm-up", 1, "%u of %u pipelines", warmed, warm_total);
 
 }
 
@@ -239,7 +247,13 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
                                               s32(allocation.result), 0);
         LOG_CRITICAL(Render_Vulkan, "Failed allocating texture with error {}",
                      vk::to_string(allocation.result));
+        Common::GpuTrace::VulkanFailure("frameimg", s32(allocation.result), 0, Common::DeviceLost::Timeline::Present);
         UNREACHABLE();
+    }
+    if (allocation.candidate != 0) {
+        Common::GpuTrace::Record(Common::GpuTrace::Event::AllocationFallback, width, height,
+                                 u64(allocation.candidate == 1 ? Common::GpuTrace::Fallback::ImageOverBudget
+                                                               : Common::GpuTrace::Fallback::ImageInSystemMemory));
     }
     if (VideoCore::RecordFallback(VideoCore::Telemetry(), VideoCore::AllocationCategory::FrameImage,
                                   u64(width) * height * 4, 0, allocation,
@@ -279,6 +293,7 @@ void Presenter::WaitFrameFence(Frame* frame, const char* site) {
                                         Common::DeviceLost::WaitSliceNanoseconds);
         });
     if (result != Common::DeviceLost::Success) {
+        Common::GpuTrace::VulkanFailure(site, result, 0, Common::DeviceLost::Timeline::Present);
         UNREACHABLE_MSG("Frame fence wait failed ({}): {}", site,
                         vk::to_string(vk::Result(result)));
     }
@@ -539,7 +554,8 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::PresentLoadingFrame() {
-    if (window.GetWidth() == 0 || window.GetHeight() == 0) {
+    // Nothing to show on a minimized or hidden window, and FIFO may block a present to it.
+    if (!GateVisibility().Visible() || window.GetWidth() == 0 || window.GetHeight() == 0) {
         return;
     }
     swapchain.UpdateVsync();
@@ -684,17 +700,20 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         CheckFreeQueueFrame(frame, "Present");
     }
 
-    // A minimized window has no pixels on Windows (0x0): keep the swapchain and skip presenting
-    // until the window is restored.
-    if (window.GetWidth() == 0 || window.GetHeight() == 0) {
+    // A minimized or hidden window, or a surface without area (a minimized window on Windows is 0x0 while SDL keeps its
+    // last size), gets no acquire, no commands and no present: the frame goes back to the free queue and the guest's
+    // flips and vblanks go on. A FIFO present to a hidden window may block, and it would block under the submit lock.
+    if (!CanPresent()) {
         free_frame();
         return;
     }
 
-    // Recreate the swapchain if the window was resized.
+    // Recreate the swapchain if the window was resized, presentation just resumed, or a recreation is pending (one an
+    // empty surface or a lost one held back).
     swapchain.UpdateVsync();
-    if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
-        if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+    if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight() ||
+        swapchain.NeedsRecreation()) {
+        if (!RecreateSwapchain()) {
             free_frame();
             return;
         }
@@ -706,7 +725,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         acquired = swapchain.AcquireNextImage();
     }
     if (!acquired) {
-        if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+        if (!RecreateSwapchain()) {
             free_frame();
             return;
         }
@@ -730,7 +749,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     auto& scheduler = present_scheduler;
     const auto cmdbuf = scheduler.CommandBuffer();
 
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && DebugLabelsAvailable()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{
             .pLabelName = "Present",
         });
@@ -839,7 +858,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                                vk::PipelineStageFlagBits::eBottomOfPipe,
                                vk::DependencyFlagBits::eByRegion, {}, {}, to_present);
     }
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && DebugLabelsAvailable()) {
         cmdbuf.endDebugUtilsLabelEXT();
     }
 
@@ -859,14 +878,73 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         DcpStartupWatch::WaitScope wait{DcpStartupWatch::QueuePresent};
         presented = swapchain.Present();
     }
-    if (!presented && window.GetWidth() != 0 && window.GetHeight() != 0) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+    if (presented) {
+        if (gate.Presented()) {
+            LogLifecycle("presenting resumed");
+        }
+    } else {
+        RecreateSwapchain();
     }
 
     free_frame();
     if (!is_reusing_frame && is_game_frame) {
         DebugState.IncFlipFrameNum();
         DcpWaterDiag::CountFrame();
+    }
+}
+
+DcpPresent::WindowVisibility Presenter::GateVisibility() const {
+    // Gamescope has no minimize of its own to follow: presenting there never pauses for SDL's visibility.
+    return DcpPresent::GamescopeSession() ? DcpPresent::WindowVisibility{} : window.Visibility();
+}
+
+// Swap thread. Normally two relaxed loads and no Vulkan call: the surface is only queried while presentation is
+// suspended or a recreation is pending.
+bool Presenter::CanPresent() {
+    const bool check_surface = gate.Suspended() || swapchain.NeedsRecreation();
+    const auto step = gate.Update({GateVisibility(), u32(std::max(window.GetWidth(), 0)),
+                                   u32(std::max(window.GetHeight(), 0)), check_surface && !swapchain.SurfaceHasArea()});
+    if (step.transition) {
+        if (step.recreate) {
+            LogLifecycle("window restored, recreating the swapchain");
+        } else {
+            char what[96];
+            std::snprintf(what, sizeof(what), "window %s, presenting paused", DcpPresent::LifecycleName(step.lifecycle));
+            LogLifecycle(what);
+        }
+    }
+    if (step.recreate) {
+        swapchain.RequestRecreation();
+    }
+    return step.present;
+}
+
+// False with the frame to be dropped: no window area (the recreation stays pending) or no surface area.
+bool Presenter::RecreateSwapchain() {
+    if (window.GetWidth() == 0 || window.GetHeight() == 0) {
+        swapchain.RequestRecreation();
+        return false;
+    }
+    if (!swapchain.Recreate(window.GetWidth(), window.GetHeight())) {
+        if (gate.SurfaceUnavailable().transition) {
+            LogLifecycle("window surface has no area, presenting paused");
+        }
+        return false;
+    }
+    return true;
+}
+
+void Presenter::LogLifecycle(const char* what) {
+    switch (lifecycle_log.Observe(true)) {
+    case DcpPresent::LifecycleLog::Action::Log:
+        std::printf("Presenter: %s (window %dx%d, swapchain %ux%u)\n", what, window.GetWidth(), window.GetHeight(),
+                    swapchain.GetExtent().width, swapchain.GetExtent().height);
+        break;
+    case DcpPresent::LifecycleLog::Action::LastNote:
+        std::printf("Presenter: further window lifecycle changes are not logged\n");
+        break;
+    case DcpPresent::LifecycleLog::Action::None:
+        break;
     }
 }
 

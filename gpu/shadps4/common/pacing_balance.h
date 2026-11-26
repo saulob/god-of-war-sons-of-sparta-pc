@@ -33,6 +33,21 @@ public:
         return balance;
     }
 
+    // A new period from the next interval on. The wait still due before the next frame is kept but never exceeds one new
+    // interval, and lateness is not carried across the change: no frame is repaid in a burst and no drift is kept.
+    void Retime(std::chrono::nanoseconds new_interval) {
+        interval = new_interval;
+        if (balance < std::chrono::nanoseconds::zero()) {
+            balance = std::chrono::nanoseconds::zero();
+        } else if (balance > new_interval) {
+            balance = new_interval;
+        }
+    }
+
+    std::chrono::nanoseconds Interval() const {
+        return interval;
+    }
+
 private:
     std::chrono::nanoseconds interval;
     std::chrono::nanoseconds balance{};

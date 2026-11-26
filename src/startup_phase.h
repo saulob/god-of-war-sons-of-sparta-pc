@@ -8,9 +8,29 @@
 extern "C" {
 #endif
 
-/* `phase` must outlive the process. Nothing is logged. */
+/* `phase` must outlive the process. A change of phase logs one bounded, flushed line
+ * "Stage: <phase> started +T ms (after <previous>, D ms)"; setting the same phase again logs nothing. */
 void sos_startup_phase(const char *phase);
 const char *sos_startup_phase_current(void);
+/* The phase before the current one, or the last stage reported completed; "" before the first. */
+const char *sos_startup_phase_completed(void);
+/* Milliseconds since the current phase started. */
+double sos_startup_phase_elapsed_ms(void);
+/* "Stage: <stage> completed in D ms: detail" or "Stage: <stage> failed in D ms: detail", flushed; the duration is given
+ * when <stage> is the current phase. */
+void sos_startup_stage_result(const char *stage, int ok, const char *format, ...) __attribute__((format(__printf__, 3, 4)));
+/* "Stage event: text +T ms", flushed: one-off facts of the start (PLAY and its input, the handoff). */
+void sos_startup_event(const char *format, ...) __attribute__((format(__printf__, 1, 2)));
+/* How stage lines are pushed out; without a hook stdout is flushed (into the log pipe, written to the file at once by the
+ * log thread). Never pass a flush that waits for the file: phases change on frame-critical threads. Tests use it. */
+void sos_startup_set_flush(void (*flush)(void));
+
+/* The diagnostic watchdog: reports a phase that lasts longer than its budget ("Stage watchdog: ..."), at 1x, 2x, 4x and
+ * 8x the budget, and never stops or changes the process. Phases that wait for the player have no budget. */
+void sos_startup_watchdog_start(void);
+unsigned sos_startup_phase_budget_seconds(const char *phase);
+/* 1 when the watchdog reports now; `watched` and `reports` are its state (tests drive it with synthetic time). */
+int sos_startup_watchdog_poll(const char *phase, double elapsed_ms, const char **watched, unsigned *reports);
 
 /* PLAY: the baseline of the checkpoints and startup milestones. */
 void sos_startup_play(void);

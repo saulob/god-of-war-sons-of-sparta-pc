@@ -22,6 +22,13 @@ int runtime_log_write_direct(const char *text);
 /* Waits until what was written so far has reached the console. */
 void runtime_log_flush(void);
 
+#ifndef _WIN32
+/* runtime_log_flush without stdio: async-signal-safe, for fatal signal handlers. At most 2 s. */
+void runtime_log_drain(void);
+/* A private non-blocking descriptor for the console copy of `fd` (a pipe or terminal), or -1. */
+int runtime_log_echo_nonblocking(int fd);
+#endif
+
 /* Points stdout and stderr away from the log runtime_log_start opened. On Windows the C runtime opens them without
  * delete sharing, so the log cannot be removed while they hold it. */
 void runtime_log_release(void);

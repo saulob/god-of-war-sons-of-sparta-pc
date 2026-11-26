@@ -38,6 +38,14 @@ The player writes a description (10 to 500 characters) and chooses one recent lo
 | `crash_detected`, `crash_kind`, `last_startup_stage`, `device_lost`, `device_lost_reason`, `device_fault_available`, `device_fault_summary`, `dump_available`, `dump_included` | Bounded crash and GPU diagnostics read from the log |
 | `log_text` | At most 64 KiB of the selected log, after privacy filtering |
 
+The **session outcome** is not a field: the launcher preview and the dashboard both derive it from `log_text`
+(`launcher/session_outcome.h`, `server/bug-report/src/session_outcome.js`, the same cases in
+`tests/fixtures/session_outcome_cases.txt`). It tells apart a launcher left without PLAY, a refused PLAY, a failed
+graphics check or settings save, a hang while the launcher closes, a failed handoff, a startup hang or crash, a black
+screen, a device loss, a memory failure, a crash during play and a normal exit. A log that just stops is "ended
+without a closing record", never a crash. Old reports are classified the same way, and a launcher never sends a field
+the deployed Worker does not know.
+
 A report is at most 500 description characters, 64 KiB of log and a 160 Ki-character WebSocket frame. The
 server refuses anything larger. The stored report is the package the player can preview; nothing is rewritten
 after acceptance.
@@ -211,7 +219,7 @@ access disabled.
 The dashboard lists reports newest first, shows the new count, filters by launcher version, game build, date,
 status and player feedback, and can:
 
-- read the original description and sanitized log;
+- read the original description and sanitized log, and the session outcome with its evidence (also a list column);
 - download the log and a stored crash dump;
 - set any of the eight statuses, the fixed version and the developer message;
 - see the player's test answer and when it arrived;

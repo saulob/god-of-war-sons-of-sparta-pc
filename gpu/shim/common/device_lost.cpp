@@ -9,6 +9,7 @@
 #include <iterator>
 #include <thread>
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 
 namespace Common::DeviceLost {
 namespace {
@@ -57,15 +58,24 @@ void StayHere() {
     }
 }
 
+// What led to the loss, printed before the driver's fault report and the process end.
+void CaptureGpuTrace(const RootCause& root) {
+    GpuTrace::Record(GpuTrace::Event::VulkanFailure, GpuTrace::Tag(root.site), u64(u32(root.result)), root.tick,
+                     u64(root.timeline));
+    GpuTrace::Dump(root.simulated ? "Vulkan device lost (simulated by SOS_SIMULATE_DEVICE_LOST)" : "Vulkan device lost");
+}
+
 constinit Monitor global_monitor{Hooks{
     .print = PrintToStderr,
+    .capture = CaptureGpuTrace,
     .query_fault = nullptr,
     .shutdown = EndProcess,
     .park = StayHere,
 }};
 
 constexpr const char* SimulationNames[] = {"submit", "sparse", "semwait", "semread", "fence",
-                                           "acquire", "present", "idle", "query", "check"};
+                                           "acquire", "present", "idle", "query", "check",
+                                           "swapchain"};
 static_assert(std::size(SimulationNames) == size_t(Operation::Count));
 
 void CopyBounded(char* out, size_t size, const char* text) noexcept {
@@ -96,6 +106,8 @@ const char* OperationName(Operation operation) noexcept {
         return "vkGetQueryPoolResults";
     case Operation::Checked:
         return "checked Vulkan call";
+    case Operation::CreateSwapchain:
+        return "vkCreateSwapchainKHR";
     case Operation::Count:
         break;
     }
@@ -151,8 +163,9 @@ Monitor& Global() noexcept {
     return global_monitor;
 }
 
+// The OS thread id, so the root report and the GPU trace name the same thread.
 u32 CurrentThreadId() noexcept {
-    return u32(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    return GpuTrace::CurrentThreadId();
 }
 
 void Monitor::Print(const char* line) {
@@ -299,6 +312,9 @@ bool Monitor::Report(Operation operation, const char* site, s32 result, u64 tick
     BuildTimelineLine();
     Print(root_line);
     Print(timeline_line);
+    if (hooks.capture) {
+        hooks.capture(root);
+    }
     QueryFaultOnce();
     BuildSummary();
     phase.store(Phase::Reported, std::memory_order_release);

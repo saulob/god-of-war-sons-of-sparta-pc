@@ -6,12 +6,42 @@
 #include <atomic>
 #include <cstdio>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_gpu_compat.h"
 
 namespace VideoCore {
+
+/// A heap's label in memory diagnostics: "device-local", "device-local, host-visible" (a UMA
+/// carve-out such as the Steam Deck's, or ReBAR) or "system".
+inline const char* MemoryHeapKind(const vk::PhysicalDeviceMemoryProperties& properties, u32 heap) {
+    if (heap >= properties.memoryHeapCount) {
+        return "unknown";
+    }
+    const bool device_local =
+        static_cast<bool>(properties.memoryHeaps[heap].flags & vk::MemoryHeapFlagBits::eDeviceLocal);
+    bool host_visible = false;
+    for (u32 type = 0; type < properties.memoryTypeCount; ++type) {
+        if (properties.memoryTypes[type].heapIndex == heap &&
+            (properties.memoryTypes[type].propertyFlags & vk::MemoryPropertyFlagBits::eHostVisible)) {
+            host_visible = true;
+        }
+    }
+    return Vulkan::GpuCompat::HeapKindName(device_local, host_visible);
+}
+
+/// "type 3 (heap 1, system)": the memory type an allocation really used, for fallback warnings.
+inline std::string MemoryTypeLabel(const vk::PhysicalDeviceMemoryProperties& properties, u32 type) {
+    if (type >= properties.memoryTypeCount) {
+        return "type " + std::to_string(type);
+    }
+    const u32 heap = properties.memoryTypes[type].heapIndex;
+    return "type " + std::to_string(type) + " (heap " + std::to_string(heap) + ", " +
+           MemoryHeapKind(properties, heap) + ")";
+}
 
 /// Memory types an allocation may use, in the order they are tried: the preferred type, the other device-local types,
 /// then the system memory types. A type needs its bit in `allowed_bits` and every `required` property, and protected,

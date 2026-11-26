@@ -26,6 +26,7 @@
 #include "core/platform.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "dcp_write_log.h"
+#include "startup_phase.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -1773,6 +1774,8 @@ Liverpool::CmdBuffer Liverpool::CopyCmdBuffers(std::span<const u32> dcb, std::sp
 }
 
 void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
+    static const bool first_submission = (sos_checkpoint("GPU: first guest command buffer submitted"), true);
+    (void)first_submission;
     auto& queue = mapped_queues[GfxQueueId];
 
     if (EmulatorSettings.IsCopyGpuBuffers()) {

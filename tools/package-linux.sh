@@ -67,6 +67,12 @@ is_host_lib() {
             return 0 ;;
         libGL.so.*|libGLX.so.*|libGLdispatch.so.*|libEGL.so.*|libGLESv2.so.*|libvulkan.so.*|libdrm*.so.*|libgbm.so.*|libwayland-*.so.*)
             return 0 ;;
+        # Graphics, video and compute driver stacks (Mesa RADV on a Steam Deck, NVIDIA, VA-API/VDPAU): a bundled copy
+        # would shadow the host's driver. glibc's own libmvec and NSS modules are part of the host's glibc. Ordinary
+        # system libraries (libselinux, libpcre2, libcap) are NOT listed: SteamOS (Arch) lacks libselinux, so a bundled
+        # dependency on one must carry it.
+        libOpenGL.so.*|libXrender.so.*|libva*.so.*|libvdpau.so.*|libnvidia-*.so.*|libcuda.so.*|libOpenCL.so.*|libmvec.so.*|libnss_*.so.*)
+            return 0 ;;
         libX11.so.*|libX11-xcb.so.*|libXext.so.*|libXau.so.*|libXdmcp.so.*|libxcb*.so.*|libXfixes.so.*|libXcursor.so.*|libXrandr.so.*|libXi.so.*|libXinerama.so.*|libXss.so.*|libXxf86vm.so.*|libxkbcommon*.so.*)
             return 0 ;;
         libasound.so.*|libpulse*.so.*|libpipewire-*.so.*|libdbus-1.so.*|libudev.so.*|libsystemd.so.*|libfontconfig.so.*|libexpat.so.*|libuuid.so.*|libgpg-error.so.*|libgcrypt.so.*|liblz4.so.*|liblzma.so.*|libz.so.*)
@@ -119,6 +125,11 @@ while (( ${#queue[@]} > 0 )); do
         [[ -z ${seen[$soname]:-} ]] || continue
         seen[$soname]=1
         if is_host_lib "$soname"; then
+            # A driver-stack library left to the host is optional on some hosts: say which bundled file needs it.
+            case "$soname" in
+                libva*.so.*|libvdpau.so.*|libOpenCL.so.*|libcuda.so.*|libnvidia-*.so.*|libOpenGL.so.*)
+                    echo "  [host]   $soname is needed by $(basename -- "$cur") and must come from the host's driver stack" ;;
+            esac
             continue
         fi
         real=$(readlink -f -- "$target")

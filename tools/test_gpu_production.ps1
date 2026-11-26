@@ -16,7 +16,7 @@ if (-not (Invoke-GpuProductionBuild)) { Write-Host '  [fail] the current product
 $tc = Resolve-Toolchain 'auto'
 $members = @(& (Join-Path $tc.Bin 'llvm-ar.exe') t $script:GpuLibrary | ForEach-Object { [IO.Path]::GetFileName($_) })
 $failures = 0
-foreach ($required in 'device_lost.cpp', 'assert.cpp', 'vk_scheduler.cpp', 'vk_semaphore.cpp', 'vk_presenter.cpp', 'vk_swapchain.cpp',
+foreach ($required in 'device_lost.cpp', 'assert.cpp', 'gpu_trace.cpp', 'vk_scheduler.cpp', 'vk_semaphore.cpp', 'vk_presenter.cpp', 'vk_swapchain.cpp',
         'buffer_cache.cpp', 'texture_cache.cpp', 'vk_pipeline_cache.cpp', 'vk_instance.cpp') {
     if ($members -notcontains "$required.obj") { Write-Host "  [fail] $required is not part of the production target dcpgpu (gpu/CMakeLists.txt)"; $failures++ }
 }

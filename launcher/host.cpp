@@ -23,6 +23,9 @@
 #include "backends/imgui_impl_sdlrenderer3.h"
 #include "sos_displays.h"
 #include "startup_phase.h"
+#ifndef _WIN32
+#include "sos_video_backend.h"
+#endif
 
 namespace sos {
 namespace {
@@ -98,12 +101,37 @@ SDL_Renderer* CreateLauncherRenderer(SDL_Window* window, RendererRequest request
 
 bool LauncherHost::Open(const HostOptions& options) {
     startup_ = StartupTimeline(NowNs());
+#ifndef _WIN32
+    // A second launcher window after an SDL_Quit (problem dialog, icon preparation) would have lost the hint.
+    sos_video_backend_prepare(0);
+#endif
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         std::printf("Launcher: SDL video failed: %s\n", SDL_GetError());
         return false;
     }
     video_ = true;
+    const bool background_gamepad =
+        AllowBackgroundGamepadEvents(std::getenv("GAMESCOPE_WAYLAND_DISPLAY"), std::getenv("XDG_CURRENT_DESKTOP"));
+    if (background_gamepad) {
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    }
     gamepad_ = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    if (!gamepad_) {
+        std::printf("Launcher: gamepad support unavailable: %s\n", SDL_GetError());
+    }
+    {
+        const char* driver = SDL_GetCurrentVideoDriver();
+        std::printf("Launcher: SDL %d.%d.%d video driver %s, gamepad subsystem %s, background gamepad events %s\n",
+                    SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
+                    SDL_VERSIONNUM_MICRO(SDL_GetVersion()), driver ? driver : "none", gamepad_ ? "ready" : "unavailable",
+                    background_gamepad ? "on (Gamescope)" : "off");
+        if (gamepad_) {
+            int count = 0;
+            SDL_JoystickID* pads = SDL_GetGamepads(&count);
+            std::printf("Launcher input: %d gamepad(s) at start\n", count);
+            SDL_free(pads);
+        }
+    }
     Reach(StartupStage::kSdlReady);
 
     const std::vector<Display> displays = ListDisplays();
@@ -291,6 +319,11 @@ void LauncherHost::DestroyTexture(ImTextureID texture) {
 }
 
 void LauncherHost::Close() {
+    // Close runs again from the destructor after an explicit Close (and after a failed Open): with nothing left open it
+    // does nothing, so the teardown phases are logged once.
+    if (!window_ && !renderer_ && !imgui_ && !video_ && !gamepad_ && textures_.empty()) {
+        return;
+    }
     sos_startup_phase("launcher host closing");
     for (SDL_Texture* texture : textures_) {
         SDL_DestroyTexture(texture);
@@ -321,21 +354,61 @@ void LauncherHost::Close() {
     sos_startup_phase("launcher host closed");
 }
 
+void LauncherHost::NoteInput(const char* event, const std::string& detail, InputKind kind) {
+    if (const std::optional<std::string> line = input_.Note(event, detail, kind)) {
+        std::printf("%s\n", line->c_str());
+    }
+}
+
 void LauncherHost::HandleEvent(const SDL_Event& event) {
     ImGui_ImplSDL3_ProcessEvent(&event);
     switch (event.type) {
     case SDL_EVENT_QUIT:
+        // SIGTERM or SIGINT (Steam's "Exit game"), or the session ending.
+        std::printf("Launcher: quit requested by the system (SDL quit event)\n");
         quit_ = true;
         break;
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
         if (event.window.windowID == SDL_GetWindowID(window_)) {
+            std::printf("Launcher: window close requested\n");
             quit_ = true;
         }
         break;
     case SDL_EVENT_KEY_DOWN:
+        if (!event.key.repeat) {
+            NoteInput("key_down", {}, InputKind::kKeyboard);
+        }
         if (event.key.key == SDLK_F11 && !event.key.repeat) {
             SetFullscreen(!Fullscreen());
         }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+        const bool touch = event.button.which == SDL_TOUCH_MOUSEID;
+        NoteInput(touch ? "touch_click" : "mouse_click", "button=" + std::to_string(event.button.button),
+                  touch ? InputKind::kTouch : InputKind::kMouse);
+        break;
+    }
+    case SDL_EVENT_FINGER_DOWN:
+        NoteInput("finger_down", {}, InputKind::kTouch);
+        break;
+    case SDL_EVENT_GAMEPAD_ADDED: {
+        const char* name = SDL_GetGamepadNameForID(event.gdevice.which);
+        NoteInput("gamepad_added", std::string("name=\"") + (name ? name : "unknown") + "\"");
+        break;
+    }
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        NoteInput("gamepad_removed");
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+        const char* button = SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(event.gbutton.button));
+        NoteInput("gamepad_button", std::string("button=") + (button ? button : "unknown"), InputKind::kGamepad);
+        break;
+    }
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        NoteInput("focus_gained");
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        NoteInput("focus_lost");
         break;
     default:
         break;

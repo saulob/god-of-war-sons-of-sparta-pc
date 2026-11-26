@@ -5,6 +5,7 @@
 #include "runtime.h"
 #include "startup_phase.h"
 #include "runtime_log.h"
+#include "dcpgpu.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -299,6 +300,7 @@ static ABI __attribute__((noreturn)) void hard_exit(int status) {
     runtime_report();
     runtime_online_leave();
     fflush(stdout);
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     if (status == 0) runtime_log_mark_clean_exit();
     runtime_log_finalize();
     _exit(status);
@@ -307,6 +309,7 @@ static ABI __attribute__((noreturn)) void kernel_exit_process(int32_t status) {
     sos_startup_phase("guest exit requested");
     runtime_log_exit_request("sceKernelExitProcess",status,(uintptr_t)__builtin_return_address(0));
     runtime_online_leave();
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     if (status==0) runtime_log_mark_clean_exit();
     runtime_log_finalize();
     runtime_exit(status);
@@ -315,6 +318,7 @@ static ABI __attribute__((noreturn)) void hard__Exit(int32_t status) {
     sos_startup_phase("guest exit requested");
     runtime_log_exit_request("_Exit",status,(uintptr_t)__builtin_return_address(0));
     runtime_online_leave();
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     if (status==0) runtime_log_mark_clean_exit();
     runtime_log_finalize();
     runtime_exit(status);

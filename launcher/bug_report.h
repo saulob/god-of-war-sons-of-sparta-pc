@@ -51,7 +51,8 @@ struct LogDiagnostics {
     std::string device_lost_timelines;
     bool device_fault_available = false;
     std::string device_fault_status;
-    std::string device_fault_summary;
+    std::string device_fault_summary;  // the driver's fault, then "GPU trace: <summary>" after a device loss
+    std::string gpu_trace_summary;     // the "GPU trace: summary: " line, bounded (a device loss or a GPU assertion)
 };
 
 struct GameLog {

@@ -29,6 +29,7 @@ Semaphore::Semaphore(const Instance& instance_, Common::DeviceLost::Timeline tim
 Semaphore::~Semaphore() = default;
 
 void Semaphore::Fail(const char* site, s32 result, u64 tick) const {
+    Common::GpuTrace::VulkanFailure(site, result, tick, ticks.timeline);
     UNREACHABLE_MSG("Timeline semaphore {} failed at {} tick {}: {}", site,
                     Common::DeviceLost::TimelineName(ticks.timeline), tick,
                     vk::to_string(vk::Result(result)));

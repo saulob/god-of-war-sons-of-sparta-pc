@@ -5,6 +5,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "video_core/allocation_fallback.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -127,6 +128,59 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         ASSERT_MSG(bda_result != 0, "Failed to get buffer device address");
         bda_addr = bda_result;
     }
+}
+
+vk::Result UniqueBuffer::CreateInMemoryType(const vk::BufferCreateInfo& buffer_ci,
+                                            u32 memory_type, VmaAllocationInfo* out_alloc_info) {
+    const VmaAllocationCreateInfo alloc_ci = {
+        .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+        .usage = VMA_MEMORY_USAGE_UNKNOWN,
+        .requiredFlags = 0,
+        .preferredFlags = 0,
+        .memoryTypeBits = memory_type < 32 ? 1u << memory_type : 0u,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+    };
+    if (alloc_ci.memoryTypeBits == 0) {
+        return vk::Result::eErrorFeatureNotPresent;
+    }
+    const VkBufferCreateInfo buffer_ci_unsafe = static_cast<VkBufferCreateInfo>(buffer_ci);
+    VkBuffer unsafe_buffer{};
+    const VkResult result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &alloc_ci,
+                                            &unsafe_buffer, &allocation, out_alloc_info);
+    if (result != VK_SUCCESS) {
+        allocation = VK_NULL_HANDLE;
+        return vk::Result{result};
+    }
+    buffer = vk::Buffer{unsafe_buffer};
+    if (buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress) {
+        bda_addr = device.getBufferAddress(vk::BufferDeviceAddressInfo{.buffer = buffer});
+        ASSERT_MSG(bda_addr != 0, "Failed to get buffer device address");
+    }
+    return vk::Result::eSuccess;
+}
+
+Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
+               std::span<const u32> memory_types, FallbackAllocation& allocation)
+    : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, mem_type{MemoryType::DeviceLocal},
+      buffer{instance.GetDevice(), instance.GetAllocator()} {
+    const vk::BufferCreateInfo buffer_ci = {
+        .size = size_bytes,
+        .usage = AllFlags,
+        .sharingMode = vk::SharingMode::eExclusive,
+    };
+    VmaAllocationInfo alloc_info{};
+    allocation = AllocateWithFallback(memory_types, [&](u32 type) {
+        return buffer.CreateInMemoryType(buffer_ci, type, &alloc_info);
+    });
+    if (allocation.result != vk::Result::eSuccess) {
+        return;
+    }
+    Vulkan::SetObjectName(instance.GetDevice(), Handle(), "Resident arena {:#x}:{:#x}", cpu_addr,
+                          size_bytes);
+    VkMemoryPropertyFlags property_flags{};
+    vmaGetAllocationMemoryProperties(instance.GetAllocator(), buffer.allocation, &property_flags);
+    is_coherent = property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 }
 
 Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,

@@ -161,6 +161,7 @@ static ABI __attribute__((noreturn)) void load_exec(const char *path, char *cons
     sos_startup_phase("guest exit requested");
     printf("LoadExec: %s -> %s\n",path ? path : "(null)",host[0] ? host : "(no host file)");
     fflush(NULL);
+    dcpgpu_touch_release(); /* Gamescope touch mode back to each root: nothing tears down after _Exit */
     runtime_log_mark_clean_exit();
     runtime_log_finalize();
     _exit(LOAD_EXEC_EXIT); /* no destructors: GPU and guest threads are running */

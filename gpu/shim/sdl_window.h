@@ -7,7 +7,9 @@
 #include <unordered_map>
 #include "common/types.h"
 #include "dcp_cursor.h"
+#include "dcp_frame_pacing.h"
 #include "dcp_mouse_capture.h"
+#include "dcp_present.h"
 #include "dcp_renderer.h"
 
 struct SDL_Window;
@@ -44,6 +46,10 @@ public:
     ~WindowSDL();
     s32 GetWidth() const { return width.load(std::memory_order_relaxed); }
     s32 GetHeight() const { return height.load(std::memory_order_relaxed); }
+    /// Minimized or hidden, as the window thread last saw it; any thread (one relaxed load).
+    DcpPresent::WindowVisibility Visibility() const {
+        return DcpPresent::WindowVisibility::Unpack(visibility_bits.load(std::memory_order_relaxed));
+    }
     SDL_Window* GetSDLWindow() const { return window; }
     WindowSystemInfo GetWindowInfo() const { return window_info; }
     bool IsOpen() const { return is_open.load(std::memory_order_relaxed); }
@@ -58,6 +64,9 @@ public:
 
 private:
     std::atomic<s32> width, height;
+    std::atomic<u8> visibility_bits{0};
+    DcpPresent::WindowVisibility visibility; ///< window thread
+    void ApplyWindowEvent(DcpPresent::WindowEvent event);
     std::atomic<bool> is_open{true};
     std::atomic<bool> close_requested{false};
     std::mutex text_mutex;
@@ -75,6 +84,11 @@ private:
     void UpdateMouseCapture();
     void ReleaseMouse();
     bool TrackControllerEvent(const SDL_Event& event);
+    /// SteamOS Gamescope touch route: a screen finger becomes a DualShock 4 touchpad contact.
+    void HandleTouch(const SDL_Event& event, bool ui);
+    /// The display refresh the events reported, debounced for the present thread's vblank.
+    void FollowDisplayRefresh();
+    DcpFramePacing::RefreshFollower refresh_follower; ///< window thread
     std::unordered_map<u32, PadActivity> pad_activity; ///< window thread
     DcpCursor::State cursor; ///< window thread
     DcpMouseCapture::Tracker mouse_capture; ///< window thread

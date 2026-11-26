@@ -143,7 +143,12 @@ if ($LASTEXITCODE -ne 0) { throw 'could not compile the NpToolkit2 test' }
 $env:PATH = "$($tc.Bin);$env:PATH"
 & $exe
 $result = $LASTEXITCODE
-Remove-Item -LiteralPath $temp -Recurse -Force
+# A just-built test.exe can stay locked for a moment (an antivirus scan, the process still ending): retry, and never
+# let the cleanup of a temp folder decide the result of the checks.
+for ($attempt = 0; $attempt -lt 10 -and (Test-Path -LiteralPath $temp); ++$attempt) {
+    Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $temp) { Start-Sleep -Milliseconds 500 }
+}
 
 $python = (Get-Command python -ErrorAction SilentlyContinue)
 if ($python) {

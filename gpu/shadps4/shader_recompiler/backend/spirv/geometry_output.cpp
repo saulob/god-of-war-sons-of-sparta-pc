@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "common/gpu_trace.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/backend/spirv/geometry_output.h"
 
@@ -40,6 +41,8 @@ u32 GeometryOutputVertices(const Info& info, const RuntimeInfo& runtime_info,
                     "components; declaring {}",
                     info.pgm_hash, vertices, components,
                     profile.max_geometry_total_output_components, limited);
+        Common::GpuTrace::Record(Common::GpuTrace::Event::GeometryOutputClamp, info.pgm_hash, vertices, limited,
+                                 components);
         vertices = limited;
     }
     return vertices;

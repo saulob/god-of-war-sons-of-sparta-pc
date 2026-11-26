@@ -2,6 +2,7 @@
 // below, all of them shown to the player first; who filed it and from where stay apart, in a quota whose keys are salted
 // hashes and whose rows are gone after a day.
 import { digestsMatch, sha256Hex } from './sha256.js';
+import { analyzeSessionOutcome, SESSION_OUTCOME_RULES } from './session_outcome.js';
 
 export const INCIDENT = {
   frameChars: 160 * 1024,
@@ -256,7 +257,7 @@ export function readFeedback(msg) {
 
 // '' when no test request is open, else pending, fixed or not_fixed: the same value as feedbackOf.
 const LIST_COLUMNS = `incidents.ticket AS ticket, ms, launcher_version, game_build, game_version, cusa, operating_system, log_file,
-  crash_detected, crash_kind, last_startup_stage, device_lost, device_fault_available,
+  crash_detected, crash_kind, last_startup_stage, device_lost, device_fault_available, session_outcome,
   substr(description, 1, ${INCIDENT.previewChars}) AS preview, COALESCE(t.status, 'new') AS status,
   COALESCE(t.status_ms, ms) AS status_updated_at,
   CASE WHEN t.status = '${AWAITING_TEST}' THEN CASE WHEN t.feedback_revision = t.status_ms THEN t.feedback ELSE 'pending' END
@@ -334,6 +335,29 @@ export class IncidentDesk {
     for (const [column, type] of FEEDBACK_COLUMNS) {
       if (!have.has(column)) sql.run(`ALTER TABLE incident_tracking ADD COLUMN ${column} ${type}`);
     }
+    // The session outcome is derived from the stored log. Reports filed before it existed, or classified by older rules,
+    // are (re)classified here: in batches, so no more than a batch of logs is held at once, and only when the rules
+    // version changed, so a normal start costs one indexed count.
+    const incidentColumns = new Set(sql.all('PRAGMA table_info(incidents)').map((c) => c.name));
+    if (!incidentColumns.has('session_outcome')) {
+      sql.run(`ALTER TABLE incidents ADD COLUMN session_outcome TEXT NOT NULL DEFAULT ''`);
+    }
+    if (!incidentColumns.has('session_outcome_rules')) {
+      sql.run('ALTER TABLE incidents ADD COLUMN session_outcome_rules INTEGER NOT NULL DEFAULT 0');
+    }
+    this.reclassify();
+  }
+
+  reclassify(batch = 50) {
+    for (;;) {
+      const rows = this.sql.all('SELECT ticket, log_text FROM incidents WHERE session_outcome_rules != ? LIMIT ?',
+        SESSION_OUTCOME_RULES, batch);
+      if (!rows.length) return;
+      for (const row of rows) {
+        this.sql.run('UPDATE incidents SET session_outcome = ?, session_outcome_rules = ? WHERE ticket = ?',
+          analyzeSessionOutcome(row.log_text).key, SESSION_OUTCOME_RULES, row.ticket);
+      }
+    }
   }
 
   key(kind, value) {
@@ -357,12 +381,14 @@ export class IncidentDesk {
   file(incident, ticket, client, address, now, dump = null) {
     this.sql.run(`INSERT INTO incidents (ticket, ms, launcher_version, game_build, game_version, cusa, operating_system,
       description, log_file, log_clipped, log_text, crash_detected, crash_kind, last_startup_stage, device_lost,
-      device_lost_reason, device_fault_available, device_fault_summary, dump_available, dump_included)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ticket, now, incident.launcher_version,
+      device_lost_reason, device_fault_available, device_fault_summary, dump_available, dump_included, session_outcome,
+      session_outcome_rules)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ticket, now, incident.launcher_version,
     incident.game_build, incident.game_version, incident.cusa, incident.operating_system, incident.description,
     incident.log_file, incident.log_clipped, incident.log_text, incident.crash_detected, incident.crash_kind,
     incident.last_startup_stage, incident.device_lost, incident.device_lost_reason, incident.device_fault_available,
-    incident.device_fault_summary, incident.dump_available, incident.dump_included);
+    incident.device_fault_summary, incident.dump_available, incident.dump_included,
+    analyzeSessionOutcome(incident.log_text).key, SESSION_OUTCOME_RULES);
     this.sql.run('INSERT INTO incident_quota (client_key, address_key, ms) VALUES (?, ?, ?)', this.key('client', client),
       this.key('address', address), now);
     this.sql.run(`DELETE FROM incidents WHERE rowid IN
@@ -483,7 +509,10 @@ export class IncidentDesk {
     const row = this.claimed(claim);
     const stored = row && this.get(row.ticket);
     if (!stored) return null;
-    const { ms, ...report } = stored;
+    // The player sees what was sent; the derived outcome is for the dashboard only.
+    const { ms, session_outcome: derived, session_outcome_rules: rules, ...report } = stored;
+    void derived;
+    void rules;
     return { ...report, submitted_at: ms };
   }
 
@@ -550,6 +579,10 @@ export class IncidentDesk {
     const report = this.get(ticket);
     if (!report) return null;
     const status = this.status(ticket) ?? { status: 'new', status_updated_at: report.ms, fixed_version: '', player_message: '', player_feedback: '' };
-    return { ...report, ...status, ...this.dumpSummary(ticket) };
+    const outcome = analyzeSessionOutcome(report.log_text);
+    return {
+      ...report, ...status, ...this.dumpSummary(ticket),
+      session_outcome: outcome.key, session_outcome_label: outcome.label, session_outcome_detail: outcome.detail,
+    };
   }
 }

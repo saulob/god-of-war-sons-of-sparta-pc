@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -60,6 +62,10 @@ public:
     using DescriptorWrites = std::vector<vk::WriteDescriptorSet>;
     void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data) const;
 
+    /// dcp: notes this pipeline's shaders in the GPU crash trace (common/gpu_trace.h) for the submission being
+    /// recorded; a dispatch also passes its group counts. A few relaxed atomic stores, no allocation.
+    void TraceUse(u32 groups_x = 0, u32 groups_y = 0, u32 groups_z = 0) const;
+
 protected:
     [[nodiscard]] std::string GetDebugString() const;
 
@@ -73,6 +79,8 @@ protected:
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;
+    mutable std::atomic<bool> first_use_traced{};
+    mutable std::atomic<u64> noted_generation{};
 };
 
 } // namespace Vulkan

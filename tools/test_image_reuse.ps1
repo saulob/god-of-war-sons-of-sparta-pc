@@ -25,7 +25,7 @@ $exe = Join-Path $temp 'test_image_reuse.exe'
 & (Join-Path $tc.Bin 'clang++.exe') '--target=x86_64-w64-mingw32' '-std=gnu++23' '-Wall' '-Wextra' '-O1' '-DNOMINMAX' `
     '-Wno-deprecated-declarations' '-Wno-missing-field-initializers' '-include' (Join-Path $gpu 'shim/dcp_win_compat.h') @include `
     (Join-Path $root 'tests/image_reuse_tests.cpp') (Join-Path $gpu 'shim/common/logging/log.cpp') `
-    (Join-Path $gpu 'shim/common/assert.cpp') (Join-Path $gpu 'shim/common/device_lost.cpp') (Join-Path $gpu 'shadps4/video_core/texture_cache/aliasing.cpp') `
+    (Join-Path $gpu 'shim/common/assert.cpp') (Join-Path $gpu 'shim/common/device_lost.cpp') (Join-Path $gpu 'shim/common/gpu_trace.cpp') (Join-Path $gpu 'shadps4/video_core/texture_cache/aliasing.cpp') `
     (Join-Path $gpu 'shadps4/video_core/texture_cache/host_compatibility.cpp') "-DSOS_SOURCE_DIR=$rootText" `
     '-L' (Join-Path $prefix 'lib') '-lfmt' '-o' $exe
 if ($LASTEXITCODE -ne 0) { throw 'could not compile the image reuse test' }

@@ -13,6 +13,7 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 #include "common/types.h"
 #include "imgui/renderer/imgui_core.h"
 #include "dcp_graphics.h"
@@ -147,8 +148,10 @@ void UnregisterFaultQuery(const Instance* instance) {
 
 } // namespace
 
+using VideoCore::MemoryHeapKind;
+
 void Instance::DescribeHeaps(char* out, size_t size) const {
-    char heaps[128]{};
+    char heaps[192]{};
     char fallbacks[96]{};
     if (supports_memory_budget) {
         vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
@@ -157,8 +160,9 @@ void Instance::DescribeHeaps(char* out, size_t size) const {
         size_t used = 0;
         for (u32 heap = 0; heap < props.memoryProperties.memoryHeapCount && used + 1 < sizeof(heaps);
              ++heap) {
-            const int written = std::snprintf(heaps + used, sizeof(heaps) - used, "%sheap %u %llu/%llu MiB",
+            const int written = std::snprintf(heaps + used, sizeof(heaps) - used, "%sheap %u (%s) %llu/%llu MiB",
                                               heap ? ", " : "GPU memory: ", heap,
+                                              MemoryHeapKind(props.memoryProperties, heap),
                                               (unsigned long long)(budget.heapUsage[heap] >> 20),
                                               (unsigned long long)(budget.heapBudget[heap] >> 20));
             used = written > 0 ? std::min(sizeof(heaps) - 1, used + size_t(written)) : used;
@@ -388,6 +392,7 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
         vk::PhysicalDeviceRobustness2FeaturesEXT,
         vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT,
+        vk::PhysicalDeviceProvokingVertexFeaturesEXT,
         vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
         vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT,
         vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
@@ -489,7 +494,11 @@ bool Instance::CreateDevice() {
         fragment_shader_barycentric =
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
     }
-    provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+    // dcp: the device chain enables provokingVertexLast; a driver that lists the extension without
+    // the feature would fail device creation with VK_ERROR_FEATURE_NOT_PRESENT.
+    provoking_vertex =
+        feature_chain.get<vk::PhysicalDeviceProvokingVertexFeaturesEXT>().provokingVertexLast &&
+        add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
@@ -561,6 +570,9 @@ bool Instance::CreateDevice() {
         LOG_CRITICAL(Render_Vulkan, "Unable to find graphics and/or present queues.");
         return false;
     }
+    // dcp: the buffer cache binds its arenas on this queue (BufferCache checks it).
+    queue_sparse_binding = static_cast<bool>(family_properties[queue_family_index].queueFlags &
+                                             vk::QueueFlagBits::eSparseBinding);
 
     static constexpr std::array queue_priorities = {1.0f};
     const vk::DeviceQueueCreateInfo queue_info = {
@@ -874,6 +886,11 @@ void Instance::CollectDeviceParameters() {
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Version: {}", api_version);
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Extensions: {}", extensions);
     fmt::print("GPU: Vulkan device {} ({}, Vulkan {})\n", model_name, driver_name, api_version);
+    Common::GpuTrace::SetDeviceIdentity(
+        fmt::format("{} ({}, Vulkan {})", model_name, driver_name, api_version).c_str());
+    // dcp: driverInfo carries the Mesa version on RADV (Steam Deck); driverID names the driver.
+    fmt::print("GPU: driver {} ({}), info \"{}\"\n", vk::to_string(driver.driverID),
+               driver.driverName.data(), driver.driverInfo.data());
     std::fflush(stdout);
 }
 
@@ -885,6 +902,23 @@ void Instance::CollectPhysicalMemoryInfo() {
     physical_device.getMemoryProperties2(&props);
     const auto& memory_props = props.memoryProperties;
     const size_t num_props = memory_props.memoryHeapCount;
+    // dcp: once per device, each heap with its size, kind and budget (UMA devices such as the Steam
+    // Deck show a small device-local carve-out next to a large system heap).
+    for (u32 heap = 0; heap < memory_props.memoryHeapCount; ++heap) {
+        if (supports_memory_budget) {
+            fmt::print("GPU: heap {} ({}) size {} MiB, flags {}, budget {} MiB, used {} MiB\n", heap,
+                       MemoryHeapKind(memory_props, heap), memory_props.memoryHeaps[heap].size >> 20,
+                       vk::to_string(memory_props.memoryHeaps[heap].flags),
+                       budget.heapBudget[heap] >> 20, budget.heapUsage[heap] >> 20);
+        } else {
+            fmt::print("GPU: heap {} ({}) size {} MiB, flags {}, no budget (VK_EXT_memory_budget "
+                       "unsupported)\n",
+                       heap, MemoryHeapKind(memory_props, heap),
+                       memory_props.memoryHeaps[heap].size >> 20,
+                       vk::to_string(memory_props.memoryHeaps[heap].flags));
+        }
+    }
+    std::fflush(stdout);
     total_memory_budget = 0;
     u64 device_initial_usage = 0;
     u64 local_memory = 0;
@@ -997,6 +1031,24 @@ u64 Instance::GetDeviceMemoryBudgetNow() const {
         .pNext = &memory_budget_props,
     };
     physical_device.getMemoryProperties2(&props);
+
+    // dcp: diagnostics only, once per heap when it first goes over its budget.
+    for (u32 heap = 0; heap < props.memoryProperties.memoryHeapCount; ++heap) {
+        const bool was_over = heap_budget_tracker.IsOver(heap);
+        const bool first_over = heap_budget_tracker.Note(heap, memory_budget_props.heapUsage[heap],
+                                                         memory_budget_props.heapBudget[heap]);
+        // The GPU crash trace keeps every crossing, either way; the log line stays once per heap.
+        if (heap_budget_tracker.IsOver(heap) != was_over) {
+            Common::GpuTrace::Record(Common::GpuTrace::Event::HeapBudget, heap, memory_budget_props.heapUsage[heap],
+                                     memory_budget_props.heapBudget[heap], was_over ? 0 : 1);
+        }
+        if (first_over) {
+            LOG_WARNING(Render_Vulkan, "Heap {} ({}) went over its budget: {} MiB used of {} MiB",
+                        heap, MemoryHeapKind(props.memoryProperties, heap),
+                        memory_budget_props.heapUsage[heap] >> 20,
+                        memory_budget_props.heapBudget[heap] >> 20);
+        }
+    }
 
     u64 total_budget = 0;
     for (const size_t heap : valid_heaps) {

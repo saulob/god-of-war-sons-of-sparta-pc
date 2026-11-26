@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -228,6 +229,18 @@ void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::Descript
 
 std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* in_buffer,
                                                        u64 in_offset, const ImageInfo& info) {
+    return DetileImageFrom(nullptr, in_buffer, in_offset, info);
+}
+
+std::pair<const Buffer*, u64> TileManager::DetileImage(const BufferCache& buffer_cache,
+                                                       const VideoCore::Buffer* in_buffer,
+                                                       u64 in_offset, const ImageInfo& info) {
+    return DetileImageFrom(&buffer_cache, in_buffer, in_offset, info);
+}
+
+std::pair<const Buffer*, u64> TileManager::DetileImageFrom(const BufferCache* buffer_cache,
+                                                           const VideoCore::Buffer* in_buffer,
+                                                           u64 in_offset, const ImageInfo& info) {
     if (!info.props.is_tiled) {
         return {in_buffer, in_offset};
     }
@@ -253,6 +266,11 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
     };
 
     const auto staging = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
+    // The params copy and the staging request can wait for the GPU; faults processed then may
+    // have migrated a fully resident source arena.
+    if (buffer_cache) {
+        buffer_cache->RefreshBinding(in_buffer, in_offset);
+    }
 
     scheduler.EndRendering();
     runtime.FlushBarriers();
@@ -324,11 +342,27 @@ boost::container::small_vector<vk::BufferImageCopy, 14> TileManager::MipCopies(c
 
 void TileManager::MergeGuestPages(Image& image, const Buffer* guest, u64 guest_offset,
                                   std::span<const ByteRange> ranges) {
+    MergeGuestPagesFrom(nullptr, image, guest, guest_offset, ranges);
+}
+
+void TileManager::MergeGuestPages(const BufferCache& buffer_cache, Image& image,
+                                  const Buffer* guest, u64 guest_offset,
+                                  std::span<const ByteRange> ranges) {
+    MergeGuestPagesFrom(&buffer_cache, image, guest, guest_offset, ranges);
+}
+
+void TileManager::MergeGuestPagesFrom(const BufferCache* buffer_cache, Image& image,
+                                      const Buffer* guest, u64 guest_offset,
+                                      std::span<const ByteRange> ranges) {
     const ImageInfo& info = image.info;
     const auto guest_layout = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
 
     auto download_copies = MipCopies(image);
     TileImage(image, download_copies, guest_layout.buffer, guest_layout.offset);
+    // The staging request and the tiling params copy can wait for the GPU (see DetileImage).
+    if (buffer_cache) {
+        buffer_cache->RefreshBinding(guest, guest_offset);
+    }
 
     boost::container::small_vector<vk::BufferCopy, 16> overlay;
     for (const ByteRange& range : ranges) {

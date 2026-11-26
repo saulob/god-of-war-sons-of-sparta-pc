@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include "common/assert.h"
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 #include "common/logging/log.h"
 
 void assert_fail_impl() {
@@ -12,6 +13,8 @@ void assert_fail_impl() {
         Common::DeviceLost::Global().Observe("a GPU assertion (see the log line above)");
     }
     std::fflush(stdout);
+    // What the GPU was doing, before the stop line (printed once: a failed Vulkan call may have printed it already).
+    Common::GpuTrace::Dump("GPU assertion failed");
     std::fputs("STOP: GPU library assertion failed (see GPU log above)\n", stderr);
     std::_Exit(23);
 }

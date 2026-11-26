@@ -32,6 +32,8 @@ int dcpgpu_overlay_captures_input(void) { return 0; }
 void dcpgpu_choice_set_input(uint32_t (*read)(void)) { (void)read; }
 int dcpgpu_latency_trace_enabled(void) { return 0; }
 uint64_t dcpgpu_latency_press_ns(void) { return 0; }
+/* No touchscreen route in these runs: the pad reads only the controller and the keyboard. */
+int dcpgpu_touchscreen_sample(uint16_t *x, uint16_t *y, uint8_t *id, uint32_t *buttons) { (void)x; (void)y; (void)id; *buttons = 0; return 0; }
 void sos_keys_load(const char *file, SosKeyMap *map) { (void)file; memset(map, 0, sizeof(*map)); }
 void sos_pad_kind_publish(int pad_kind) { (void)pad_kind; }
 void runtime_history_note(const char *api, const char *library, uintptr_t caller) { (void)api; (void)library; (void)caller; }

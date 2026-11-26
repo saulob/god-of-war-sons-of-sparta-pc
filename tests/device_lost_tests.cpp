@@ -412,6 +412,9 @@ void TestSimulationSeam() {
           "SOS_SIMULATE_DEVICE_LOST parses an operation and a call count");
     Check(DL::ParseSimulation("fence", operation, calls) && operation == DL::Operation::WaitForFences && calls == 1,
           "the count defaults to the first call");
+    Check(DL::ParseSimulation("swapchain", operation, calls) && operation == DL::Operation::CreateSwapchain &&
+              std::string(DL::OperationName(DL::Operation::CreateSwapchain)) == "vkCreateSwapchainKHR",
+          "swapchain creation can be simulated and is named in the report");
     Check(!DL::ParseSimulation("submit:0", operation, calls) && !DL::ParseSimulation("bogus", operation, calls) &&
               !DL::ParseSimulation("submit:x", operation, calls) && !DL::ParseSimulation("", operation, calls),
           "a bad simulation value arms nothing");
@@ -684,6 +687,7 @@ constexpr Site Sites[] = {
     {"gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp", "presentKHR(", "Operation::QueuePresent"},
     {"gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp", "acquireNextImageKHR(", "Operation::AcquireNextImage"},
     {"gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp", "waitIdle(", "Operation::DeviceWaitIdle"},
+    {"gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp", "createSwapchainKHR(", "Operation::CreateSwapchain"},
     {"gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp", "waitForFences(", "Operation::WaitForFences"},
     {"gpu/shadps4/video_core/renderer_vulkan/vk_semaphore.cpp", "waitSemaphores(", "WaitForTick("},
     {"gpu/shadps4/video_core/renderer_vulkan/vk_semaphore.cpp", "ReadCounter(counter); }", "RefreshKnownTick("},

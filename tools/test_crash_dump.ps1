@@ -26,6 +26,7 @@ try {
     $copyFiles = @(
         'launcher/bug_report.h',
         'launcher/bug_report.cpp',
+        'launcher/session_outcome.h',
         'launcher/log_scrubber.h',
         'launcher/log_scrubber.cpp',
         'launcher/game_profile.h',
@@ -98,6 +99,11 @@ try {
         @{ Name = 'dump attachment becomes mandatory'; File = 'launcher/bug_report.cpp'; Old = '    const bool dump_valid = log.crash && CheckCrashDump(log, log.crash->path, now) == DumpProblem::kNone;'; New = '    const bool dump_valid = log.crash && CheckCrashDump(log, log.crash->path, now) == DumpProblem::kNone; if (!dump_valid) return std::nullopt;' },
         @{ Name = 'generic crash mislabeled as device lost'; File = 'launcher/bug_report.cpp'; Old = '    } else if (saw_crash_line) {'; New = '    } else if (saw_crash_line) { diag.device_lost = true; diag.device_lost_reason = "fabricated";' },
         @{ Name = 'later device-lost line replaces authoritative root cause'; File = 'launcher/bug_report.cpp'; Old = '        if (line.starts_with("GPU device lost: first detected in ")) {' + "`n" + '            if (!diag.device_lost) {'; New = '        if (line.starts_with("GPU device lost: first detected in ")) {' + "`n" + '            if (true) {' },
+        @{ Name = 'the GPU trace summary is not extracted'; File = 'launcher/bug_report.cpp'; Old = 'if (diag.gpu_trace_summary.empty() && line.starts_with(kGpuTraceSummaryMark)) {'; New = 'if (false) {' },
+        @{ Name = 'a later GPU trace summary replaces the first'; File = 'launcher/bug_report.cpp'; Old = 'if (diag.gpu_trace_summary.empty() && line.starts_with(kGpuTraceSummaryMark)) {'; New = 'if (line.starts_with(kGpuTraceSummaryMark)) {' },
+        @{ Name = 'the GPU trace summary is not bounded'; File = 'launcher/bug_report.cpp'; Old = 'BoundedSingleLine(line.substr(kGpuTraceSummaryMark.size()), kMaxTraceSummaryChars)'; New = 'std::string(line.substr(kGpuTraceSummaryMark.size()))' },
+        @{ Name = 'the trace summary is sent only with driver fault data'; File = 'launcher/bug_report.cpp'; Old = 'diag.device_lost && (diag.device_fault_available || !diag.gpu_trace_summary.empty())'; New = 'diag.device_lost && diag.device_fault_available' },
+        @{ Name = 'the trace summary pushes out the driver fault'; File = 'launcher/bug_report.cpp'; Old = 'fault.empty() ? trace : fault + "; " + trace'; New = 'trace' },
         @{ Name = 'runtime_log ignores .dmp when choosing next session number'; File = 'src/runtime_log.c'; Old = '    if (!strcmp(rest, ".log") || !strcmp(rest, ".dmp")) return number;'; New = '    if (!strcmp(rest, ".log")) return number;' }
     )
 

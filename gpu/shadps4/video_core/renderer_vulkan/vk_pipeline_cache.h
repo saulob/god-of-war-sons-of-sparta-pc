@@ -15,6 +15,7 @@
 #include "shader_recompiler/specialization.h"
 #include "video_core/pipeline_cache_policy.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/renderer_vulkan/vk_gpu_compat.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_async_compiler.h"
@@ -191,8 +192,9 @@ private:
     void ChooseWarmupMode();
     void EnableSerialBuilds(std::string_view reason);
     void PauseParallelWarmUp();
-    std::unique_ptr<GraphicsPipeline> CreateGamePipeline(
-        GraphicsPipeline::SerializationSupport& sdata);
+    /// dcp: `make` builds a pipeline the game asked for (PipelineCachePolicy::BuildGamePipeline).
+    template <typename Make>
+    auto CreateGamePipeline(std::string_view kind, Make&& make);
     struct BackgroundWarmup;
     struct WarmStage;
     void ReadWarmEntry(BackgroundWarmup& warm, std::vector<u8>&& data);
@@ -227,6 +229,7 @@ private:
     vk::UniquePipelineCache pipeline_cache;
     vk::UniquePipelineLayout pipeline_layout;
     Shader::Profile profile{};
+    GpuCompat::Capabilities gpu_caps{};
     Shader::Pools pools;
     CompilerPool<Shader::Pools> compiler_pools{8};
     std::unique_ptr<AsyncCompiler> compiler, capture_compiler;
@@ -235,7 +238,8 @@ private:
     struct WarmupPool;
     /// dcp: StartBackgroundWarmUp state; owned here, deleted by StopWarmUp.
     BackgroundWarmup* background = nullptr;
-    /// dcp: serial after a pipeline failed while warm-up threads built in parallel.
+    /// dcp: serial after a pipeline failed while warm-up threads built in parallel; the game's
+    /// own builds take game slots and go ahead of queued warm-up builds.
     PipelineCachePolicy::BuildGate build_gate;
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<AsyncGraphicsCompilation>> pending_graphics;
     tsl::robin_map<size_t, std::unique_ptr<Program>> program_cache;

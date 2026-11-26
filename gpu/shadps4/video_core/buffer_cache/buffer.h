@@ -26,6 +26,8 @@ struct VmaAllocationInfo;
 
 namespace VideoCore {
 
+struct FallbackAllocation;
+
 /// Hints and requirements for the backing memory type of a commit
 enum class MemoryType : u8 {
     DeviceLocal,  ///< Requests device local buffer.
@@ -71,6 +73,11 @@ struct UniqueBuffer {
     void Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                 VmaAllocationInfo* out_alloc_info);
 
+    /// dcp: a dedicated allocation in exactly `memory_type`, no budget check; the result is
+    /// returned, not asserted (fully resident buffer arenas try their memory types in turn).
+    vk::Result CreateInMemoryType(const vk::BufferCreateInfo& buffer_ci, u32 memory_type,
+                                  VmaAllocationInfo* out_alloc_info);
+
     void Destroy();
 
     vk::Device device;
@@ -83,6 +90,13 @@ struct UniqueBuffer {
 struct Buffer {
     explicit Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
                     MemoryType mem_type, std::string_view debug_name = "");
+
+    /// dcp: a fully resident buffer arena. Its memory types are tried in order
+    /// (allocation_fallback.h: preferred device-local, other device-local, then system memory);
+    /// only a full device memory moves on. `allocation` is what the last attempt did; the buffer
+    /// has no handle unless it succeeded.
+    explicit Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
+                    std::span<const u32> memory_types, FallbackAllocation& allocation);
 
     Buffer& operator=(const Buffer&) = delete;
     Buffer(const Buffer&) = delete;

@@ -324,8 +324,11 @@ void TestFramePacing() {
     Check(Contains(driver, "PresentsFlip(DcpSettings::Get().frame_rate.load()") && Contains(driver, "req.port->flip_rate"),
           "the driver filters flips by the setting and the port's flip rate");
     Check(Contains(driver, "EmulatorSettings.SetVblankFrequency(DcpFramePacing::GuestVblankHz(") &&
-              Contains(driver, "settings.frame_rate.load(), settings.vsync.load(), settings.display_refresh_hz.load()"),
-          "the guest vblank comes from the Frame rate setting, VSync and the display refresh");
+              Contains(driver, "DcpFramePacing::DisplayPacesPresents(settings.vsync.load(), DcpPresent::GamescopeSession());") &&
+              Contains(driver, "const int frame_rate = settings.frame_rate.load();") &&
+              Contains(driver, "const double display_hz = settings.display_refresh_hz.load();") &&
+              Contains(driver, "DcpFramePacing::GuestVblankHz(frame_rate, display_paced, display_hz)"),
+          "the guest vblank comes from the Frame rate setting, VSync (or Gamescope pacing) and the display refresh");
     Check(InOrder(driver, "SetVblankFrequency(", "if (EmulatorSettings.GetVblankFrequency() >= 120)"),
           "the vblank is chosen before the reported refresh rate");
     Check(Contains(driver, "vblank_period(1000000000 /") && Contains(driver, "EmulatorSettings.GetVblankFrequency());"),

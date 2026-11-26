@@ -32,9 +32,10 @@ try {
     $logSource = Join-Path $gpu 'shim/common/logging/log.cpp'
     $assertSource = Join-Path $gpu 'shim/common/assert.cpp'
     $lostSource = Join-Path $gpu 'shim/common/device_lost.cpp'
+    $traceSource = Join-Path $gpu 'shim/common/gpu_trace.cpp'
 
     $exe = Join-Path $temp 'shader_interface_tests.exe'
-    & $clang @flags @include $test $logSource $assertSource $lostSource '-L' (Join-Path $prefix 'lib') '-lfmt' '-o' $exe
+    & $clang @flags @include $test $logSource $assertSource $lostSource $traceSource '-L' (Join-Path $prefix 'lib') '-lfmt' '-o' $exe
     if ($LASTEXITCODE -ne 0) { throw 'could not compile the shader interface test' }
     & $exe
     $result = $LASTEXITCODE
@@ -54,7 +55,7 @@ try {
         $copy = Copy-ToWorkspace $work $policy 'shader_recompiler/runtime_info.h'
         Edit-WorkspaceText $copy $mutation.Old $mutation.New
         $mutatedExe = Join-Path $work 'shader_interface_tests.exe'
-        $build = { & $clang @flags '-w' '-I' $work @include $test $logSource $assertSource $lostSource '-L' (Join-Path $prefix 'lib') '-lfmt' '-o' $mutatedExe }
+        $build = { & $clang @flags '-w' '-I' $work @include $test $logSource $assertSource $lostSource $traceSource '-L' (Join-Path $prefix 'lib') '-lfmt' '-o' $mutatedExe }
         if (Test-MutationDetected $mutation.Name $build $mutatedExe) { $detected++ } else { $result = 1 }
     }
     Write-Host "shader interface mutations: $detected of $($mutations.Count) detected"

@@ -13,8 +13,10 @@
 #include "common/assert.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_discard_frag.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
+#include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_blend_rewrite.h"
+#include "video_core/renderer_vulkan/vk_gpu_compat.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
@@ -301,19 +303,33 @@ GraphicsPipeline::GraphicsPipeline(
     }
 
     std::array<vk::SampleCountFlagBits, AmdGpu::NUM_COLOR_BUFFERS> color_samples;
-    std::ranges::transform(key.color_samples, color_samples.begin(), [&instance](u8 num_samples) {
-        return num_samples ? LiverpoolToVK::NumSamples(num_samples, instance.GetColorSampleCounts())
-                           : vk::SampleCountFlagBits::e1;
-    });
+    std::array<u32, AmdGpu::NUM_COLOR_BUFFERS> color_sample_bits{};
+    for (u32 i = 0; i < AmdGpu::NUM_COLOR_BUFFERS; ++i) {
+        const u8 num_samples = key.color_samples[i];
+        color_samples[i] =
+            num_samples ? LiverpoolToVK::NumSamples(num_samples, instance.GetColorSampleCounts())
+                        : vk::SampleCountFlagBits::e1;
+        color_sample_bits[i] = static_cast<u32>(color_samples[i]);
+    }
+    const vk::SampleCountFlagBits depth_samples =
+        LiverpoolToVK::NumSamples(key.depth_samples, instance.GetDepthSampleCounts());
+    const bool has_depth_stencil =
+        key.z_format != AmdGpu::DepthBuffer::ZFormat::Invalid ||
+        key.stencil_format != AmdGpu::DepthBuffer::StencilFormat::Invalid;
+    // dcp: only attach VkAttachmentSampleCountInfoAMD when sample counts really differ; uniform
+    // pipelines inherit rasterizationSamples, and Steam Fossilize (SteamOS, RADV) rejects the struct.
+    const bool attach_mixed_samples = GpuCompat::NeedsMixedSamplesInfo(
+        instance.IsMixedDepthSamplesSupported(),
+        static_cast<u32>(sdata.multisampling.rasterizationSamples), color_sample_bits.data(),
+        key.num_color_attachments, has_depth_stencil, static_cast<u32>(depth_samples));
     const vk::AttachmentSampleCountInfoAMD mixed_samples = {
         .colorAttachmentCount = key.num_color_attachments,
         .pColorAttachmentSamples = color_samples.data(),
-        .depthStencilAttachmentSamples =
-            LiverpoolToVK::NumSamples(key.depth_samples, instance.GetDepthSampleCounts()),
+        .depthStencilAttachmentSamples = depth_samples,
     };
 
     const vk::PipelineRenderingCreateInfo pipeline_rendering_ci = {
-        .pNext = instance.IsMixedDepthSamplesSupported() ? &mixed_samples : nullptr,
+        .pNext = attach_mixed_samples ? &mixed_samples : nullptr,
         .colorAttachmentCount = key.num_color_attachments,
         .pColorAttachmentFormats = color_formats.data(),
         .depthAttachmentFormat = key.z_format != AmdGpu::DepthBuffer::ZFormat::Invalid
@@ -445,8 +461,7 @@ GraphicsPipeline::GraphicsPipeline(
         .layout = *pipeline_layout,
     };
 
-    const auto binary_directory = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
-        Common::ElfInfo::Instance().GameSerial() / "pipeline-binaries";
+    const auto binary_directory = Storage::PipelineBinaryDirectory();
     const auto create = [&](const vk::GraphicsPipelineCreateInfo& info, std::string_view pass) {
         auto [result, pipe] =
             CreateCachedGraphicsPipeline(device, pipeline_cache, info, key,

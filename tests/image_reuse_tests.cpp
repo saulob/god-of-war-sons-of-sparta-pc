@@ -752,7 +752,7 @@ void OwnershipWiring() {
           "download publication takes no texture cache mutex");
 
     const auto tiled_refresh = Between(cache, "bool TextureCache::RefreshDirtyPages(", "void TextureCache::PublishDownload");
-    Check(Has(tiled_refresh, "tile_manager.MergeGuestPages(image, buffer, offset, ranges)") && Has(tiled_refresh, "TakeDirty()") &&
+    Check(Has(tiled_refresh, "tile_manager.MergeGuestPages(buffer_cache, image, buffer, offset, ranges)") && Has(tiled_refresh, "TakeDirty()") &&
               tiled_refresh.find("TakeDirty()") < tiled_refresh.find("MergeGuestPages"),
           "a tiled refresh takes its dirty pages first and merges them without holding the ownership lock");
     Check(Has(eligible, "TileManager::CanMergeGuestPages(info)"), "tiled page ownership applies only to shapes the merge supports");

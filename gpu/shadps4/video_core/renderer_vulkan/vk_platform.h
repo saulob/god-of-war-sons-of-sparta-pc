@@ -34,8 +34,20 @@ vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance);
 template <typename T>
 concept VulkanHandleType = vk::isVulkanHandleType<T>::value;
 
+/// dcp: VK_EXT_debug_utils is only enabled when the instance offers it (and SteamOS / some
+/// drivers do not); its command buffer label commands are then null in the dispatcher.
+inline bool DebugLabelsAvailable() {
+    return VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdBeginDebugUtilsLabelEXT != nullptr &&
+           VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdEndDebugUtilsLabelEXT != nullptr &&
+           VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT != nullptr;
+}
+
 template <VulkanHandleType HandleType>
 void SetObjectName(vk::Device device, const HandleType& handle, std::string_view debug_name) {
+    // dcp: without VK_EXT_debug_utils the entry point is null; naming is optional.
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkSetDebugUtilsObjectNameEXT == nullptr) {
+        return;
+    }
     const vk::DebugUtilsObjectNameInfoEXT name_info = {
         .objectType = HandleType::objectType,
         .objectHandle = reinterpret_cast<u64>(static_cast<typename HandleType::NativeType>(handle)),
@@ -50,6 +62,9 @@ void SetObjectName(vk::Device device, const HandleType& handle, std::string_view
 template <VulkanHandleType HandleType, typename... Args>
 void SetObjectName(vk::Device device, const HandleType& handle, const char* format,
                    const Args&... args) {
+    if (VULKAN_HPP_DEFAULT_DISPATCHER.vkSetDebugUtilsObjectNameEXT == nullptr) {
+        return;
+    }
     const std::string debug_name = fmt::vformat(format, fmt::make_format_args(args...));
     SetObjectName(device, handle, debug_name);
 }

@@ -11,6 +11,7 @@
 
 #include "launcher_frame_loop.h"
 #include "launcher_escape.h"
+#include "launcher_input.h"
 #include "launcher_renderer.h"
 #include "launcher_startup.h"
 #include "placement.h"
@@ -67,6 +68,9 @@ public:
     // The saved placement the window was opened with, when it lay on a display.
     const std::optional<WindowPlacement>& Restored() const { return restored_; }
 
+    // The kind of the last input event (mouse, touchscreen, keyboard, gamepad): the source of a PLAY.
+    InputKind LastInput() const { return input_.last(); }
+
 private:
     struct LoopEnv;
 
@@ -96,6 +100,8 @@ private:
     SavedPlacement saved_placement_ = SavedPlacement::kNone;
     bool first_present_ = false;
     int64_t frame_begin_ns_ = 0;
+    InputTelemetry input_;
+    void NoteInput(const char* event, const std::string& detail = {}, InputKind kind = InputKind::kNone);
 };
 
 } // namespace sos

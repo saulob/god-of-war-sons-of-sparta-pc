@@ -30,11 +30,12 @@ try {
 
     $monitorHeader = Join-Path $gpu 'shim/common/device_lost.h'
     $monitorSource = Join-Path $gpu 'shim/common/device_lost.cpp'
+    $traceSource = Join-Path $gpu 'shim/common/gpu_trace.cpp' # the monitor's capture hook prints the GPU trace
     $semaphoreHeader = Join-Path $gpu 'shadps4/video_core/renderer_vulkan/vk_semaphore.h'
     $test = Join-Path $root 'tests/device_lost_tests.cpp'
 
     $exe = Join-Path $temp 'device_lost_tests.exe'
-    & $clang @flags @include $test $monitorSource '-o' $exe
+    & $clang @flags @include $test $monitorSource $traceSource '-o' $exe
     if ($LASTEXITCODE -ne 0) { throw 'could not compile the device lost test' }
     & $exe
     $result = $LASTEXITCODE
@@ -71,7 +72,7 @@ try {
         $target = @{ header = $header; monitor = $source; semaphore = $semaphore }[$mutation.File]
         Edit-WorkspaceText $target $mutation.Old $mutation.New
         $mutatedExe = Join-Path $work 'device_lost_tests.exe'
-        $build = { & $clang @flags '-w' '-I' $work @include $test $source '-o' $mutatedExe }
+        $build = { & $clang @flags '-w' '-I' $work @include $test $source $traceSource '-o' $mutatedExe }
         if (Test-MutationDetected $mutation.Name $build $mutatedExe) { $detected++ } else { $result = 1 }
     }
     Write-Host "device lost mutations: $detected of $($mutations.Count) detected"

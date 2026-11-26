@@ -132,6 +132,12 @@ private:
     void RecreateFrame(Frame* frame, u32 width, u32 height);
 
     void SetExpectedGameSize(s32 width, s32 height);
+
+    /// Present gate (swap thread): minimized, hidden or empty windows are not presented to.
+    DcpPresent::WindowVisibility GateVisibility() const;
+    bool CanPresent();
+    bool RecreateSwapchain();
+    void LogLifecycle(const char* what);
     void ReportPresentGeometry(const Frame* frame, vk::Extent2D extent, const vk::ImageBlit& blit, bool stretch,
                                bool repeated);
 
@@ -170,6 +176,8 @@ private:
     };
     std::array<FreeQueueEvent, 32> free_queue_history{};
     u32 free_queue_history_next = 0;
+    DcpPresent::PresentGate gate;          ///< swap thread
+    DcpPresent::LifecycleLog lifecycle_log; ///< swap thread
     Frame* last_submit_frame{};
     std::mutex free_mutex;
     std::condition_variable free_cv;

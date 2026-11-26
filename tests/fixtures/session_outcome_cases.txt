@@ -1,0 +1,284 @@
+# Session outcome cases shared by launcher/session_outcome.h (tests/session_diagnostics_tests.cpp) and
+# server/bug-report/src/session_outcome.js (server/bug-report/test/session_outcome.test.js). Each case is
+# "=== <name>", "expect: <key>", optionally "detail: <text the detail must contain>", then the log until the next case.
+=== SOS-VLHSWP (v0.1.0 Steam Deck log: launcher ran, no PLAY line, no closing record)
+expect: launcher_no_play
+detail: without a closing record
+[run] God of War: Sons of Sparta PC
+[run] boot (selected by the launcher)
+[run] log logs/sons_of_sparta_004.log
+CPU: AMD Custom APU 0405
+Launcher: game files in <install>: valid
+Launcher: build CUSA57767 1.00 USA (UP9000-CUSA57767_00-SONSOFSPARTAPS40)
+Launcher: settings file user/sons_of_sparta.ini
+Launcher: opening: game ready, show_launcher on
+Launcher renderer: selected=opengl requested=auto fallback=0 pinned_modules=0
+Launcher: window 1152x720 at 1.00x display scale, opengl renderer
+[Gamescope WSI] Executable name: sons_of_sparta
+Launcher: shown
+Launcher startup: total=660ms renderer=opengl sdl=246 display=0 window=0 renderer=103 ui=74 pages=205 first_present=26 shown=2 loop=0
+Updater: No update available
+Launcher performance: renderer=opengl render_hz=59.3 cpu=7.0% build=0.3ms submit=0.2ms present=16.2ms frame=16.8ms slow_presents=1 minimized=0% wakes=0
+=== launcher quit without PLAY
+expect: launcher_no_play
+detail: the launcher was closed
+Stage: launcher running started +700 ms (after launcher shown, 2 ms)
+Launcher: shown
+Launcher: closed
+Session: normal exit
+=== PLAY blocked by the graphics preflight
+expect: graphics_preflight_failed
+Launcher: shown
+Stage event: PLAY requested input=gamepad +9000 ms
+Stage: play: game files recheck started +9000 ms (after launcher running, 8000 ms)
+Stage: play: game files recheck completed in 40 ms: valid
+Stage: play: graphics preflight started +9040 ms (after play: game files recheck, 40 ms)
+Graphics: No Vulkan graphics driver was found. Install or update your graphics driver and try again.
+Stage: play: graphics preflight failed in 12 ms: this system cannot run the game
+Stage event: PLAY blocked: graphics preflight failed +9052 ms
+Stage: launcher running started +9052 ms (after play: graphics preflight, 12 ms)
+=== PLAY blocked: settings could not be saved
+expect: settings_save_failed
+Launcher: shown
+Stage event: PLAY requested input=touchscreen +5000 ms
+Stage: play: settings save started +5040 ms (after play: graphics preflight, 1 ms)
+Stage: play: settings save failed in 3 ms: the settings could not be written
+Stage event: PLAY blocked: settings save failed +5043 ms
+=== PLAY blocked: game files not ready
+expect: play_blocked
+detail: game files
+Launcher: shown
+Stage event: PLAY requested input=mouse +5000 ms
+Stage event: PLAY blocked: game files missing +5010 ms
+=== hang while the launcher closes
+expect: launcher_close_hang
+detail: watchdog: launcher destroying renderer
+Launcher: shown
+Stage event: PLAY requested input=gamepad +5000 ms
+Stage: play: settings save completed in 4 ms: saved
+Stage: play: starting started +5050 ms (after play: settings save, 4 ms)
+Stage: launcher loop ended started +5060 ms (after play: starting, 10 ms)
+Stage: launcher destroying renderer started +5070 ms (after launcher host closing, 1 ms)
+Stage watchdog: launcher destroying renderer still running after 15.0 s (expected under 15 s); last completed: launcher host closing; last checkpoint: none
+=== launcher closed, game never started
+expect: runtime_handoff_failed
+Launcher: shown
+Stage event: PLAY requested input=keyboard +5000 ms
+Stage: play: starting started +5050 ms (after play: settings save, 4 ms)
+Stage: launcher host closed completed: window, renderer and SDL released
+Launcher: closed, starting the game
+=== startup hang in Vulkan device creation
+expect: startup_hang
+detail: Vulkan device creation
+Launcher: shown
+Stage event: PLAY requested input=gamepad +5000 ms
+Launcher: closed, starting the game
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: Vulkan device creation started +6200 ms (after GPU selection, 30 ms)
+Stage watchdog: Vulkan device creation still running after 45.0 s (expected under 45 s); last completed: GPU selection; last checkpoint: none
+=== startup crash (Linux signal report)
+expect: startup_crash
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: swapchain creation started +6300 ms (after Vulkan device creation, 90 ms)
+CRASH: signal 11 (SIGSEGV) code 1
+Crash: startup phase: swapchain creation
+Crash: last completed stage: Vulkan device creation
+=== GPU assertion while starting
+expect: startup_crash
+detail: fatal stop
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: module registration started +7000 ms (after renderer initialization, 900 ms)
+STOP: GPU library assertion failed (see GPU log above)
+=== black screen: frames flipped, none presented
+expect: black_screen
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Runtime: first flip prepared
+Runtime: first flip taken
+Presenter diagnostic: no successful present since start for 20.0 s, last successful present 0, last acquire timeout, last present none, swapchain 1280x800, acquire blocked yes, 20000 ms, present blocked no
+=== black screen recovered, then a normal exit
+expect: normal_exit
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Presenter diagnostic: no successful present for 3.0 s, last successful present 120, last acquire success, last present success, swapchain 1280x800, acquire blocked no, present blocked no
+Presenter diagnostic: presenting resumed, present 121
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+Session: normal exit
+=== device lost
+expect: device_lost
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+GPU device lost: first detected in vkQueueSubmit (draw)
+Runtime: GPU device lost: the process ends with status 25
+=== memory failure before a crash
+expect: memory_failure
+Startup: game-only child process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+[Render.Vulkan] vk_instance.cpp:300: Assertion Failed! allocateMemory failed: ErrorOutOfDeviceMemory
+STOP: GPU library assertion failed (see GPU log above)
+=== crash during play (Windows report)
+expect: crash
+Startup: game-only child process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+CRASH: access violation (0xc0000005)
+  startup phase: first present
+=== normal exit after play
+expect: normal_exit
+Overlay compatibility: original game process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+Session: normal exit
+=== Steam "Exit game" during play (SDL quit)
+expect: normal_exit
+Startup: game-only child process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+Launcher: quit requested by the system (SDL quit event)
+=== log stops during play
+expect: ended_unexpectedly
+detail: without a closing record
+Startup: game-only child process
+Stage: game running started +9000 ms (after guest entry, 800 ms)
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+Runtime: something
+=== ended by SIGHUP during startup
+expect: startup_hang
+detail: SIGHUP
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: guest entry started +8000 ms (after linked modules initialization, 500 ms)
+Session: ended by signal 1 (SIGHUP) during phase: guest entry; last completed stage: linked modules initialization
+=== v0.1.0 log that played and closed (no closing record existed then): not a failure
+expect: unknown
+detail: before 0.1.1
+Launcher: shown
+Launcher: settings saved, starting the game
+Launcher: closed, starting the game
+Overlay compatibility: original game process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+Runtime: process finalizer callback reached
+=== in-process start killed before the first frame (the launcher's close line is not the game's)
+expect: startup_hang
+detail: without a closing record
+Launcher: shown
+Stage event: PLAY requested input=gamepad +5000 ms
+Launcher: closed, starting the game
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: guest entry started +8000 ms (after linked modules initialization, 500 ms)
+=== frames flipped but never presented, process killed (no watchdog line)
+expect: black_screen
+Launcher: closed, starting the game
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Stage: guest entry started +8000 ms (after linked modules initialization, 500 ms)
+Runtime: first flip prepared
+=== device lost with its GPU trace
+expect: device_lost
+detail: GPU trace: Vulkan device lost; last event: draw submit tick 812
+Stage event: Runtime handoff: the game starts in this process +5200 ms
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+GPU device lost: first detected in vkQueueSubmit (site submit), VkResult VK_ERROR_DEVICE_LOST (-4), thread 4242, draw tick 812, last submitted draw tick 811
+GPU timelines: draw submitted 811 completed 809; present submitted 300 completed 300
+GPU trace: Vulkan device lost, detected on thread 4242 (GpuCommandProcessor)
+GPU trace: summary: Vulkan device lost; last event: draw submit tick 812, 1 waits (first 299), result -4; unfinished draw tick 810 (2 unfinished), 3 pipelines: cs 0x7d39f28a, vs 0xba848b76 ps 0xb1b00b34
+GPU trace: device Test GPU (driver 1.0, Vulkan 1.3)
+GPU trace: end (4 lines)
+Device fault: unavailable (no VK_EXT_device_fault)
+Runtime: GPU device lost: first detected in vkQueueSubmit; the process ends with status 25
+=== memory failure, then a long GPU trace before the stop line
+expect: memory_failure
+detail: GPU trace: GPU assertion failed; last event: blocking wait for draw tick 5
+Startup: game-only child process
+Startup: first present +9000 ms (process +9100 ms)
+Runtime: first present
+[Render.Vulkan] vk_instance.cpp:300: Assertion Failed! allocateMemory failed: ErrorOutOfDeviceMemory
+GPU trace: GPU assertion failed, detected on thread 77 (unnamed)
+GPU trace: summary: GPU assertion failed; last event: blocking wait for draw tick 5 (completed 4); no unfinished draw tick, 0 pipelines since the last submission: none
+GPU trace:   #1 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #2 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #3 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #4 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #5 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #6 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #7 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #8 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #9 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #10 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #11 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #12 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #13 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #14 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #15 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #16 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #17 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #18 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #19 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #20 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #21 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #22 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #23 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #24 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #25 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #26 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #27 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #28 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #29 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #30 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #31 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #32 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #33 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #34 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #35 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #36 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #37 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #38 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #39 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #40 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #41 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #42 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #43 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #44 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace:   #45 tid 77 blocking wait for draw tick 5 (completed 4)
+GPU trace: end (48 lines)
+STOP: GPU library assertion failed (see GPU log above)
+=== log 192 (Windows, in-process PLAY, played and closed): the loading screen is not the start of play
+expect: normal_exit
+Launcher: shown
+Stage event: PLAY requested input=mouse +12988 ms
+Stage: play: starting started +13089 ms (after play: settings save, 2 ms)
+Stage: launcher loop ended started +13101 ms (after play: starting, 12 ms)
+Stage: launcher renderer teardown started +13101 ms (after launcher loop ended, 0 ms)
+Stage: launcher host closed completed in 0 ms: window, renderer and SDL released
+Launcher: closed, starting the game
+Stage: launcher returned started +13136 ms (after launcher host closed, 0 ms)
+Stage event: Launcher result: play +13136 ms
+Stage event: Runtime handoff: the game starts in this process +13136 ms
+Overlay compatibility: original game process
+Stage: first present started +14967 ms (after imports resolved, 7 ms)
+Startup: first present +1985 ms (process +14967 ms)
+Stage: guest entry started +15517 ms (after linked modules initialization, 3 ms)
+Runtime: first present
+Stage: game running started +16200 ms (after guest entry, 683 ms)
+Stage: runtime window closed started +87316 ms (after game running, 71116 ms)
+Session: normal exit
+Stage: process exit started +87317 ms (after runtime window closed, 0 ms)
+=== crash after the loading screen, before the first game frame, is a startup crash
+expect: startup_crash
+Stage event: Runtime handoff: the game starts in this process +13136 ms
+Stage: first present started +14967 ms (after imports resolved, 7 ms)
+Startup: first present +1985 ms (process +14967 ms)
+Stage: guest entry started +15517 ms (after linked modules initialization, 3 ms)
+CRASH: access violation (0xc0000005)
+  startup phase: guest entry
+=== killed after the loading screen, before the first game frame, is a startup hang
+expect: startup_hang
+detail: without a closing record
+Stage event: Runtime handoff: the game starts in this process +13136 ms
+Startup: first present +1985 ms (process +14967 ms)
+Stage: guest entry started +15517 ms (after linked modules initialization, 3 ms)
+=== empty log
+expect: unknown
+[run] God of War: Sons of Sparta PC

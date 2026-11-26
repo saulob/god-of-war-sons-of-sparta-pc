@@ -10,6 +10,7 @@
 
 #include "game_profile.h"
 #include "localization/ui_text.h"
+#include "session_outcome.h"
 #include "utf8.h"
 
 #ifdef _WIN32
@@ -34,6 +35,8 @@ constexpr size_t kLogTailBytes = 256 * 1024;
 constexpr size_t kMaxReasonChars = 384;
 constexpr size_t kMaxFaultSummaryChars = 512;
 constexpr size_t kMaxStageChars = 96;
+constexpr size_t kMaxTraceSummaryChars = 200;
+constexpr std::string_view kGpuTraceSummaryMark = "GPU trace: summary: ";
 
 constexpr std::string_view kGameStartMarks[] = {"Launcher: the game process continues this log", "Launcher: closed",
                                                 "Runtime: Unity bootstrap entered", "GPU: window and presenter ready",
@@ -326,6 +329,19 @@ LogDiagnostics AnalyzeLogDiagnostics(std::string_view log_text) {
             diag.last_startup_stage = BoundedSingleLine(line.substr(17), kMaxStageChars);
             continue;
         }
+        if (line.starts_with("Crash: startup phase: ")) {
+            diag.last_startup_stage = BoundedSingleLine(line.substr(22), kMaxStageChars);
+            continue;
+        }
+        if (line.starts_with("Stage: ")) {
+            // "Stage: <name> started +T ms (after ...)": the stage in progress when the log ends.
+            std::string_view rest = line.substr(7);
+            const size_t started = rest.find(" started +");
+            if (started != std::string_view::npos && started > 0) {
+                diag.last_startup_stage = BoundedSingleLine(rest.substr(0, started), kMaxStageChars);
+            }
+            continue;
+        }
         if (const size_t phase_at = line.find("phase="); phase_at != std::string_view::npos) {
             std::string_view rest = line.substr(phase_at + 6);
             const size_t comma = rest.find(',');
@@ -349,6 +365,12 @@ LogDiagnostics AnalyzeLogDiagnostics(std::string_view log_text) {
                 diag.device_lost = true;
                 diag.device_lost_reason = BoundedSingleLine(line, kMaxReasonChars);
             }
+            continue;
+        }
+        // The GPU trace's own summary (gpu/shim/common/gpu_trace.cpp): its last event and the pipelines the GPU had not
+        // finished. The trace prints once per process, so the first summary is the one of the failure.
+        if (diag.gpu_trace_summary.empty() && line.starts_with(kGpuTraceSummaryMark)) {
+            diag.gpu_trace_summary = BoundedSingleLine(line.substr(kGpuTraceSummaryMark.size()), kMaxTraceSummaryChars);
             continue;
         }
         if (diag.device_lost && diag.device_lost_timelines.empty() && line.starts_with("GPU timelines:")) {
@@ -387,6 +409,13 @@ LogDiagnostics AnalyzeLogDiagnostics(std::string_view log_text) {
             combined += fault_parts[i];
         }
         diag.device_fault_summary = BoundedSingleLine(combined, kMaxFaultSummaryChars);
+    }
+    // A device loss carries the GPU trace summary in its fault details (no new report field: the deployed service
+    // refuses unknown ones). The driver's fault keeps the first part; the trace always has its room at the end.
+    if (diag.device_lost && !diag.gpu_trace_summary.empty()) {
+        const std::string trace = "GPU trace: " + diag.gpu_trace_summary;
+        const std::string fault = BoundedSingleLine(diag.device_fault_summary, kMaxFaultSummaryChars - trace.size() - 2);
+        diag.device_fault_summary = BoundedSingleLine(fault.empty() ? trace : fault + "; " + trace, kMaxFaultSummaryChars);
     }
 
     if (diag.device_lost && !diag.device_lost_timelines.empty()) {
@@ -632,7 +661,7 @@ std::optional<BugReportPackage> BuildBugReportPackage(std::string_view descripti
     const std::string scrubbed_reason =
         diag.device_lost ? BoundedSingleLine(ScrubText(diag.device_lost_reason, private_facts), kMaxReasonChars) : std::string();
     const std::string scrubbed_fault =
-        diag.device_lost && diag.device_fault_available
+        diag.device_lost && (diag.device_fault_available || !diag.gpu_trace_summary.empty())
             ? BoundedSingleLine(ScrubText(diag.device_fault_summary, private_facts), kMaxFaultSummaryChars)
             : std::string();
     const std::string stage = BoundedSingleLine(ScrubText(diag.last_startup_stage, private_facts), kMaxStageChars);
@@ -672,6 +701,12 @@ std::string BugReportPreviewText(const BugReportPackage& package) {
     std::string out;
     for (const BugReportField& field : package.fields) {
         const std::string label = Tr(std::string(field.label));
+        if (field.key == kLogTextKey) {
+            // Derived from the log text on both ends (launcher and dashboard), never sent as a field of its own.
+            const SessionOutcome outcome = AnalyzeSessionOutcome(field.value);
+            out += std::string(Tr("Session outcome")) + ": " + Tr(outcome.label) +
+                   (outcome.detail.empty() ? std::string() : " (" + outcome.detail + ")") + "\n";
+        }
         if (field.key == kDescriptionKey || field.key == kLogTextKey) {
             out += (out.empty() ? "" : "\n") + label + ":\n" + field.value + "\n";
             if (field.key == kDescriptionKey) out += "\n";

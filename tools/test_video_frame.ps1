@@ -35,7 +35,7 @@ try {
     $header = Join-Path $gpu 'shadps4/core/libraries/videodec/video_utils.h'
     $test = Join-Path $root 'tests/video_frame_tests.cpp'
     $support = @((Join-Path $gpu 'shim/common/logging/log.cpp'), (Join-Path $gpu 'shim/common/assert.cpp'),
-        (Join-Path $gpu 'shim/common/device_lost.cpp'))
+        (Join-Path $gpu 'shim/common/device_lost.cpp'), (Join-Path $gpu 'shim/common/gpu_trace.cpp'))
     $link = @('-L', (Join-Path $prefix 'lib'), '-lfmt')
 
     $exe = Join-Path $temp 'video_frame_tests.exe'

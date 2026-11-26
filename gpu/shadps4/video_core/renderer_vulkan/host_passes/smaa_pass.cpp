@@ -341,7 +341,7 @@ void SmaaPass::Draw(vk::CommandBuffer cmdbuf, u32 pass, Target& target, vk::Exte
 
 vk::ImageView SmaaPass::Render(vk::CommandBuffer cmdbuf, Scheduler& scheduler, vk::ImageView input,
                                vk::Extent2D size, bool input_linear) {
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && Vulkan::DebugLabelsAvailable()) {
         cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{.pLabelName = "Host/SMAA"});
     }
     if (!lookup_ready) {
@@ -374,7 +374,7 @@ vk::ImageView SmaaPass::Render(vk::CommandBuffer cmdbuf, Scheduler& scheduler, v
     Draw(cmdbuf, 2, output, size,
          {sampled(*linear_sampler, input), sampled(*linear_sampler, *weights.view)}, input_linear);
     PipelineBarrier(cmdbuf, {AttachmentToRead(output.image, vk::PipelineStageFlagBits2::eAllCommands)});
-    if (EmulatorSettings.IsVkHostMarkersEnabled()) {
+    if (EmulatorSettings.IsVkHostMarkersEnabled() && Vulkan::DebugLabelsAvailable()) {
         cmdbuf.endDebugUtilsLabelEXT();
     }
     return *output.view;

@@ -92,6 +92,7 @@ public:
         auto& info = Common::ElfInfo::Instance();
         info.initialized = true;
         info.game_serial = config.serial ? config.serial : "UNKNOWN";
+        info.app_ver = config.version ? config.version : "";
         info.title = config.title ? config.title : "";
         info.sdk_ver = config.sdk_version;
         info.psf_attributes.raw = config.psf_attributes;
@@ -257,6 +258,7 @@ extern "C" int dcpgpu_init(const DcpGpuConfig* config) {
         }
         sos_startup_phase("runtime window closed");
         LOG_INFO(Frontend, "Window closed by user");
+        dcpgpu_touch_release(); // Gamescope touch mode back to each root: no destructor runs after _Exit
         runtime_log_mark_clean_exit();
         runtime_log_finalize();
         runtime_log_flush();

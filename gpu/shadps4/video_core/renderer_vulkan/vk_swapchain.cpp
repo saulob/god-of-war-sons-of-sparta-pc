@@ -8,6 +8,7 @@
 #include <vector>
 #include "common/assert.h"
 #include "common/device_lost.h"
+#include "common/gpu_trace.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "dcp_present.h"
@@ -63,15 +64,57 @@ Swapchain::~Swapchain() {
     instance.GetInstance().destroySurfaceKHR(surface);
 }
 
-bool Swapchain::SurfaceHasArea() const {
+DcpPresent::SurfaceState Swapchain::QuerySurface() const {
     const auto [result, capabilities] = instance.GetPhysicalDevice().getSurfaceCapabilitiesKHR(surface);
-    return result != vk::Result::eSuccess ||
-           DcpPresent::SurfaceHasArea(capabilities.currentExtent.width, capabilities.currentExtent.height,
-                                      capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
+    return DcpPresent::ClassifySurface(static_cast<int>(result), capabilities.currentExtent.width,
+                                      capabilities.currentExtent.height, capabilities.maxImageExtent.width,
+                                      capabilities.maxImageExtent.height);
+}
+
+bool Swapchain::SurfaceHasArea() const {
+    // A lost surface is not an empty one: the recreation replaces it.
+    return QuerySurface() != DcpPresent::SurfaceState::NoArea;
+}
+
+// dcp: VK_ERROR_SURFACE_LOST_KHR means the VkSurfaceKHR is dead for good while the window still exists; recreating the
+// swapchain on it can only fail again. The old swapchain goes first (it belongs to the surface), then the surface, and a
+// new surface is made for the same window the way the constructor made the first one. Present thread, outside the submit
+// lock (Destroy takes it).
+void Swapchain::ReplaceSurface() {
+    if (!surface_recovery.Lost()) {
+        UNREACHABLE_MSG("The window surface was lost {} times in a row without a frame reaching the screen "
+                        "(VK_ERROR_SURFACE_LOST_KHR, window {}x{}); the window system keeps destroying it",
+                        surface_recovery.InARow() + 1, window.GetWidth(), window.GetHeight());
+    }
+    std::printf("Swapchain: the window surface was lost (VK_ERROR_SURFACE_LOST_KHR); replacing it, %u in a row, "
+                "%u so far\n",
+                surface_recovery.InARow(), surface_recovery.Replaced());
+    Destroy();
+    instance.GetInstance().destroySurfaceKHR(surface);
+    surface = CreateSurface(instance.GetInstance(), window);
+    surface_lost = false;
+    const auto [support_result, supported] =
+        instance.GetPhysicalDevice().getSurfaceSupportKHR(instance.GetPresentQueueFamilyIndex(), surface);
+    ASSERT_MSG(support_result == vk::Result::eSuccess && supported,
+               "The replacement window surface cannot be presented to from queue family {}: {}",
+               instance.GetPresentQueueFamilyIndex(), vk::to_string(support_result));
+    // The overlay, the post-processing pass and ImGui were built for the first surface's format.
+    const vk::SurfaceFormatKHR format = surface_format;
+    FindPresentFormat();
+    ASSERT_MSG(surface_format == format, "The replacement window surface offers {} {} instead of {} {}",
+               vk::to_string(surface_format.format), vk::to_string(surface_format.colorSpace),
+               vk::to_string(format.format), vk::to_string(format.colorSpace));
+    FindPresentMode();
 }
 
 bool Swapchain::Create(u32 width_, u32 height_) {
-    if (!SurfaceHasArea()) {
+    DcpPresent::SurfaceState state = QuerySurface();
+    if (surface_lost || state == DcpPresent::SurfaceState::Lost) {
+        ReplaceSurface();
+        state = QuerySurface();
+    }
+    if (state != DcpPresent::SurfaceState::HasArea) {
+        surface_lost = state == DcpPresent::SurfaceState::Lost;
         health.RequestRecreation();
         return false;
     }
@@ -112,10 +155,28 @@ bool Swapchain::Create(u32 width_, u32 height_) {
         .oldSwapchain = nullptr,
     };
 
-    auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
-    ReportIfDeviceLost(swapchain_result);
-    ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
-               vk::to_string(swapchain_result));
+    vk::SwapchainKHR chain{};
+    const auto swapchain_result = vk::Result(Common::DeviceLost::CallWhileHealthy(
+        Common::DeviceLost::Global(), Common::DeviceLost::Operation::CreateSwapchain, "swapchain", 0,
+        Common::DeviceLost::Timeline::Present, [&] {
+            auto [result, created] = instance.GetDevice().createSwapchainKHR(swapchain_info);
+            chain = created;
+            return result;
+        }));
+    if (swapchain_result == vk::Result::eErrorSurfaceLostKHR) {
+        // The old swapchain is already gone; the next recreation replaces the surface.
+        surface_lost = true;
+        health.RequestRecreation();
+        return false;
+    }
+    if (swapchain_result != vk::Result::eSuccess) {
+        Common::GpuTrace::VulkanFailure("swapchain", s32(swapchain_result), 0, Common::DeviceLost::Timeline::Present);
+    }
+    ASSERT_MSG(swapchain_result == vk::Result::eSuccess,
+               "Failed to create swapchain: {} ({}x{}, {} images, {} {}, {}, transform {}, alpha {})",
+               vk::to_string(swapchain_result), extent.width, extent.height, image_count,
+               vk::to_string(format.format), vk::to_string(format.colorSpace), vk::to_string(present_mode),
+               vk::to_string(transform), vk::to_string(composite_alpha));
     swapchain = chain;
 
     SetupImages();
@@ -168,10 +229,12 @@ bool Swapchain::AcquireNextImage() {
         }));
 
     ReportResult(false, result);
+    surface_lost |= result == vk::Result::eErrorSurfaceLostKHR;
     const DcpPresent::SwapResult kind = AcquireResult(result);
     if (kind == DcpPresent::SwapResult::Failure) {
         LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}",
                      vk::to_string(result));
+        Common::GpuTrace::VulkanFailure("acquire", s32(result), 0, Common::DeviceLost::Timeline::Present);
         UNREACHABLE();
     }
     const DcpPresent::SwapStep step = health.Acquire(kind);
@@ -192,10 +255,18 @@ bool Swapchain::Present() {
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::QueuePresent, "present", 0,
         Common::DeviceLost::Timeline::Present, [&] { return instance.GetPresentQueue().presentKHR(present_info); }));
     ReportResult(true, result);
+    surface_lost |= result == vk::Result::eErrorSurfaceLostKHR;
     const DcpPresent::SwapResult kind = PresentResult(result);
+    if (kind == DcpPresent::SwapResult::Failure) {
+        Common::GpuTrace::VulkanFailure("present", s32(result), 0, Common::DeviceLost::Timeline::Present);
+    }
     ASSERT_MSG(kind != DcpPresent::SwapResult::Failure, "Swapchain presentation failed: {}",
                vk::to_string(result));
-    LogKeptSuboptimal(kind, health.Present(kind));
+    const DcpPresent::SwapStep step = health.Present(kind);
+    if (step.usable) {
+        surface_recovery.Presented();
+    }
+    LogKeptSuboptimal(kind, step);
 
     frame_index = (frame_index + 1) % image_count;
 
@@ -223,6 +294,7 @@ DcpPresent::SwapResult Swapchain::PresentResult(vk::Result result) {
         return DcpPresent::SwapResult::Success;
     case vk::Result::eSuboptimalKHR:
         return DcpPresent::SwapResult::Suboptimal;
+    case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
         return DcpPresent::SwapResult::OutOfDate;
     default:
@@ -264,7 +336,9 @@ void Swapchain::ReportResult(bool presenting, vk::Result result) {
     const int code = static_cast<int>(result);
     auto& progress = DcpPresent::g_progress;
     (presenting ? progress.last_present : progress.last_acquire) = code;
-    if (presenting && PresentResult(result) != DcpPresent::SwapResult::Failure) {
+    // Queued for display: SUCCESS or SUBOPTIMAL. OUT_OF_DATE and a lost surface show nothing.
+    const DcpPresent::SwapResult kind = presenting ? PresentResult(result) : DcpPresent::SwapResult::Failure;
+    if (kind == DcpPresent::SwapResult::Success || kind == DcpPresent::SwapResult::Suboptimal) {
         progress.presented.fetch_add(1, std::memory_order_relaxed);
         DcpStartupWatch::Presented();
     }
@@ -409,7 +483,9 @@ void Swapchain::Destroy() {
 
     if (swapchain) {
         device.destroySwapchainKHR(swapchain);
+        swapchain = nullptr; // a failed creation leaves none behind, and must not destroy this one twice
     }
+    images.clear();
 
     for (const auto& sem : image_acquired) {
         device.destroySemaphore(sem);

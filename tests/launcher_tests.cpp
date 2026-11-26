@@ -597,7 +597,7 @@ void TestProfile() {
 void TestLauncherSource() {
     const std::string source = ReadFile(kRoot / "launcher" / "launcher.cpp");
     const auto has = [&](std::string_view needle, const std::string& what) { Check(Contains(source, needle), what); };
-    has("c.hints = \"Enter  Play     Alt+F4  Quit     Ctrl+S  Save\";", "footer hints are exact");
+    has("c.hints = kLauncherHints;", "footer hints come from launcher_input.h (Start is PLAY too)");
     has("c.note = \"Play applies the changes. Save keeps them without starting.\";", "footer note is exact");
     has("c.sponsor = {\"Sponsor on GitHub\", kSponsorUrl, sponsor_icon_};", "footer Sponsor on GitHub configured");
     has("c.save_on_play = false;", "Save and Play are separate");
@@ -688,7 +688,21 @@ void TestDocumentation() {
     Check(Contains(readme, "## Hermes Mode"), "README has a Hermes Mode section");
     Check(Contains(readme, "Unlock Hermes Mode") && Contains(readme, "speedrun mode"),
           "README explains the Hermes Mode option and the original mode");
-    Check(Contains(readme, "disabled by default"), "README states the Hermes Mode option is off by default");
+    {
+        // The Hermes section must state the default the code actually has (kDefaults, "0"): off. Wording may vary
+        // ("off by default" or "disabled by default"), but it must say so inside the Hermes Mode section itself.
+        const size_t from = readme.find("## Hermes Mode");
+        const size_t to = from == std::string::npos ? from : readme.find("\n## ", from + 3);
+        const std::string section = from == std::string::npos ? std::string() : readme.substr(from, to == std::string::npos ? std::string::npos : to - from);
+        std::string hermes_default;
+        for (const ManagedSetting& setting : ManagedSettings()) {
+            if (setting.key == kUnlockHermesModeKey) hermes_default = setting.default_value;
+        }
+        const bool says_off = Contains(section, "off by default") || Contains(section, "disabled by default");
+        const bool says_on = Contains(section, "on by default") || Contains(section, "enabled by default");
+        Check(hermes_default == "0" && says_off && !says_on,
+              "README's Hermes Mode section states the option is off by default, as the code default is");
+    }
     Check(Contains(readme, "cannot be changed afterward"), "README states the save's mode is fixed");
     Check(Contains(readme, "## The Pit of Agonies") && Contains(readme, "Unlock The Pit Early"), "README explains The Pit option");
 }

@@ -45,6 +45,14 @@
 #include <unistd.h>
 #include <signal.h>
 #include <ucontext.h>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include "fault_signal.h"
+#include "sos_video_backend.h"
+#endif
+#include "system_report.h"
+#ifndef SOS_PORT_VERSION
+#define SOS_PORT_VERSION "unknown"
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -323,6 +331,12 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
     return patched;
 }
 #else
+/* A library's file name without its folder: the folder may name the player's home. */
+static const char *base_name(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
 static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
     if (sig == SIGSEGV && si) {
         const uintptr_t fault_address = (uintptr_t)si->si_addr;
@@ -368,18 +382,57 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
             }
         }
     }
-    signal(sig, SIG_DFL);
-    raise(sig);
+    /* Not recoverable: one report in the session log, then the process ends by this signal (wait status and core dump
+     * policy as the system expects). Nothing here may call exit or _exit. */
+    if (!sos_fault_begin()) sos_fault_end(sig);
+    runtime_log_mark_crash();
+    /* Whatever happens below (a full log pipe when the faulting thread is the log thread, the loader lock in dladdr or
+     * the unwinder), the process ends by this signal within 5 s: the core dump is never traded for a hang. */
+    sos_fault_arm_deadline(sig, 5);
+    /* 1. The essential report, async-signal-safe only, then drained into the log file before anything that can block. */
+    sos_fault_write_header(2, sig, si);
+    sos_fault_write_context(2);
+    const uintptr_t rip = uc_void ? (uintptr_t)((ucontext_t *)uc_void)->uc_mcontext.gregs[REG_RIP] : 0;
+    const int guest = image && rip - (uintptr_t)image < image_size;
+    sos_fault_write_location(2, (unsigned long)rip, (unsigned long)(uintptr_t)(si ? si->si_addr : NULL), guest,
+                             guest ? (unsigned long)(rip - (uintptr_t)image) : 0);
+    runtime_log_drain();
+    /* 2. Best effort, still under the deadline: dladdr and the unwinder take the dynamic loader's lock (a fault during
+     * another thread's dlopen would block here) and snprintf is not async-signal-safe. The process is ending either way. */
+    char line[512];
+    Dl_info where;
+    if (!guest && rip && dladdr((void *)rip, &where) && where.dli_fname) {
+        snprintf(line, sizeof(line), "Crash: host fault in %s+0x%lx (%s)\n", base_name(where.dli_fname),
+                 (unsigned long)(rip - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?");
+        const ssize_t written = write(2, line, strlen(line));
+        (void)written;
+    }
+    {
+        char graphics[256];
+        dcpgpu_first_frame_summary(graphics, sizeof(graphics));
+        snprintf(line, sizeof(line), "Crash: graphics progress: %s\n", graphics);
+        const ssize_t written = write(2, line, strlen(line));
+        (void)written;
+    }
+    /* Host call chain (frames with unwind information; guest frames end it). */
+    void *frames[32];
+    const int depth = backtrace(frames, 32);
+    for (int i = 1; i < depth; ++i) {
+        if (dladdr(frames[i], &where) && where.dli_fname)
+            snprintf(line, sizeof(line), "  #%d %s+0x%lx (%s)\n", i, base_name(where.dli_fname),
+                     (unsigned long)((uintptr_t)frames[i] - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?");
+        else
+            snprintf(line, sizeof(line), "  #%d %p\n", i, frames[i]);
+        const ssize_t written = write(2, line, strlen(line));
+        (void)written;
+    }
+    runtime_log_drain();
+    sos_fault_end(sig);
 }
 
 static void install_posix_fault_handlers(void) {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = posix_fault_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGILL, &sa, NULL);
+    if (!sos_fault_install(posix_fault_handler)) puts("Crash handler: a fatal signal handler could not be installed");
+    sos_fault_install_termination();
 }
 #endif
 
@@ -670,6 +723,11 @@ int main(int argc, char **argv) {
     if (app0) printf("[run] app0 %s\n[run] user %s\n", app0, user_dir);
     atexit(runtime_log_flush);
     runtime_log_install_cleanup();
+    /* Stage lines are pushed into the log pipe at once (stdout is unbuffered; the log thread writes it to the file without
+     * delay). They never wait for the file like runtime_log_flush does: phases change on the swap, window and guest
+     * threads, and a full wait there could stall a frame or, after the log is released at exit, every flush for 2 s.
+     * Fatal paths still drain the log themselves. A phase that lasts too long is reported. */
+    sos_startup_watchdog_start();
 
     /* The build tools rebuild the installed game's image from its prepared tree; the launcher owns the installation. */
     if (prepare_view) {
@@ -697,6 +755,11 @@ int main(int argc, char **argv) {
 #endif
 
     log_cpu();
+    if (!prepare_view) sos_system_report_log(SOS_PORT_VERSION);
+#ifndef _WIN32
+    /* Steam on a Wayland desktop: X11 first, so Steam Input applies the game's layout (logged once). */
+    if (!cpu_only && !check_imports && !prepare_view) sos_video_backend_prepare(1);
+#endif
     runtime_memory_reserve();
 #ifdef _WIN32
     runtime_thread_reserve_tls();
@@ -727,7 +790,15 @@ int main(int argc, char **argv) {
         sos_startup_phase("launcher handoff");
         const SosLauncherResult launched = sos_launcher_run(&launcher);
         sos_startup_phase("launcher returned");
-        if (launched == SOS_LAUNCHER_PLAY) sos_startup_milestone("launcher closed");
+        sos_startup_event("Launcher result: %s", sos_launcher_result_name(launched));
+        if (launched == SOS_LAUNCHER_PLAY) {
+            sos_startup_milestone("launcher closed");
+            sos_startup_event("Runtime handoff: the game starts in this process");
+        }
+#ifndef _WIN32
+        /* SDL or a graphics library may have replaced them while the launcher ran. */
+        install_posix_fault_handlers();
+#endif
         runtime_log_set_detailed(sos_detailed_logging(settings_file));
         if (launched == SOS_LAUNCHER_QUIT) {
             runtime_log_mark_clean_exit();
@@ -771,9 +842,14 @@ int main(int argc, char **argv) {
             snprintf(icons_key, sizeof(icons_key), "%s-%s", icons_build.title_id, icons_build.version);
             icons_supported = sos_controller_prompts_supported(icons_key);
         }
-        if (!check_imports && !cpu_only)
+        if (!check_imports && !cpu_only) {
+            /* A first run rewrites the icon bundle (long, legitimate): its own phase, which the watchdog never reports. */
+            sos_startup_phase("controller icon preparation");
             sos_prepare_controller_icons(app0, paths.image_dir, sos_controller_prompts_from_file(settings_file), icons_supported,
                                          &controller_icons);
+            sos_startup_stage_result("controller icon preparation", 1, "%s",
+                                     controller_icons.assets[0] ? "prepared copies in use" : "game files in use");
+        }
         for (const char *line = controller_icons.report; *line;) {
             const char *end = strchr(line, '\n');
             const int length = end ? (int)(end - line) : (int)strlen(line);
@@ -962,9 +1038,11 @@ int main(int argc, char **argv) {
         uint64_t sdk = 0;
         memcpy(&sdk, image + procparam + 16, 8);
         const uint32_t gpu_features = sos_skip_intro_supported(paths.image_dir) ? DCP_GPU_FEATURE_SKIP_INTRO : 0;
+        SosGameBuild cache_build; /* the pipeline cache is kept per game build */
+        const char *game_version = sos_game_build(paths.image_dir, &cache_build) ? cache_build.version : "";
         DcpGpuConfig gpu = { "God of War: Sons of Sparta", "CUSA57767", user_dir, settings_file,
                              (uint32_t)sdk, 0, 1920, 1080, gpu_features, render_target.display_width,
-                             render_target.display_height };
+                             render_target.display_height, game_version };
         sos_startup_phase("renderer initialization");
         if (dcpgpu_available() && dcpgpu_init(&gpu) == 0) {
             gpu_enabled = 1;

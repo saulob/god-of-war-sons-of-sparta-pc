@@ -1265,7 +1265,8 @@ void TextureCache::RefreshImage(Image& image) {
 
     const auto [in_buffer, in_offset] =
         buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
-    const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
+    const auto [buffer, offset] =
+        tile_manager.DetileImage(buffer_cache, in_buffer, in_offset, image.info);
     for (auto& copy : image_copies) {
         copy.bufferOffset += offset;
     }
@@ -1461,7 +1462,7 @@ bool TextureCache::RefreshDirtyPages(Image& image) {
             scheduler.EndRendering();
             const auto [buffer, offset] =
                 buffer_cache.ObtainBufferForImage(info.guest_address, info.guest_size);
-            tile_manager.MergeGuestPages(image, buffer, offset, ranges);
+            tile_manager.MergeGuestPages(buffer_cache, image, buffer, offset, ranges);
         }
         return true;
     }

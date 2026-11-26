@@ -107,6 +107,17 @@ typedef enum {
     SOS_LAUNCHER_GAME_STARTED = 3 /* game_process: the game process exists, suspended; this process ends */
 } SosLauncherResult;
 
+/* The result's name for the log ("Launcher result: play"), by value, never by array position. */
+static inline const char *sos_launcher_result_name(SosLauncherResult result) {
+    switch (result) {
+    case SOS_LAUNCHER_PLAY: return "play";
+    case SOS_LAUNCHER_QUIT: return "quit";
+    case SOS_LAUNCHER_BLOCKED: return "blocked";
+    case SOS_LAUNCHER_GAME_STARTED: return "game process started";
+    }
+    return "unknown";
+}
+
 /* Shows the launcher when its rules say so (game files not ready, "Show this launcher" on, or Shift held) and returns
  * once the player pressed Play or quit. Returns SOS_LAUNCHER_PLAY at once when it is not shown.
  * While check_graphics fails, Play is refused: the launcher says why and stays open. A launcher that is not shown

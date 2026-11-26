@@ -45,6 +45,11 @@ public:
     std::chrono::nanoseconds GetTotalWait() const {
         return balance.Balance();
     }
+
+    /// A new interval from the next frame on, without a catch-up burst (PacingBalance::Retime).
+    void Retime(std::chrono::nanoseconds target_interval) {
+        balance.Retime(target_interval);
+    }
 };
 
 std::string GetCurrentThreadName();

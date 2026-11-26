@@ -10,6 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Serialization {
@@ -75,7 +76,7 @@ struct Archive {
     }
 
     Archive() = default;
-    explicit Archive(std::vector<u8>&& v) : container{v} {}
+    explicit Archive(std::vector<u8>&& v) : container{std::move(v)} {}
 
 private:
     size_t offset{};
