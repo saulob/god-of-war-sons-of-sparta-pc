@@ -20,6 +20,14 @@ size_t isa_emulate(const uint8_t *code, uint64_t rip, uint64_t gpr[16], uint64_t
 enum { ISA_INSERTQ_REWRITE_MAX = 160 };
 size_t isa_insertq_rewrite(const uint8_t *code, uint8_t *out);
 
+/* VCVTPH2PS and VCVTPS2PH (F16C) in their VEX.128 forms, on the ymm registers (a register destination's bits 255:128
+ * are cleared); mxcsr supplies DAZ and the rounding an immediate with bit 2 set asks for. Returns the length, 0 for
+ * anything else. */
+size_t isa_emulate_f16c(const uint8_t *code, uint64_t rip, const uint64_t gpr[16], uint8_t ymm[16][32], uint32_t mxcsr);
+uint32_t isa_half_to_float(uint16_t half);
+/* rounding: 0 nearest even, 1 down, 2 up, 3 toward zero. */
+uint16_t isa_float_to_half(uint32_t single, unsigned rounding, int denormals_are_zero);
+
 enum { ISA_EMULATE_MOVBE = 1, ISA_EMULATE_BMI1 = 2, ISA_EMULATE_SSE4A = 4 };
 
 /* CPUID leaf 1 ECX, leaf 7 EBX and leaf 0x80000001 ECX (SSE4a is bit 6 there). */
@@ -27,9 +35,12 @@ typedef struct { uint32_t leaf1_ecx, leaf7_ebx, ext1_ecx; } IsaHostFeatures;
 IsaHostFeatures isa_host_features(void);
 /* ISA_EMULATE_* bits of the instruction sets isa_emulate covers that the host lacks. */
 unsigned isa_emulation_needed(IsaHostFeatures host);
-/* The Jaguar instruction sets the host lacks, comma separated in out: the ones isa_emulate works around when emulated
- * is nonzero, otherwise the ones the game cannot run without. Returns how many. */
-int isa_missing_sets(IsaHostFeatures host, int emulated, char *out, size_t size);
+/* The instruction sets the game's code uses that the host lacks, comma separated in out: with handled nonzero the ones
+ * the port supplies in software (MOVBE, BMI1, LZCNT, F16C, SSE4a), otherwise the ones it cannot run without (AVX,
+ * POPCNT, CMPXCHG16B). Returns how many. */
+int isa_missing_sets(IsaHostFeatures host, int handled, char *out, size_t size);
+/* The same sets the host has. */
+int isa_present_sets(IsaHostFeatures host, char *out, size_t size);
 /* The CPUID brand string. */
 void isa_host_name(char *out, size_t size);
 

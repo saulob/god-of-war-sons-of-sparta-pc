@@ -1,6 +1,7 @@
-"""Writes each module's executable bytes (NAME.code) and function ranges from its .eh_frame_hdr (NAME.fn) for isa_tests --scan.
+"""Writes each module's executable bytes (NAME.code), function ranges from its .eh_frame_hdr (NAME.fn) and mapped size
+(NAME.size) for isa_tests --scan and cpu_compat_gen.
 
-usage: export_code_ranges.py <prepared game directory> <output directory>
+usage: export_code_ranges.py <prepared game directory> <output directory> [module file name ...]
 """
 import struct
 import sys
@@ -34,9 +35,11 @@ def functions(elf, ph, image):
 
 
 def main():
-    root, out = Path(sys.argv[1]), Path(sys.argv[2])
+    root, out, only = Path(sys.argv[1]), Path(sys.argv[2]), set(sys.argv[3:])
     out.mkdir(parents=True, exist_ok=True)
     for path in [root / 'eboot.bin'] + sorted(root.rglob('*.prx')):
+        if only and path.name not in only:
+            continue
         module = ps4_module.read_module(path)
         elf = module['elf']
         executable = [p for p in module['ph'] if p['type'] == ps4_module.PT_LOAD and p['flags'] & 1]
@@ -46,8 +49,10 @@ def main():
             image[p['vaddr']:p['vaddr'] + p['filesz']] = elf[p['offset']:p['offset'] + p['filesz']]
         end = max(p['vaddr'] + p['filesz'] for p in executable)
         ranges = [(b, e) for b, e in functions(elf, module['ph'], image) if e <= end]
+        mapped = max(p['vaddr'] + p['memsz'] for p in module['ph'] if p['type'] in (ps4_module.PT_LOAD, ps4_module.PT_SCE_RELRO))
         (out / (path.name + '.code')).write_bytes(bytes(image[:end]))
         (out / (path.name + '.fn')).write_text(''.join('%x %x\n' % r for r in ranges))
+        (out / (path.name + '.size')).write_text('%d\n' % mapped)
         print('%-40s %9d bytes, %7d functions' % (path.name, end, len(ranges)))
 
 

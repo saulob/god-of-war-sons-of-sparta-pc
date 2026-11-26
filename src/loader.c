@@ -30,6 +30,7 @@
 #include "trophies/trophy_runtime.h"
 #include "sos_image_format.h"
 #include "isa_emulate.h"
+#include "cpu_compat.h"
 #ifdef _WIN32
 #include "crash_guard.h"
 #endif
@@ -183,12 +184,31 @@ static char module_names[16][128];
 static char module_paths[16][512];
 
 static void log_cpu(void) {
-    char name[64], sets[96];
+    char name[64], sets[128];
     const IsaHostFeatures host = isa_host_features();
     isa_host_name(name, sizeof(name));
     printf("CPU: %s\n", name);
-    if (isa_missing_sets(host, 1, sets, sizeof(sets))) printf("CPU: emulating %s\n", sets);
-    if (isa_missing_sets(host, 0, sets, sizeof(sets))) printf("CPU: missing %s, which cannot be emulated\n", sets);
+    if (isa_present_sets(host, sets, sizeof(sets))) printf("CPU: native %s\n", sets);
+    if (isa_missing_sets(host, 1, sets, sizeof(sets))) printf("CPU: handled in software: %s\n", sets);
+    if (isa_missing_sets(host, 0, sets, sizeof(sets))) printf("CPU: missing %s, which the game cannot run without\n", sets);
+}
+
+static int cpu_usable(char *cause, size_t cause_size, char *advice, size_t advice_size) {
+    return cpu_compat_processor_usable(isa_host_features(), cause, cause_size, advice, advice_size);
+}
+static int system_usable(char *cause, size_t cause_size, char *advice, size_t advice_size) {
+    return cpu_usable(cause, cause_size, advice, advice_size) && sos_check_vulkan(cause, cause_size, advice, advice_size);
+}
+
+static void install_cpu_compat(const CpuCompatPlan *plan, const char *build, unsigned char *stubs, size_t stubs_size) {
+    const CpuCompatOutcome outcome = cpu_compat_install(plan, image, image_bytes, stubs, stubs_size);
+    if (outcome.fatal) {
+        char message[400];
+        snprintf(message, sizeof(message), "CPU compatibility: game build %s: %s", build[0] ? build : "unknown", outcome.message);
+        fail(message);
+    }
+    if (outcome.message[0]) printf("CPU compatibility: %s\n", outcome.message);
+    if (outcome.replaced) runtime_redzone_allow_branches((uint64_t)(stubs - image), (uint64_t)(stubs - image) + stubs_size);
 }
 
 static int gpu_enabled;
@@ -290,8 +310,9 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     }
     if (record->ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION && image &&
         ((uintptr_t)info->ContextRecord->Rip - (uintptr_t)image < image_size ||
-         runtime_redzone_contains((uintptr_t)info->ContextRecord->Rip))) {
-        /* Jaguar's MOVBE, BMI1 and SSE4a trap on hosts without them. */
+         runtime_redzone_contains((uintptr_t)info->ContextRecord->Rip) ||
+         runtime_module_in_loaded_code((uintptr_t)info->ContextRecord->Rip))) {
+        /* Jaguar's MOVBE, BMI1 and SSE4a trap on hosts without them, in the boot image and in modules loaded later. */
         CONTEXT *c = info->ContextRecord;
         _Static_assert(offsetof(CONTEXT, R15) - offsetof(CONTEXT, Rax) == 15 * sizeof(DWORD64), "CONTEXT register order");
         _Static_assert(sizeof(c->FltSave.XmmRegisters) == 16 * 16, "CONTEXT xmm layout");
@@ -364,7 +385,7 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
     if (sig == SIGILL && uc_void && image) {
         ucontext_t *uc = (ucontext_t *)uc_void;
         const uint64_t rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
-        if ((uintptr_t)rip - (uintptr_t)image < image_size) {
+        if ((uintptr_t)rip - (uintptr_t)image < image_size || runtime_module_in_loaded_code((uintptr_t)rip)) {
             static const int map[16] = {
                 REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
                 REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15
@@ -816,7 +837,7 @@ int main(int argc, char **argv) {
         if (!sos_logs_directory(paths.logs_dir, log_started ? log_path : NULL, log_folder, sizeof(log_folder)))
             snprintf(log_folder, sizeof(log_folder), "%s", paths.logs_dir);
         const SosLauncherConfig launcher = { paths.app0, paths.image_dir, paths.user_dir, settings_file, log_folder,
-                                            skip_launcher, force_launcher, NULL, game_process,
+                                            skip_launcher, force_launcher, system_usable, game_process,
                                             log_started ? log_path : NULL };
         sos_startup_phase("launcher handoff");
         const SosLauncherResult launched = sos_launcher_run(&launcher);
@@ -853,6 +874,10 @@ int main(int argc, char **argv) {
         if (!sos_resolve_paths(&path_request, &paths)) fail(paths.error);
     }
     printf("Overlay compatibility: %s game process\n", game_child ? "separate" : "original");
+    if (!check_imports) {
+        char cause[200], advice[200];
+        if (!cpu_usable(cause, sizeof(cause), advice, sizeof(advice))) fail(cause);
+    }
     boot = paths.boot;
     content_profile = paths.content_profile;
     app0 = paths.app0;
@@ -998,7 +1023,15 @@ int main(int argc, char **argv) {
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
                                         SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
                                         SOS_IMAGE_GLYPHS_STUB_BYTES);
-    image = allocate(round_page(size) + stub_area);
+    char compat_key[64] = "";
+    {
+        SosGameBuild compat_build;
+        if (sos_game_build(paths.image_dir, &compat_build))
+            snprintf(compat_key, sizeof(compat_key), "%s-%s", compat_build.title_id, compat_build.version);
+    }
+    const CpuCompatPlan compat = cpu_compat_plan(CPU_COMPAT_BOOT_IMAGE, compat_key, isa_host_features(), cpu_compat_forced());
+    const size_t compat_area = round_page(compat.stub_bytes);
+    image = allocate(round_page(size) + stub_area + compat_area);
     runtime_set_guest_image(image,size);
     image_size = size;
 #ifdef _WIN32
@@ -1210,6 +1243,9 @@ int main(int argc, char **argv) {
     }
     (void)cpu_only;
 
+    /* Before the red-zone pass, which then sees the jumps to the stubs as the image's own code. */
+    install_cpu_compat(&compat, compat_key, image + round_page(size) + stub_area, compat_area);
+
 #ifdef _WIN32
     printf("Guest TCB and thread loads redirected to the TEB TLS slots: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
     if (gpu_enabled) {
@@ -1306,6 +1342,7 @@ int main(int argc, char **argv) {
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);
     protect(image + round_page(size), stub_area, 5);
+    if (compat_area) protect(image + round_page(size) + stub_area, compat_area, 5);
     int executable_entry = 0;
     for (uint64_t i = 0; i < ns; ++i) {
         protect(image + segments[i].address, round_page(segments[i].size), (unsigned)segments[i].flags);

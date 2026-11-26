@@ -87,6 +87,9 @@ void runtime_redzone_set_cache(const char *directory);
 /* Guest bytes whose value may differ between runs of the same build (relocated addresses, the TCB slot, option
  * values), set before runtime_redzone_install. */
 void runtime_redzone_add_volatile(uint64_t offset, uint64_t length);
+/* Image offsets past the image's end that guest jumps may target as the image's own code (the CPU compatibility
+ * stubs), set before runtime_redzone_install. */
+void runtime_redzone_allow_branches(uint64_t begin, uint64_t end);
 uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint64_t *segments, uint64_t count);
 void runtime_redzone_after_fault(void *context);
 int runtime_redzone_site(uintptr_t rip, uint64_t *site);

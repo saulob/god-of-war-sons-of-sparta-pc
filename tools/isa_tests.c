@@ -355,10 +355,14 @@ static void test_features(void) {
     CHECK(isa_emulation_needed(host) == 0, "synthetic host with all three");
 
     char sets[96];
-    host = (IsaHostFeatures){bit_MOVBE, bit_BMI, 0};
+    host = (IsaHostFeatures){bit_MOVBE | bit_F16C, bit_BMI, bit_LZCNT};
     CHECK(isa_missing_sets(host, 1, sets, sizeof sets) == 1 && !strcmp(sets, "SSE4a"), "missing set names SSE4a");
-    host.ext1_ecx = bit_SSE4a;
+    host.ext1_ecx = bit_LZCNT | bit_SSE4a;
     CHECK(isa_missing_sets(host, 1, sets, sizeof sets) == 0, "no emulated sets missing");
+    host = (IsaHostFeatures){0, 0, 0};
+    CHECK(isa_missing_sets(host, 1, sets, sizeof sets) == 5 && !strcmp(sets, "MOVBE, BMI1, LZCNT, F16C, SSE4a"),
+          "every handled set named");
+    CHECK(isa_missing_sets(host, 0, sets, sizeof sets) == 3 && !strcmp(sets, "AVX, POPCNT, CMPXCHG16B"), "every required set named");
 
     const IsaHostFeatures real = isa_host_features();
     CHECK(!(isa_emulation_needed(real) & ISA_EMULATE_SSE4A) == !!(real.ext1_ecx & bit_SSE4a), "host SSE4a decides emulation");
@@ -401,7 +405,7 @@ static int scan_module(const char *directory, const char *name, uint64_t expect_
         return 0;
     }
 
-    uint8_t *starts = calloc(code_size / 8 + 1, 1);
+    uint8_t *starts = calloc(code_size / 8 + 1, 1), *covered = calloc(code_size / 8 + 1, 1);
     ZydisDecoder decoder;
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
     uint64_t functions = 0, undecodable = 0, insertq = 0, extrq = 0, movnt = 0, rewritten = 0, emulated = 0;
@@ -418,6 +422,7 @@ static int scan_module(const char *directory, const char *name, uint64_t expect_
             ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
             if (ZYAN_FAILED(ZydisDecoderDecodeFull(&decoder, code + at, (ZyanUSize)(finish - at), &in, ops))) { ++undecodable; break; }
             starts[at >> 3] |= (uint8_t)(1u << (at & 7));
+            for (uint64_t b = at; b < at + in.length; ++b) covered[b >> 3] |= (uint8_t)(1u << (b & 7));
             if (sse4a_mnemonic(in.mnemonic)) {
                 if (site_count < (1 << 16)) sites[site_count++] = at;
                 insertq += in.mnemonic == ZYDIS_MNEMONIC_INSERTQ;
@@ -439,8 +444,9 @@ static int scan_module(const char *directory, const char *name, uint64_t expect_
         }
     }
 
-    /* Every byte pattern that is SSE4a must be an instruction Zydis decoded at that very byte (a prefix may precede it). */
-    uint64_t patterns = 0, off_boundary = 0;
+    /* Every byte pattern that is SSE4a must be an instruction Zydis decoded at that very byte (a prefix may precede it),
+     * or lie inside the bytes of another decoded instruction (an immediate or displacement). */
+    uint64_t patterns = 0, off_boundary = 0, inside = 0;
     for (size_t at = 0; at + 6 <= code_size; ++at) {
         const uint8_t prefix = code[at];
         if (prefix != 0xf2 && prefix != 0xf3 && prefix != 0x66) continue;
@@ -452,13 +458,14 @@ static int scan_module(const char *directory, const char *name, uint64_t expect_
                            (opcode == 0x79 || prefix == 0xf2 || !(modrm >> 3 & 7))) ||
                           (opcode == 0x2b && prefix != 0x66 && modrm >> 6 != 3);
         if (!sse4a) continue;
+        if (!(starts[at >> 3] >> (at & 7) & 1) && (covered[at >> 3] >> (at & 7) & 1)) { ++inside; continue; }
         ++patterns;
         if (!(starts[at >> 3] >> (at & 7) & 1)) ++off_boundary;
     }
     printf("  %-34s %6" PRIu64 " functions, INSERTQ %" PRIu64 ", EXTRQ %" PRIu64 ", MOVNTSx %" PRIu64
-           ", rewritable %" PRIu64 ", emulated %" PRIu64 ", byte patterns %" PRIu64 ", off an instruction boundary %" PRIu64
-           ", undecodable functions %" PRIu64 "\n",
-           name, functions, insertq, extrq, movnt, rewritten, emulated, patterns, off_boundary, undecodable);
+           ", rewritable %" PRIu64 ", emulated %" PRIu64 ", byte patterns %" PRIu64 " (%" PRIu64 " inside other instructions)"
+           ", off an instruction boundary %" PRIu64 ", undecodable functions %" PRIu64 "\n",
+           name, functions, insertq, extrq, movnt, rewritten, emulated, patterns, inside, off_boundary, undecodable);
     check(insertq == expect_insertq, "INSERTQ count", insertq, expect_insertq);
     check(rewritten == insertq && emulated == insertq + extrq, "every site is rewritable and emulated", rewritten, insertq);
     check(patterns == insertq + extrq + movnt && !off_boundary, "byte patterns agree with the decoder", patterns, insertq + extrq + movnt);
@@ -471,15 +478,129 @@ static int scan_module(const char *directory, const char *name, uint64_t expect_
             check(!memcmp(code + required[r], expected, sizeof expected), "required site bytes", required[r], 0);
         }
     }
-    free(starts); free(sites); free(code); free(fn);
+    free(starts); free(covered); free(sites); free(code); free(fn);
     return 1;
+}
+
+/* The instruction sets the game's code runs with: x86-64 and SSE up to SSE3, the required AVX, POPCNT and CMPXCHG16B,
+ * the sets the port supplies in software (MOVBE, BMI1, LZCNT, F16C, SSE4a) and AES, which the game uses only after
+ * CPUID reports it. Anything else (AVX2, FMA, BMI2, SSE4.1 or SSE4.2 without VEX, ...) is a new requirement. */
+static int runs_with(ZydisISASet s) {
+    switch (s) {
+    case ZYDIS_ISA_SET_I86: case ZYDIS_ISA_SET_I186: case ZYDIS_ISA_SET_I386: case ZYDIS_ISA_SET_I486REAL:
+    case ZYDIS_ISA_SET_PPRO: case ZYDIS_ISA_SET_PENTIUMREAL: case ZYDIS_ISA_SET_PENTIUMMMX: case ZYDIS_ISA_SET_LONGMODE:
+    case ZYDIS_ISA_SET_CMOV: case ZYDIS_ISA_SET_FAT_NOP: case ZYDIS_ISA_SET_PREFETCH_NOP: case ZYDIS_ISA_SET_PAUSE:
+    case ZYDIS_ISA_SET_X87: case ZYDIS_ISA_SET_FCMOV: case ZYDIS_ISA_SET_FCOMI: case ZYDIS_ISA_SET_SSE:
+    case ZYDIS_ISA_SET_SSE2: case ZYDIS_ISA_SET_SSE3: case ZYDIS_ISA_SET_SSE3X87: case ZYDIS_ISA_SET_SSEMXCSR:
+    case ZYDIS_ISA_SET_SSE_PREFETCH: case ZYDIS_ISA_SET_CMPXCHG16B: case ZYDIS_ISA_SET_POPCNT: case ZYDIS_ISA_SET_AVX:
+    case ZYDIS_ISA_SET_MOVBE: case ZYDIS_ISA_SET_BMI1: case ZYDIS_ISA_SET_LZCNT: case ZYDIS_ISA_SET_F16C:
+    case ZYDIS_ISA_SET_SSE4A: case ZYDIS_ISA_SET_AVXAES: case ZYDIS_ISA_SET_AES:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+typedef struct {
+    const char *name;
+    int executed; /* the game runs it: linked into the boot image or loaded later */
+    uint64_t lzcnt, tzcnt, f16c, movbe, bmi1, popcnt, aes, sse4a;
+} Inventory;
+
+static const Inventory inventories[] = {
+    {"eboot.bin", 1, 231, 283, 240, 3393, 5537, 90, 61, 51},
+    {"Il2cppUserAssemblies.prx", 1, 322, 155, 0, 63, 1764, 2, 0, 12},
+    {"libc.prx", 1, 35, 11, 0, 2, 201, 6, 0, 0},
+    {"libSceFios2.prx", 1, 0, 0, 0, 2, 124, 0, 0, 0},
+    {"PS4Util.prx", 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {"lib_burst_generated.prx", 1, 0, 0, 0, 0, 31, 0, 0, 0},
+    {"libfmod.prx", 1, 2, 0, 0, 29, 221, 2, 0, 0},
+    {"libfmodstudio.prx", 1, 0, 5, 0, 1948, 60, 0, 0, 0},
+    {"UnityNpToolkit2.prx", 1, 0, 0, 0, 3, 0, 0, 0, 0},
+    {"SaveData.prx", 1, 0, 0, 0, 3, 0, 0, 0, 0},
+    {"CommonDialog.prx", 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {"libresonanceaudio.prx", 1, 0, 0, 0, 0, 18, 0, 0, 0},
+    {"libSceJobManager.prx", 0, 0, 4, 0, 0, 40, 11, 0, 0},
+    {"libSceNpToolkit2.prx", 0, 0, 0, 0, 0, 0, 1, 0, 0},
+};
+
+/* Every decoded instruction of the module's functions by instruction set: a set outside runs_with fails an executed
+ * module, the counts of the handled sets must be the pinned ones, and every function with AES tests the CPUID AES bit. */
+static void inventory_module(const char *directory, const Inventory *want) {
+    char path[600];
+    size_t code_size = 0, fn_size = 0;
+    snprintf(path, sizeof path, "%s\\%s.code", directory, want->name);
+    uint8_t *code = read_file(path, &code_size);
+    snprintf(path, sizeof path, "%s\\%s.fn", directory, want->name);
+    uint8_t *fn = read_file(path, &fn_size);
+    if (!code || !fn) {
+        check(0, "module not exported", 0, 0);
+        free(code); free(fn);
+        return;
+    }
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    static uint64_t sets[ZYDIS_ISA_SET_MAX_VALUE + 1];
+    memset(sets, 0, sizeof sets);
+    Inventory got = {want->name, want->executed, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint64_t instructions = 0, aes_functions = 0, aes_gated = 0;
+    for (char *line = (char *)fn; *line;) {
+        char *end;
+        const uint64_t begin = strtoull(line, &end, 16), finish = strtoull(end, &line, 16);
+        while (*line == '\r' || *line == '\n') ++line;
+        if (finish > code_size || begin >= finish) continue;
+        int aes = 0, cpuid = 0, aes_bit = 0;
+        for (uint64_t at = begin; at < finish;) {
+            ZydisDecodedInstruction in;
+            ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+            if (ZYAN_FAILED(ZydisDecoderDecodeFull(&decoder, code + at, (ZyanUSize)(finish - at), &in, ops))) break;
+            ++instructions;
+            ++sets[in.meta.isa_set];
+            got.lzcnt += in.mnemonic == ZYDIS_MNEMONIC_LZCNT;
+            got.tzcnt += in.mnemonic == ZYDIS_MNEMONIC_TZCNT;
+            got.f16c += in.meta.isa_set == ZYDIS_ISA_SET_F16C;
+            got.movbe += in.meta.isa_set == ZYDIS_ISA_SET_MOVBE;
+            got.bmi1 += in.meta.isa_set == ZYDIS_ISA_SET_BMI1 && in.mnemonic != ZYDIS_MNEMONIC_TZCNT;
+            got.popcnt += in.meta.isa_set == ZYDIS_ISA_SET_POPCNT;
+            got.sse4a += in.meta.isa_set == ZYDIS_ISA_SET_SSE4A;
+            if (in.meta.isa_set == ZYDIS_ISA_SET_AVXAES || in.meta.isa_set == ZYDIS_ISA_SET_AES) { ++got.aes; aes = 1; }
+            cpuid |= in.mnemonic == ZYDIS_MNEMONIC_CPUID;
+            if (in.mnemonic == ZYDIS_MNEMONIC_TEST && ops[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && ops[1].imm.value.u == 0x2000000)
+                aes_bit = 1;
+            at += in.length;
+        }
+        aes_functions += aes;
+        aes_gated += aes && cpuid && aes_bit;
+    }
+    char outside[256] = "";
+    size_t used = 0;
+    uint64_t outside_count = 0;
+    for (int s = 0; s <= ZYDIS_ISA_SET_MAX_VALUE; ++s) {
+        if (!sets[s] || runs_with((ZydisISASet)s)) continue;
+        outside_count += sets[s];
+        if (used < sizeof outside)
+            used += (size_t)snprintf(outside + used, sizeof outside - used, "%s%s %" PRIu64, used ? ", " : "",
+                                     ZydisISASetGetString((ZydisISASet)s), sets[s]);
+    }
+    printf("  %-26s %9" PRIu64 " instructions: LZCNT %" PRIu64 ", TZCNT %" PRIu64 ", F16C %" PRIu64 ", MOVBE %" PRIu64
+           ", BMI1 %" PRIu64 ", POPCNT %" PRIu64 ", AES %" PRIu64 " (%" PRIu64 " of %" PRIu64 " functions test CPUID), SSE4a %"
+           PRIu64 "; AVX2 %" PRIu64 ", FMA %" PRIu64 ", BMI2 %" PRIu64 "%s%s%s\n",
+           want->name, instructions, got.lzcnt, got.tzcnt, got.f16c, got.movbe, got.bmi1, got.popcnt, got.aes, aes_gated,
+           aes_functions, got.sse4a, sets[ZYDIS_ISA_SET_AVX2] + sets[ZYDIS_ISA_SET_AVX2GATHER], sets[ZYDIS_ISA_SET_FMA],
+           sets[ZYDIS_ISA_SET_BMI2], outside_count ? "; also " : "", outside, want->executed ? "" : " (not loaded by the game)");
+    if (want->executed) check(outside_count == 0, "an instruction set the processor requirement does not cover", outside_count, 0);
+    check(aes_gated == aes_functions, "AES used without the CPUID check", aes_gated, aes_functions);
+    check(!memcmp(&got.lzcnt, &want->lzcnt, sizeof(uint64_t) * 8), "instruction counts are the pinned ones", got.lzcnt, want->lzcnt);
+    free(code);
+    free(fn);
 }
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc >= 3 && !strcmp(argv[1], "--scan")) {
         const char *directory = argv[2];
-        const uint64_t required[] = {0x216da70};
+        /* The Guid constructor's INSERTQ (image + 0x481da70 in 1.00), the third of the module in both builds. */
+        const uint64_t required[] = {argc >= 4 && !strcmp(argv[3], "1.01") ? 0x2173da0 : 0x216da70};
         printf("Real binary scan\n");
         scan_module(directory, "eboot.bin", 51, NULL, 0);
         scan_module(directory, "Il2cppUserAssemblies.prx", 12, required, 1);
@@ -487,6 +608,8 @@ int main(int argc, char **argv) {
                               "libresonanceaudio.prx", "lib_burst_generated.prx", "SaveData.prx", "CommonDialog.prx",
                               "UnityNpToolkit2.prx", "libSceNpToolkit2.prx", "libSceJobManager.prx"};
         for (size_t i = 0; i < sizeof none / sizeof *none; ++i) scan_module(directory, none[i], 0, NULL, 0);
+        printf("Instruction inventory\n");
+        for (size_t i = 0; i < sizeof inventories / sizeof *inventories; ++i) inventory_module(directory, &inventories[i]);
     } else {
         printf("SSE4a emulation\n");
         test_emulation();

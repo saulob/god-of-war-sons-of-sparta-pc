@@ -35,8 +35,9 @@ static int take_signed(Cursor *c, unsigned bytes, int64_t *out) {
     return 1;
 }
 
-/* The r/m operand of modrm with 64-bit addressing. RIP-relative addresses assume no immediate follows. */
-static int decode_rm(Cursor *c, uint8_t modrm, int rex_x, int rex_b, uint64_t rip, const uint64_t gpr[16], Operand *out) {
+/* The r/m operand of modrm with 64-bit addressing; `trailing` immediate bytes follow it. */
+static int decode_rm_before(Cursor *c, uint8_t modrm, int rex_x, int rex_b, uint64_t rip, const uint64_t gpr[16],
+                            unsigned trailing, Operand *out) {
     const unsigned mod = modrm >> 6, rm = modrm & 7;
     if (mod == 3) {
         *out = (Operand){1, rm | (rex_b ? 8 : 0), 0};
@@ -61,11 +62,15 @@ static int decode_rm(Cursor *c, uint8_t modrm, int rex_x, int rex_b, uint64_t ri
     else if (mod == 2 || !has_base) { if (!take_signed(c, 4, &displacement)) return 0; }
 
     uint64_t address = (uint64_t)displacement;
-    if (rip_relative) address += rip + c->length;
+    if (rip_relative) address += rip + c->length + trailing;
     if (has_base) address += gpr[base];
     if (has_index) address += gpr[index] * scale;
     *out = (Operand){0, 0, address};
     return 1;
+}
+
+static int decode_rm(Cursor *c, uint8_t modrm, int rex_x, int rex_b, uint64_t rip, const uint64_t gpr[16], Operand *out) {
+    return decode_rm_before(c, modrm, rex_x, rex_b, rip, gpr, 0, out);
 }
 
 static uint64_t swap(uint64_t value, unsigned bits) {
@@ -221,6 +226,93 @@ size_t isa_emulate(const uint8_t *code, uint64_t rip, uint64_t gpr[16], uint64_t
     return length ? length : emulate_sse4a(code, rip, gpr, xmm);
 }
 
+uint32_t isa_half_to_float(uint16_t half) {
+    const uint32_t sign = (uint32_t)(half & 0x8000) << 16, mantissa = half & 0x3ff;
+    int exponent = half >> 10 & 0x1f;
+    if (exponent == 0x1f) return sign | 0x7f800000u | mantissa << 13 | (mantissa ? 0x400000u : 0);
+    if (!exponent) {
+        if (!mantissa) return sign;
+        uint32_t m = mantissa;
+        exponent = 1;
+        while (!(m & 0x400)) { m <<= 1; --exponent; }
+        return sign | (uint32_t)(exponent + 112) << 23 | (m & 0x3ff) << 13;
+    }
+    return sign | (uint32_t)(exponent + 112) << 23 | mantissa << 13;
+}
+
+uint16_t isa_float_to_half(uint32_t single, unsigned rounding, int denormals_are_zero) {
+    const uint16_t sign = (uint16_t)(single >> 16 & 0x8000);
+    const unsigned biased = single >> 23 & 0xff;
+    uint32_t mantissa = single & 0x7fffff;
+    if (biased == 0xff) return mantissa ? (uint16_t)(sign | 0x7e00 | mantissa >> 13) : (uint16_t)(sign | 0x7c00);
+    if (!biased && denormals_are_zero) mantissa = 0;
+    if (!biased && !mantissa) return sign;
+    const int negative = sign != 0;
+    int exponent = biased ? (int)biased - 127 : -126;
+    uint64_t m = mantissa | (biased ? 0x800000u : 0);
+    while (!(m & 0x800000)) { m <<= 1; --exponent; }
+    if (exponent > 15) {
+        const int infinite = rounding == 0 || (rounding == 2 && !negative) || (rounding == 1 && negative);
+        return (uint16_t)(sign | (infinite ? 0x7c00 : 0x7bff));
+    }
+    /* Past 30 bits every one of the 24 is dropped and the result no longer depends on the shift. */
+    unsigned shift = exponent >= -14 ? 13u : 13u + (unsigned)(-14 - exponent);
+    if (shift > 30) shift = 30;
+    const uint64_t kept = m >> shift, dropped = m & ((UINT64_C(1) << shift) - 1), halfway = UINT64_C(1) << (shift - 1);
+    int up = 0;
+    if (rounding == 0) up = dropped > halfway || (dropped == halfway && (kept & 1));
+    else if (rounding == 1) up = negative && dropped;
+    else if (rounding == 2) up = !negative && dropped;
+    const uint64_t value = kept + (uint64_t)up;
+    const uint64_t bits = exponent >= -14 ? ((uint64_t)(exponent + 15) << 10) + value - 0x400 : value;
+    return (uint16_t)(sign | bits);
+}
+
+/* C4 [RXB 00010] [0 1111 0 01] 13 /r: VCVTPH2PS xmm, xmm/m64; C4 [RXB 00011] [0 1111 0 01] 1D /r ib: VCVTPS2PH
+ * xmm/m64, xmm, imm8. */
+size_t isa_emulate_f16c(const uint8_t *code, uint64_t rip, const uint64_t gpr[16], uint8_t ymm[16][32], uint32_t mxcsr) {
+    Cursor c = {code, 0};
+    uint8_t vex, p1, p2, opcode, modrm;
+    if (!ymm || !take(&c, &vex) || vex != 0xc4 || !take(&c, &p1) || !take(&c, &p2) || !take(&c, &opcode) ||
+        !take(&c, &modrm) || p2 != 0x79)
+        return 0;
+    const int widen = (p1 & 0x1f) == 2 && opcode == 0x13, narrow = (p1 & 0x1f) == 3 && opcode == 0x1d;
+    if (!widen && !narrow) return 0;
+    const unsigned reg = (modrm >> 3 & 7) | (p1 & 0x80 ? 0 : 8);
+    Operand rm;
+    if (!decode_rm_before(&c, modrm, !(p1 & 0x40), !(p1 & 0x20), rip, gpr, narrow ? 1u : 0u, &rm)) return 0;
+    uint8_t halves[8], floats[16];
+    if (widen) {
+        memcpy(halves, rm.is_register ? ymm[rm.reg] : (const uint8_t *)(uintptr_t)rm.address, sizeof halves);
+        for (unsigned i = 0; i < 4; ++i) {
+            uint16_t h;
+            memcpy(&h, halves + 2 * i, 2);
+            const uint32_t f = isa_half_to_float(h);
+            memcpy(floats + 4 * i, &f, 4);
+        }
+        memset(ymm[reg], 0, 32);
+        memcpy(ymm[reg], floats, sizeof floats);
+        return c.length;
+    }
+    uint8_t control;
+    if (!take(&c, &control)) return 0;
+    const unsigned rounding = control & 4 ? mxcsr >> 13 & 3 : control & 3;
+    memcpy(floats, ymm[reg], sizeof floats);
+    for (unsigned i = 0; i < 4; ++i) {
+        uint32_t f;
+        memcpy(&f, floats + 4 * i, 4);
+        const uint16_t h = isa_float_to_half(f, rounding, (mxcsr & 0x40) != 0);
+        memcpy(halves + 2 * i, &h, 2);
+    }
+    if (rm.is_register) {
+        memset(ymm[rm.reg], 0, 32);
+        memcpy(ymm[rm.reg], halves, sizeof halves);
+    } else {
+        memcpy((void *)(uintptr_t)rm.address, halves, sizeof halves);
+    }
+    return c.length;
+}
+
 /* The masks, 16-byte aligned, come first, jumped over; then
  *   lea rsp,[rsp-32]; vmovdqu [rsp],ymm_t; movdqa t,src; psllq t,index; pand t,take; pand dst,keep; por dst,t;
  *   vmovdqu ymm_t,[rsp]; lea rsp,[rsp+32]
@@ -277,10 +369,10 @@ IsaHostFeatures isa_host_features(void) {
     unsigned a, b, c, d;
     if (__get_cpuid(1, &a, &b, &c, &d)) {
         host.leaf1_ecx = c;
-        /* AVX counts only when the OS saves the YMM state (OSXSAVE and XCR0 bits 1-2). */
+        /* AVX and F16C count only when the OS saves the YMM state (OSXSAVE and XCR0 bits 1-2). */
         unsigned xcr0 = 0, high = 0;
         if (c & bit_OSXSAVE) __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(high) : "c"(0));
-        if ((xcr0 & 6) != 6) host.leaf1_ecx &= ~(uint32_t)bit_AVX;
+        if ((xcr0 & 6) != 6) host.leaf1_ecx &= ~(uint32_t)(bit_AVX | bit_F16C);
     }
     if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) host.leaf7_ebx = b;
     if (__get_cpuid(0x80000001, &a, &b, &c, &d)) host.ext1_ecx = c;
@@ -292,28 +384,35 @@ unsigned isa_emulation_needed(IsaHostFeatures host) {
            (host.ext1_ecx & bit_SSE4a ? 0u : ISA_EMULATE_SSE4A);
 }
 
-int isa_missing_sets(IsaHostFeatures host, int emulated, char *out, size_t size) {
-    /* LZCNT runs as BSR on hosts without it instead of trapping, so it cannot be emulated. TZCNT runs as BSF without
-     * BMI1, which differs only for a zero input. */
-    static const struct { const char *name; int emulated, word; uint32_t bit; } sets[] = {
-        {"SSE4.1", 0, 0, bit_SSE4_1}, {"SSE4.2", 0, 0, bit_SSE4_2}, {"POPCNT", 0, 0, bit_POPCNT},
-        {"AVX", 0, 0, bit_AVX},       {"LZCNT", 0, 2, bit_LZCNT},   {"MOVBE", 1, 0, bit_MOVBE},
-        {"BMI1", 1, 1, bit_BMI},      {"SSE4a", 1, 2, bit_SSE4a},
-    };
+/* The game's SSE4.1 and SSE4.2 instructions are all VEX encoded, which AVX covers. */
+static const struct { const char *name; int handled, word; uint32_t bit; } isa_sets[] = {
+    {"AVX", 0, 0, bit_AVX},     {"POPCNT", 0, 0, bit_POPCNT}, {"CMPXCHG16B", 0, 0, bit_CMPXCHG16B},
+    {"MOVBE", 1, 0, bit_MOVBE}, {"BMI1", 1, 1, bit_BMI},      {"LZCNT", 1, 2, bit_LZCNT},
+    {"F16C", 1, 0, bit_F16C},   {"SSE4a", 1, 2, bit_SSE4a},
+};
+
+static int list_sets(IsaHostFeatures host, int present, int handled, char *out, size_t size) {
     const uint32_t words[] = {host.leaf1_ecx, host.leaf7_ebx, host.ext1_ecx};
-    int missing = 0;
+    int listed = 0;
     size_t used = 0;
     if (size) out[0] = 0;
-    for (size_t i = 0; i < sizeof sets / sizeof *sets; ++i) {
-        if (sets[i].emulated != !!emulated || (words[sets[i].word] & sets[i].bit)) continue;
+    for (size_t i = 0; i < sizeof isa_sets / sizeof *isa_sets; ++i) {
+        const int has = (words[isa_sets[i].word] & isa_sets[i].bit) != 0;
+        if (has != present || (!present && isa_sets[i].handled != handled)) continue;
         if (used < size) {
-            const int n = snprintf(out + used, size - used, "%s%s", missing ? ", " : "", sets[i].name);
+            const int n = snprintf(out + used, size - used, "%s%s", listed ? ", " : "", isa_sets[i].name);
             used = n < 0 || (size_t)n >= size - used ? size : used + (size_t)n;
         }
-        ++missing;
+        ++listed;
     }
-    return missing;
+    return listed;
 }
+
+int isa_missing_sets(IsaHostFeatures host, int handled, char *out, size_t size) {
+    return list_sets(host, 0, !!handled, out, size);
+}
+
+int isa_present_sets(IsaHostFeatures host, char *out, size_t size) { return list_sets(host, 1, 0, out, size); }
 
 void isa_host_name(char *out, size_t size) {
     unsigned regs[12] = {0}, high = __get_cpuid_max(0x80000000, NULL);

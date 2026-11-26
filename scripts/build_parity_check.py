@@ -225,6 +225,20 @@ def check_pit_unlock(gate, builds, sources):
     gate.check(len(set(rows.values())) <= 1, "src/sos_pit_unlock.c site rows differ in shape between builds")
 
 
+def cpu_compat_tables(text):
+    """{build key: site count} of the boot image tables in src/cpu_compat_sites.inc."""
+    return {key: int(count) for key, count in re.findall(r'\{"(CUSA\d+-[\d.]+)", \d+u, 0x[0-9a-f]+ull, cpu_compat_sites_\d+, (\d+)\}', text)}
+
+
+def check_cpu_compat(gate, builds, sources):
+    gate.start("CPU compatibility")
+    keys = {b["key"] for b in builds.values()}
+    tables = cpu_compat_tables(sources["src/cpu_compat_sites.inc"])
+    gate.same_builds(set(tables), keys, "src/cpu_compat_sites.inc boot image tables")
+    gate.check(all(count > 0 for count in tables.values()), "src/cpu_compat_sites.inc has a build without sites")
+    gate.check(len(set(tables.values())) <= 1, "src/cpu_compat_sites.inc site counts differ between builds")
+
+
 def image_sizes(text):
     return {key: int(size) for key, size in re.findall(r'\{"(CUSA\d+-[\d.]+)", (\d+)u', text)}
 
@@ -335,7 +349,7 @@ def check_resolution(gate, builds, sources):
         gate.check(len(offsets) == 7 and len(set(offsets)) == 7, f"launcher/sos_resolution_sites.h: CUSA57767 {version} needs its 7 distinct SetResolution sites")
 
 
-FEATURES = [check_identity, check_contract, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution]
+FEATURES = [check_identity, check_contract, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution, check_cpu_compat]
 
 # Sources that carry build-keyed data, with the feature that owns them.
 OWNERS = {
@@ -348,6 +362,7 @@ OWNERS = {
     "launcher/image_glyphs.c": "Menu glyph Images", "launcher/image_glyphs_sites.h": "Menu glyph Images",
     "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
     "launcher/sos_resolution_sites.h": "Render resolution and True Ultrawide",
+    "src/cpu_compat_sites.inc": "CPU compatibility",
 }
 # Host code with no build-specific data: one test covers it, not one per build.
 SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save and redzone layers"}
@@ -365,6 +380,7 @@ COVERAGE = [
     ("tests/controller_icons_tests.cpp", "names"),
     ("tests/ultrawide_tests.cpp", "inventory"), ("scripts/ultrawide_check.py", "names"),
     ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
+    ("tools/test_cpu_compat.ps1", "names"), ("tools/cpu_compat_tests.c", "names"), ("tools/test_isa.ps1", "names"),
 ]
 
 
@@ -548,7 +564,8 @@ def read_sources():
         "src/game_build.h", "launcher/game_profile.cpp", "src/sos_skip_intro.c", "src/sos_hermes_unlock.c", "src/sos_pit_unlock.c",
         "launcher/controller_prompts.c", "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
         "launcher/image_glyphs.c", "launcher/image_glyphs_sites.h",
-        "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h", "scripts/build_evidence.py", "scripts/il2cpp_index.py")}
+        "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h", "scripts/build_evidence.py", "scripts/il2cpp_index.py",
+        "src/cpu_compat_sites.inc")}
     for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         sources[name + ":BUILDS"] = ast_assignment(f"scripts/{name}.py", "BUILDS") or ()
     for path, _mode in COVERAGE:
@@ -611,6 +628,8 @@ def self_test():
     expect_failure("a test that names only 1.00", mutate=lambda s: s.update({"cov:tests/skip_intro_tests.cpp": s["cov:tests/skip_intro_tests.cpp"].replace("1.01", "x")}))
     expect_failure("1.01 loses a SetResolution site", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITE(0x50f541cu)", "")}))
     expect_failure("1.01 routed to the 1.00 resolution sites", mutate=lambda s: s.update({"launcher/game_profile.cpp": s["launcher/game_profile.cpp"].replace(".resolution_sites = kResolutionSites_1_01", ".resolution_sites = kResolutionSites_1_00")}))
+    expect_failure("1.01 dropped from the CPU compatibility tables", mutate=lambda s: s.update({"src/cpu_compat_sites.inc": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["src/cpu_compat_sites.inc"])}))
+    expect_failure("1.01 has fewer CPU compatibility sites", mutate=lambda s: s.update({"src/cpu_compat_sites.inc": re.sub(r'("CUSA57767-1\.01".*?, )(\d+)\}', lambda m: m.group(1) + str(int(m.group(2)) - 1) + "}", s["src/cpu_compat_sites.inc"])}))
     expect_failure("1.01 missing from the generated resolution sites", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITES_1_01", "SOS_SET_RESOLUTION_SITES_X")}))
     expect_failure("the resolution table of 1.01 differs", mutate=lambda s: s.update({"launcher/game_profile.cpp": re.sub(r'(\.version = "1\.01".*?\.resolution_sites = )kResolutionSites', r"\1kOtherSites", s["launcher/game_profile.cpp"], count=1, flags=re.S)}))
 

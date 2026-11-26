@@ -15,6 +15,7 @@ typedef struct {
     unsigned tables;
     uint64_t code_end;
     uint8_t *starts, *targets; /* one bit per image byte below code_end */
+    uint64_t own_begin, own_end; /* image offsets past its end that jumps may target without being a patch */
 } RzaImage;
 
 /* Every function of every .eh_frame_hdr table in the image, flags clear. 0 when there is none or no memory. */

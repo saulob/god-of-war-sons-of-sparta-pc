@@ -22,6 +22,8 @@ Requirements
 - Windows x64 (Windows 10/11) or Linux x86_64 (glibc 2.31+ / Ubuntu 20.04+;
   Linux and Steam Deck gameplay are experimental in v0.1.0)
 - Vulkan 1.3-capable GPU with current graphics drivers
+- x86-64 processor with AVX and POPCNT (Intel Core 2nd generation or newer,
+  AMD FX or newer); AVX2 is not required
 
 Quick Start
 -----------

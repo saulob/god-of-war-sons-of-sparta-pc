@@ -141,7 +141,8 @@ RzcKey rzc_fingerprint(const unsigned char *image, const RzaImage *analysis, con
     Hasher h;
     hasher_init(&h, 0x534F535Au);
     const uint64_t header[] = {RZC_FORMAT, RZC_ALGORITHM, ZYDIS_VERSION, (uint64_t)(uintptr_t)image,
-                               analysis->count, analysis->tables, volatile_count, piece_count, task_count};
+                               analysis->count, analysis->tables, volatile_count, piece_count, task_count,
+                               analysis->own_begin, analysis->own_end};
     hasher_update(&h, header, sizeof(header));
     hasher_update(&h, pieces, piece_count * sizeof(*pieces));
     hasher_update(&h, tasks, (task_count + 1) * sizeof(*tasks));

@@ -1409,7 +1409,7 @@ void RunWithPreparingWindow(const std::function<void()>& work) {
 SosLauncherResult PlayOrExplain(const SosLauncherConfig& config, const LauncherSettings& settings) {
     char cause[320] = "", advice[320] = "";
     if (config.check_graphics && !config.check_graphics(cause, sizeof(cause), advice, sizeof(advice))) {
-        return ExplainInWindow("Graphics", cause, advice);
+        return ExplainInWindow("System", cause, advice);
     }
     if (!SeparateGameProcess(config, settings)) {
         return SOS_LAUNCHER_PLAY;

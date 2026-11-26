@@ -413,6 +413,12 @@ static int compare_u32(const void *a, const void *b) {
 static char rz_cache_directory[4200];
 static RzaRange *rz_volatile;
 static size_t rz_volatile_count, rz_volatile_cap;
+static uint64_t rz_own_begin, rz_own_end;
+
+void runtime_redzone_allow_branches(uint64_t begin, uint64_t end) {
+    rz_own_begin = begin;
+    rz_own_end = end;
+}
 
 void runtime_redzone_set_cache(const char *directory) {
     snprintf(rz_cache_directory, sizeof(rz_cache_directory), "%s", directory ? directory : "");
@@ -507,6 +513,8 @@ uint64_t runtime_redzone_install(unsigned char *image, uint64_t size, const uint
         puts("Red zone: protection unavailable (no .eh_frame_hdr function table found, or no memory)");
         return 0;
     }
+    analysis.own_begin = rz_own_begin;
+    analysis.own_end = rz_own_end;
     uint64_t code_bytes = 0;
     for (size_t i = 0; i < analysis.count; ++i) code_bytes += analysis.functions[i].end - analysis.functions[i].begin;
     const unsigned workers = worker_count(code_bytes);
@@ -695,4 +703,5 @@ int runtime_redzone_contains(uintptr_t address) { (void)address; return 0; }
 int runtime_redzone_function(uint64_t offset, uint64_t *begin) { (void)offset; (void)begin; return 0; }
 void runtime_redzone_set_cache(const char *directory) { (void)directory; }
 void runtime_redzone_add_volatile(uint64_t offset, uint64_t length) { (void)offset; (void)length; }
+void runtime_redzone_allow_branches(uint64_t begin, uint64_t end) { (void)begin; (void)end; }
 #endif

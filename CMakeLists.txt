@@ -114,7 +114,8 @@ set(SOS_RUNTIME_SOURCES
     src/dcp_mouse.c
     src/runtime_online.cpp
     src/runtime_json.cpp
-    src/isa_emulate.c)
+    src/isa_emulate.c
+    src/cpu_compat.c)
 set(SOS_NOTO_SANS ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSans-Regular.ttf)
 set(SOS_NOTO_SANS_TC ${CMAKE_SOURCE_DIR}/third_party/fonts/NotoSansTC-Regular.otf)
 set_source_files_properties(src/runtime_font.c PROPERTIES

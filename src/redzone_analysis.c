@@ -170,6 +170,17 @@ static int branch_target(const ScanJob *job, const ZydisDecodedInstruction *in, 
     return 0;
 }
 
+/* A jmp into the CPU compatibility stubs: it replaces whole instructions and comes back after them. */
+static int own_branch(const ScanJob *job, const ZydisDecodedInstruction *in, const ZydisDecodedOperand *ops, uint64_t at) {
+    const RzaImage *a = job->analysis;
+    ZyanU64 address = 0;
+    if (a->own_begin >= a->own_end || in->mnemonic != ZYDIS_MNEMONIC_JMP || in->length != 5 ||
+        ZYAN_FAILED(ZydisCalcAbsoluteAddress(in, &ops[0], (ZyanU64)(uintptr_t)(job->image + at), &address)))
+        return 0;
+    const uint64_t offset = (uint64_t)address - (uint64_t)(uintptr_t)job->image;
+    return offset >= a->own_begin && offset < a->own_end;
+}
+
 static void scan_function(ScanJob *job, RzaFunction *f) {
     const unsigned char *image = job->image;
     RzaImage *a = job->analysis;
@@ -204,8 +215,9 @@ static void scan_function(ScanJob *job, RzaFunction *f) {
             }
             uint64_t target;
             if (branch_target(job, &in, ops, at, &target)) {
-                if (target == UINT64_MAX) flags |= RZA_HOOKED;
-                else {
+                if (target == UINT64_MAX) {
+                    if (!own_branch(job, &in, ops, at)) flags |= RZA_HOOKED;
+                } else {
                     target_set(a, target);
                     /* Code only enters another function at its start; anything else is a patch. */
                     if ((target < f->begin || target >= f->end) && !bit_get(a, a->starts, target)) flags |= RZA_HOOKED;

@@ -56,6 +56,9 @@ game mode is stored with the save and cannot be changed afterwards.
 - Windows 10 or 11, 64-bit
 - **Or, experimental:** 64-bit Linux on x86-64, including the Steam Deck, with glibc 2.31 or newer (see [Linux and Steam Deck](#linux-and-steam-deck))
 - A graphics card and driver with **Vulkan 1.3**
+- An x86-64 processor with **AVX** and **POPCNT**: Intel Core 2nd generation (Sandy Bridge) or newer, or AMD FX or newer.
+  **AVX2 is not required.** The game's PS4 code also uses MOVBE, BMI1, LZCNT, F16C and SSE4a; on a processor without
+  them the port supplies them in software
 - **Your own legally obtained God of War: Sons of Sparta PS4 package** of a supported build:
 
 | Build | Package |
@@ -144,6 +147,9 @@ from the `logs` folder.
 ## Known limitations
 
 - **Linux and Steam Deck** are experimental: built and checked automatically, not yet runtime-tested on real hardware.
+- **Processors without AVX2** (Intel Sandy Bridge and Ivy Bridge, AMD FX): the instructions the port supplies are
+  checked instruction by instruction against the real game code, but the game has not yet been played on such a
+  processor. MOVBE and BMI1 are emulated as they run there, which may cost performance.
 - **Shapes other than 16:9** are labelled experimental in the launcher: the game was authored for 16:9, so some 2D scenes
   may show the edges of their original backgrounds. The boot splash video stays 16:9.
 - **4K and the other resolutions above 1080p** need a powerful graphics card.

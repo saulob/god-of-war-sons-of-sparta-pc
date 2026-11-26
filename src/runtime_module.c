@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "cpu_compat.h"
 #include "runtime_log.h"
 #include "startup_phase.h"
 #include "startup_profile.h"
@@ -57,6 +58,7 @@ typedef struct {
     uint64_t base, size, image_offset, tls_module, start_vaddr, fini_vaddr;
     uint64_t relro_vaddr, relro_size;
     uint32_t relro_flags;
+    uint64_t compat_bytes; /* CPU compatibility stubs after the mapping */
     char path[512];
     uint64_t eh_frame_hdr, eh_frame, eh_frame_size, eh_frame_hdr_size, seg0_vaddr, seg0_size;
     int eh_searched, headers_known;
@@ -606,7 +608,7 @@ static void abandon_module(LoadedModule *m) {
 #ifdef _WIN32
         VirtualFree((void *)(uintptr_t)m->base,0,MEM_RELEASE);
 #else
-        munmap((void *)(uintptr_t)m->base,(size_t)((m->size+host_page_size()-1)&~(uint64_t)(host_page_size()-1)));
+        munmap((void *)(uintptr_t)m->base,(size_t)(((m->size+host_page_size()-1)&~(uint64_t)(host_page_size()-1))+m->compat_bytes));
 #endif
     }
     memset(m,0,sizeof(*m));
@@ -628,6 +630,35 @@ static int protect_region(uint64_t base,const Phdr *p) {
     if (mprotect((void *)(uintptr_t)(base+start),(size_t)(end-start),prot)) return 0;
 #endif
     return 1;
+}
+static uint64_t page_round(uint64_t bytes) {
+    const uint64_t page=host_page_size();
+    return (bytes+page-1)&~(page-1);
+}
+static const char *file_name(const char *path);
+/* Sizes the stubs that follow the module's mapping, before it is allocated. */
+static CpuCompatPlan plan_module_compat(LoadedModule *m,IsaHostFeatures host,unsigned forced) {
+    const CpuCompatPlan plan=cpu_compat_plan(CPU_COMPAT_MODULE,file_name(m->path),host,forced);
+    m->compat_bytes=page_round(plan.stub_bytes);
+    return plan;
+}
+/* 0 when the module cannot run correctly on this processor. */
+static int install_module_compat(LoadedModule *m,const CpuCompatPlan *plan) {
+    const CpuCompatOutcome outcome=cpu_compat_install(plan,(uint8_t *)(uintptr_t)m->base,m->size,
+                                                      (uint8_t *)(uintptr_t)(m->base+page_round(m->size)),m->compat_bytes);
+    if (outcome.message[0]) printf("CPU compatibility: module %s: %s\n",m->path,outcome.message);
+    return !outcome.fatal;
+}
+static void protect_cpu_compat(const LoadedModule *m) {
+    if (!m->compat_bytes) return;
+    void *stubs=(void *)(uintptr_t)(m->base+page_round(m->size));
+#ifdef _WIN32
+    DWORD old;
+    VirtualProtect(stubs,(SIZE_T)m->compat_bytes,PAGE_EXECUTE_READ,&old);
+    FlushInstructionCache(GetCurrentProcess(),stubs,(SIZE_T)m->compat_bytes);
+#else
+    mprotect(stubs,(size_t)m->compat_bytes,PROT_READ|PROT_EXEC);
+#endif
 }
 static int finalize_mapping(LoadedModule *m,const ElfFile *elf) {
     for (int i=0;i<elf->phnum;++i)
@@ -732,7 +763,8 @@ static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t
     if (m->start_vaddr>=m->size || m->fini_vaddr>=m->size) {
         free(elf.data); abandon_module(m); return ERRNO(8);
     }
-    m->base=(uintptr_t)module_alloc(m->size);
+    const CpuCompatPlan compat=plan_module_compat(m,isa_host_features(),cpu_compat_forced());
+    m->base=(uintptr_t)module_alloc(page_round(m->size)+m->compat_bytes);
     if (!m->base) { free(elf.data); abandon_module(m); return ERRNO(12); }
     for (int i=0;i<elf.phnum;++i) {
         const Phdr *p=&elf.ph[i];
@@ -761,7 +793,9 @@ static int32_t load_new_module(const char *path,uint64_t args,void *argp,int32_t
         if (size<16 || size>procparam->memsz) { free(elf.data); abandon_module(m); return ERRNO(22); }
         parameter=(void *)(uintptr_t)(m->base+procparam->vaddr);
     }
+    if (!install_module_compat(m,&compat)) { free(elf.data); abandon_module(m); return ERRNO(8); }
     if (!finalize_mapping(m,&elf)) { free(elf.data); abandon_module(m); return ERRNO(13); }
+    protect_cpu_compat(m);
     publish_code_range(m->base,m->size);
     repair_pending();
     m->loading=0;
