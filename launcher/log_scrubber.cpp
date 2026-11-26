@@ -219,6 +219,10 @@ bool PrecededByVersionWord(std::string_view line, size_t at) {
     size_t start = end;
     while (start > 0 && IsWord(line[start - 1])) --start;
     const std::string_view word = line.substr(start, end - start);
+    // "file_version=27.20.100.9466" is a version, not an address.
+    constexpr std::string_view kVersionSuffix = "_version";
+    if (word.size() > kVersionSuffix.size() && StartsFolded(word.substr(word.size() - kVersionSuffix.size()), kVersionSuffix))
+        return true;
     for (const std::string_view v : kVersionWords) {
         if (word.size() == v.size() && StartsFolded(word, v)) return true;
     }

@@ -1,5 +1,6 @@
 #include "crash_guard.h"
 
+#include "host_module.h"
 #include "runtime_log.h"
 #include "startup_phase.h"
 
@@ -149,13 +150,42 @@ static void describe(Text *text, uintptr_t address) {
         text_str(text, buffer);
         return;
     }
+    if (address - exe_base < exe_end - exe_base) {
+        text_str(text, "sons_of_sparta.exe+");
+        text_hex(text, address - exe_base);
+        return;
+    }
+    SosHostModule module;
     MEMORY_BASIC_INFORMATION info;
-    if (VirtualQuery((LPCVOID)address, &info, sizeof(info)) && info.Type == MEM_IMAGE) {
-        text_str(text, address - exe_base < exe_end - exe_base ? "sons_of_sparta.exe+" : "module+");
-        text_hex(text, address - (address - exe_base < exe_end - exe_base ? exe_base : (uintptr_t)info.AllocationBase));
+    if (sos_host_module_at(address, &module)) {
+        text_str(text, module.name[0] ? module.name : "unnamed");
+        text_char(text, '+');
+        text_hex(text, address - module.base);
+    } else if (VirtualQuery((LPCVOID)address, &info, sizeof(info)) && info.Type == MEM_IMAGE) {
+        text_str(text, "module+");
+        text_hex(text, address - (uintptr_t)info.AllocationBase);
     } else {
         text_str(text, "no module");
     }
+}
+
+/* The DLL that holds a faulting address, so a report names a driver or overlay without the minidump. */
+static void put_host_module(Text *text, uintptr_t address) {
+    SosHostModule module;
+    char detail[256];
+    if (in_guest(address) || address - exe_base < exe_end - exe_base || !sos_host_module_at(address, &module)) return;
+    sos_host_module_format(&module, address, detail, sizeof(detail));
+    text_str(text, "\n  host module: ");
+    text_str(text, detail);
+}
+
+size_t sos_crash_describe_address(char *out, size_t size, uintptr_t address) {
+    Text text;
+    if (!out || !size) return 0;
+    text_init(&text, out, size);
+    describe(&text, address);
+    put_host_module(&text, address);
+    return text.used;
 }
 
 #define PS4_RANGE_MIN UINT64_C(0x1000000000)
@@ -265,6 +295,7 @@ static void write_emergency_line(const EXCEPTION_POINTERS *info, const char *not
     text_hex(&text, c->Rip);
     text_str(&text, " = ");
     describe(&text, (uintptr_t)c->Rip);
+    put_host_module(&text, (uintptr_t)c->Rip);
     if ((info->ExceptionRecord->ExceptionCode == CODE_ACCESS_VIOLATION ||
          info->ExceptionRecord->ExceptionCode == CODE_IN_PAGE_ERROR) &&
         info->ExceptionRecord->NumberParameters >= 2) {
@@ -497,6 +528,7 @@ static void write_first_chance(const EXCEPTION_POINTERS *info, int reachable) {
         text_str(&text, ": ");
         describe_memory(&text, (uintptr_t)record->ExceptionInformation[1]);
     }
+    put_host_module(&text, (uintptr_t)c->Rip);
     text_str(&text, "\n  rip ");
     text_hex(&text, c->Rip);
     text_str(&text, ", rsp ");

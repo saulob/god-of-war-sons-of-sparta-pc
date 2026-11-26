@@ -127,7 +127,7 @@ if (WIN32)
     # Relink when the application icon, the manifest or the version changes.
     set_source_files_properties(src/sons_of_sparta.rc PROPERTIES OBJECT_DEPENDS
         "${CMAKE_SOURCE_DIR}/packaging/icons/app-icon.ico;${CMAKE_SOURCE_DIR}/src/sons_of_sparta.manifest;${CMAKE_BINARY_DIR}/generated/sos_version.h")
-    set(SOS_PLATFORM_SOURCES src/compat_win.c src/crash_guard.c src/runtime_log.c src/runtime_session_log.c
+    set(SOS_PLATFORM_SOURCES src/compat_win.c src/crash_guard.c src/host_module.c src/runtime_log.c src/runtime_session_log.c
         src/sons_of_sparta.rc)
 else()
     set(SOS_PLATFORM_SOURCES src/runtime_log_posix.c src/runtime_session_log.c src/fault_signal_posix.c)

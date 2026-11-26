@@ -42,6 +42,9 @@ __attribute__((noreturn)) void sos_crash_guard_report_here(const char *what, uin
 /* Puts the filter back when a library replaced it, and says which; 1 when it had been replaced. */
 int sos_crash_guard_verify(void);
 
+/* How a report names `address`: "<dll>+0x..." and, for a DLL, a "host module:" line with its base and file version. */
+size_t sos_crash_describe_address(char *out, size_t size, uintptr_t address);
+
 /* The minidump path: the log's path with .dmp, "_N" before it from attempt 2; 0 when it does not fit. */
 int sos_crash_dump_path(char *out, size_t size, const char *log_path, int attempt);
 

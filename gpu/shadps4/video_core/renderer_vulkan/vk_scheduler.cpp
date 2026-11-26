@@ -20,6 +20,7 @@
 #include "common/device_lost.h"
 #include "common/gpu_trace.h"
 #include "common/thread.h"
+#include "dcp_rendering_trace.h"
 #include "imgui/renderer/texture_manager.h"
 #include "startup_phase.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -141,6 +142,25 @@ void ReportRenderingMismatch(RenderingMismatch kind) {
                                                                 : "open at submission");
     }
 }
+
+DcpRendering::Shape RenderingShape(const vk::RenderingInfo& info) {
+    DcpRendering::Shape shape{
+        .colors = info.colorAttachmentCount,
+        .depth = info.pDepthAttachment != nullptr,
+        .stencil = info.pStencilAttachment != nullptr,
+        .width = info.renderArea.extent.width,
+        .height = info.renderArea.extent.height,
+        .layers = info.layerCount,
+    };
+    for (u32 i = 0; i < info.colorAttachmentCount && i < 8; ++i) {
+        if (!info.pColorAttachments[i].imageView) {
+            shape.unbound_colors |= 1u << i;
+        }
+    }
+    shape.null_depth_stencil_view = (info.pDepthAttachment && !info.pDepthAttachment->imageView) ||
+                                    (info.pStencilAttachment && !info.pStencilAttachment->imageView);
+    return shape;
+}
 } // namespace
 
 // vkCmdBeginRendering inside an open instance and vkCmdEndRendering outside one are invalid;
@@ -150,7 +170,10 @@ void Scheduler::ReplayBeginRendering(vk::CommandBuffer cmdbuf, const vk::Renderi
         ReportRenderingMismatch(RenderingMismatch::BeginWhileOpen);
         cmdbuf.endRendering();
     }
+    auto& trace = DcpRendering::Global();
+    trace.Begin(RenderingShape(info), Common::GpuTrace::CurrentThreadId());
     cmdbuf.beginRendering(info);
+    trace.End();
 }
 
 void Scheduler::ReplayEndRendering(vk::CommandBuffer cmdbuf) {

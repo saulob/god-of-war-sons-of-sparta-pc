@@ -13,6 +13,7 @@
 #include "common/logging/log.h"
 #include "common/thread.h"
 #include "ntapi.h"
+#include "startup_phase.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -217,8 +218,9 @@ bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanosec
 
 // Sets the debugger-visible name of the current thread.
 void SetCurrentThreadName(const char* name) {
-    // dcp: guest thread names are kept by the C runtime.
+    // dcp: guest thread names are kept by the C runtime; host threads are named for the crash report here.
     SetThreadDescription(GetCurrentThread(), UTF8ToUTF16W(name).data());
+    sos_thread_label_set(name);
 }
 
 void SetThreadName(void* thread, const char* name) {
@@ -248,6 +250,7 @@ void SetCurrentThreadName(const char* name) {
 #else
     pthread_setname_np(pthread_self(), name);
 #endif
+    sos_thread_label_set(name);
 }
 
 void SetThreadName(void* thread, const char* name) {

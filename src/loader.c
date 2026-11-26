@@ -226,6 +226,9 @@ static void crash_detail(EXCEPTION_POINTERS *info) {
         static char first_ops[512];
         dcpgpu_first_ops_summary(first_ops, sizeof(first_ops));
         fprintf(stderr, "  first GPU operations: %s\n", first_ops);
+        static char rendering[256];
+        dcpgpu_rendering_summary(rendering, sizeof(rendering));
+        fprintf(stderr, "  rendering: %s\n", rendering);
     }
     {
         static char operations[3072];
@@ -242,6 +245,7 @@ static void crash_detail(EXCEPTION_POINTERS *info) {
                 (unsigned long long)m, module_names[m][0] ? module_names[m] : "(unnamed)",
                 (unsigned long long)((uintptr_t)image + modules[m].init), (unsigned long long)modules[m].init);
     }
+    if (gpu_enabled) dcpgpu_crash_trace("crash");
 }
 
 static int crash_describe(char *out, size_t size, uintptr_t address) {
@@ -447,7 +451,10 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
         static char operations[sizeof(line)];
         dcpgpu_first_ops_summary(operations, sizeof(operations) - 40);
         snprintf(line, sizeof(line), "Crash: first GPU operations: %s\n", operations);
-        const ssize_t written = write(2, line, strlen(line));
+        ssize_t written = write(2, line, strlen(line));
+        dcpgpu_rendering_summary(operations, sizeof(operations) - 40);
+        snprintf(line, sizeof(line), "Crash: rendering: %s\n", operations);
+        written = write(2, line, strlen(line));
         (void)written;
     }
     runtime_log_drain();

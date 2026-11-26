@@ -5,6 +5,7 @@
 #include "common/gpu_trace.h"
 #include "dcp_first_ops.h"
 #include "dcp_present.h"
+#include "dcp_rendering_trace.h"
 
 #include <array>
 #include <atomic>
@@ -199,6 +200,17 @@ Tracker& Global() noexcept {
 // The first GPU operations behind the game's first frame and which one was in flight (crash reports).
 extern "C" void dcpgpu_first_ops_summary(char* out, size_t size) {
     DcpFirstOps::Global().Describe(out, size);
+}
+
+namespace DcpRendering {
+Tracker& Global() noexcept {
+    static constinit Tracker tracker{};
+    return tracker;
+}
+} // namespace DcpRendering
+
+extern "C" void dcpgpu_rendering_summary(char* out, size_t size) {
+    DcpRendering::Global().Describe(out, size);
 }
 
 // The GPU trace (gpu/shim/common/gpu_trace.h) for a fatal signal's best-effort report: printed once per process.

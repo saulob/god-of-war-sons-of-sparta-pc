@@ -41,6 +41,8 @@ try {
         'src/runtime_session_log.c',
         'src/crash_guard.h',
         'src/crash_guard.c',
+        'src/host_module.h',
+        'src/host_module.c',
         'src/startup_phase.h',
         'src/startup_phase.c',
         'src/game_build.h',
@@ -59,7 +61,7 @@ try {
         param([string]$Dir, [string]$Exe, [string[]]$Extra)
         $inc = @('-I', (Join-Path $Dir 'launcher'), '-I', (Join-Path $Dir 'src'), '-I', (Join-Path $prefix 'include'))
         $objs = New-Object System.Collections.Generic.List[string]
-        foreach ($cSrc in @('src/runtime_log.c', 'src/runtime_session_log.c', 'src/crash_guard.c', 'src/startup_phase.c')) {
+        foreach ($cSrc in @('src/runtime_log.c', 'src/runtime_session_log.c', 'src/crash_guard.c', 'src/host_module.c', 'src/startup_phase.c')) {
             $obj = Join-Path $Dir ([IO.Path]::GetFileNameWithoutExtension($cSrc) + '.o')
             & $clang @cFlags @Extra @inc '-c' (Join-Path $Dir $cSrc) '-o' $obj
             if ($LASTEXITCODE -ne 0) { return }

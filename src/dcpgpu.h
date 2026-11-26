@@ -37,6 +37,8 @@ void dcpgpu_first_frame_summary(char *out, size_t size);
 /* The first guest GPU operations (shader translation, SPIR-V, pipelines, draw, dispatch, acquire): each none, done,
  * FAILED or STARTED (in flight, with its shader hashes), for the crash report (gpu/shim/dcp_first_ops.h). */
 void dcpgpu_first_ops_summary(char *out, size_t size);
+/* The newest vkCmdBeginRendering, its attachments and whether it was still inside the driver (dcp_rendering_trace.h). */
+void dcpgpu_rendering_summary(char *out, size_t size);
 /* Prints the GPU trace (last GPU events, unfinished submissions and their pipelines) once per process; uses stdio, so
  * only the best-effort part of a fault report calls it. */
 void dcpgpu_crash_trace(const char *reason);

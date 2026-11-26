@@ -120,7 +120,8 @@ void TestIntelArlProfile() {
     Check(Contains(instance, "    if (!fragment_shader_barycentric) {\n        device_chain.unlink<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();"),
           "no barycentric feature struct in pNext when the extension is absent");
     Check(Contains(instance, "    if (!pipeline_binaries) {\n        device_chain.unlink<vk::PhysicalDevicePipelineBinaryFeaturesKHR>();") &&
-              Contains(instance, "feature_chain.get<vk::PhysicalDevicePipelineBinaryFeaturesKHR>().pipelineBinaries &&"),
+              Contains(instance, "feature_chain.get<vk::PhysicalDevicePipelineBinaryFeaturesKHR>().pipelineBinaries) &&\n"
+                                 "        add_extension(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);"),
           "VK_KHR_pipeline_binary only with its feature, its struct unlinked otherwise");
 }
 

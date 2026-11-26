@@ -97,6 +97,12 @@ inline std::string Summary(const Capabilities& caps) {
     return line;
 }
 
+/// VK_KHR_pipeline_binary is used only with VK_KHR_maintenance5 and both features reported.
+constexpr bool PipelineBinariesUsable(bool maintenance5_extension, bool maintenance5_feature,
+                                      bool pipeline_binaries_feature) {
+    return maintenance5_extension && maintenance5_feature && pipeline_binaries_feature;
+}
+
 /// The buffer cache binds its arenas with sparse residency: the device needs sparseBinding and
 /// sparseResidencyBuffer, and the queue it submits on needs VK_QUEUE_SPARSE_BINDING_BIT.
 constexpr bool SparseBuffersSupported(bool sparse_binding, bool sparse_residency_buffer,
