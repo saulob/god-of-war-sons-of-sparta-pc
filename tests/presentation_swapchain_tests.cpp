@@ -823,9 +823,39 @@ void TestWindowVisibilityWiring() {
           "the presenter reads the visibility with one atomic load");
 }
 
+// SOS-BXG9UT (KDE Wayland, Gamescope off): the window was reported 1755x987 (the Windowed size setting) while the
+// swapchain was 2194x1234. A Wayland surface has no currentExtent: the swapchain takes the window's pixel size, clamped
+// to the surface limits, never the logical size; a surface with a fixed size keeps it.
+void TestWaylandExtentFollowsPixels() {
+    constexpr std::uint32_t undefined = UINT32_MAX;
+    // 125 % fractional scaling: logical 1755x987, pixels 2194x1234 (what SDL_GetWindowSizeInPixels gives).
+    const auto wayland = DcpPresent::SwapchainExtent(undefined, undefined, 1, 1, 16384, 16384, 2194, 1234);
+    Check(wayland.width == 2194 && wayland.height == 1234, "Wayland: the swapchain takes the window's pixel size");
+    const auto clamped = DcpPresent::SwapchainExtent(undefined, undefined, 64, 64, 2048, 1152, 2194, 1234);
+    Check(clamped.width == 2048 && clamped.height == 1152, "Wayland: the pixel size is clamped to the surface maximum");
+    const auto tiny = DcpPresent::SwapchainExtent(undefined, undefined, 64, 64, 16384, 16384, 1, 1);
+    Check(tiny.width == 64 && tiny.height == 64, "Wayland: the pixel size is raised to the surface minimum");
+    const auto fixed = DcpPresent::SwapchainExtent(2194, 1234, 1, 1, 16384, 16384, 1755, 987);
+    Check(fixed.width == 2194 && fixed.height == 1234, "X11/Win32/Gamescope: the surface's own extent wins");
+
+    const std::string swapchain = Source("gpu/shadps4/video_core/renderer_vulkan/vk_swapchain.cpp");
+    Check(Contains(swapchain, "const DcpPresent::Extent chosen = DcpPresent::SwapchainExtent(") &&
+              Contains(swapchain, "extent = vk::Extent2D{chosen.width, chosen.height};"),
+          "the swapchain uses SwapchainExtent");
+    const std::string window = Source("gpu/shim/window.cpp");
+    const size_t resize = window.find("case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:\n        case SDL_EVENT_WINDOW_RESIZED: {");
+    const size_t pixels = window.find("SDL_GetWindowSizeInPixels(window, &w, &h);\n            width = w;", resize);
+    Check(resize != std::string::npos && pixels != std::string::npos && pixels - resize < 200,
+          "a resize or scale change stores the window's pixel size, which the swapchain follows");
+    Check(Contains(window, "LogSurfaceGeometry(\"created\");") && Contains(window, "LogSurfaceGeometry(\"changed\");") &&
+              Contains(window, "\"Window: surface %s, pixels %dx%d, logical %dx%d, density %.2f, display scale %.2f, "),
+          "the log shows pixel and logical size, density and scale at creation and on change");
+}
+
 } // namespace
 
 int main() {
+    TestWaylandExtentFollowsPixels();
     TestSurfaceWithoutArea();
     TestResults();
     TestPersistentSuboptimal();

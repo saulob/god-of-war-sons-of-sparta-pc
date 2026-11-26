@@ -457,6 +457,11 @@ int AssertChild(const std::string& path) {
         return 2;
     }
     CaptureDescriptors(g_stream, true); // the child ends here; nothing is restored
+    // The production runtime registers the session log drain here (dcpgpu_init): the assertion must run it before _Exit.
+    DL::Global().SetExitFlush([] {
+        std::fputs("Test: exit flush ran\n", stderr);
+        std::fflush(stderr);
+    });
     GT::NoteShaders(GT::PipelineKind::Compute, 0x7171);
     GT::Record(GT::Event::HeapBudget, 1, 3ull << 30, 2ull << 30, 1);
     ASSERT_MSG(false, "gpu crash trace test assertion");
@@ -473,6 +478,11 @@ void TestAssertionPrintsTheTrace(const std::string& self) {
     const size_t stop = text.find("STOP: GPU library assertion failed");
     Check(trace != std::string::npos && stop != std::string::npos && trace < stop,
           "a GPU assertion prints the trace before its stop line");
+    const size_t flushed = text.find("Test: exit flush ran\n");
+    Check(stop != std::string::npos && flushed != std::string::npos && stop < flushed && Count(text, "Test: exit flush ran") == 1,
+          "a GPU assertion runs the session log flush (Linux log pipe drain) once, after its stop line");
+    Check(Has(text, "Assertion Failed!\ngpu crash trace test assertion"),
+          "the assertion message itself reaches the log");
     Check(Has(text, "GPU trace: summary: GPU assertion failed; last event: heap 1 went over its budget: 3072 MiB used of "
                     "2048 MiB budget; no unfinished draw tick, 1 pipelines since the last submission: cs 0x00007171"),
           "the assertion's trace summary names the last event and the recorded pipelines");

@@ -10,7 +10,9 @@
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
+#include <cstdio>
 #include "common/assert.h"
+#include "dcp_first_ops.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_discard_frag.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/cache_storage.h"
@@ -462,12 +464,33 @@ GraphicsPipeline::GraphicsPipeline(
     };
 
     const auto binary_directory = Storage::PipelineBinaryDirectory();
+    // dcp: the first graphics pipeline of the process, its shaders and every VkResult (SOS-BXG9UT).
+    auto& first_ops = DcpFirstOps::Global();
+    bool first = false;
+    if (first_ops.Get(DcpFirstOps::GraphicsPipeline) == DcpFirstOps::State::None) {
+        const auto first_detail = fmt::format("{} ({}), {}, binary cache {}", debug_str,
+                                              preloading ? "warm-up" : "game",
+                                              DescribeKey(key, color_formats, pipeline_rendering_ci),
+                                              instance.GetPipelineBinaryGlobalKey().keySize ? "on" : "off");
+        first = first_ops.Begin(DcpFirstOps::GraphicsPipeline, first_detail.c_str());
+    }
+    const auto finish_first = [&](vk::Result result) {
+        if (first) {
+            first_ops.Finish(DcpFirstOps::GraphicsPipeline, static_cast<int>(result),
+                             vk::to_string(result).c_str());
+            first = false;
+        }
+    };
     const auto create = [&](const vk::GraphicsPipelineCreateInfo& info, std::string_view pass) {
         auto [result, pipe] =
             CreateCachedGraphicsPipeline(device, pipeline_cache, info, key,
                                          instance.GetPipelineBinaryGlobalKey(), binary_directory);
         if (result == vk::Result::eSuccess) {
             return std::move(pipe);
+        }
+        if (first) {
+            std::printf("Runtime: first graphics pipeline creation: cached creation returned %s, retrying\n",
+                        vk::to_string(result).c_str());
         }
         const auto hash = std::hash<GraphicsPipelineKey>{}(key);
         LOG_WARNING(Render_Vulkan,
@@ -480,6 +503,7 @@ GraphicsPipeline::GraphicsPipeline(
             LOG_WARNING(Render_Vulkan, "Pipeline {:#x}{}: clean retry succeeded", hash, pass);
             return std::move(clean);
         }
+        finish_first(clean_result);
         throw PipelineCreationFailed{clean_result,
                                      fmt::format("pipeline {:#x}{} ({}): clean creation failed: {}",
                                                  hash, pass, debug_str,
@@ -497,6 +521,7 @@ GraphicsPipeline::GraphicsPipeline(
         square_pipeline = create(square_info, " squaring pass");
         SetObjectName(device, *square_pipeline, "Graphics Pipeline {} squaring pass", debug_str);
     }
+    finish_first(vk::Result::eSuccess);
     g_dcp_pipeline_total_ns += NsSince(started);
     ++g_dcp_pipelines_built;
 }

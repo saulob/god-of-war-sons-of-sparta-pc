@@ -49,6 +49,7 @@ static void handler(int sig, siginfo_t *info, void *context) {
     sos_fault_arm_deadline(sig, 1);
     sos_fault_write_header(2, sig, info);
     sos_fault_write_context(2);
+    sos_fault_write_thread(2);
     sos_fault_write_location(2, 0x1234, (unsigned long)(uintptr_t)info->si_addr, 0, 0);
     runtime_log_drain();
     if (!strcmp(mode, "blocked")) {
@@ -72,6 +73,7 @@ static void handler(int sig, siginfo_t *info, void *context) {
 static pthread_barrier_t together;
 static void *fault_together(void *unused) {
     (void)unused;
+    pthread_setname_np(pthread_self(), "sos-faulter");
     pthread_barrier_wait(&together);
     *(volatile int *)16 = 1;
     return NULL;
@@ -89,6 +91,8 @@ static int run_child(const char *which, const char *dir, long core_limit) {
     sos_startup_phase("launcher running");
     sos_startup_phase("play: graphics preflight");
     sos_checkpoint_note("Launcher: shown");
+    /* A guest thread's host name is its guest name (runtime_thread.c set_host_name): the report names the thread. */
+    pthread_setname_np(pthread_self(), "sos-crash-main");
 
     if (!strcmp(which, "segv") || !strcmp(which, "nested") || !strcmp(which, "nested_same") || !strcmp(which, "blocked"))
         *(volatile int *)0 = 1;
@@ -229,7 +233,8 @@ int main(int argc, char **argv) {
     static const char *const nested_text[] = {"Test: fault inside the report\n", NULL};
     static const char *const recover_text[] = {"Test: recovered\n", "Test: continued after the recovered fault\n", NULL};
     static const char *const segv_text[] = {"CRASH: signal 11 (SIGSEGV) code ", "Crash: host fault at rip 0x1234, address 0x0\n",
-                                            NULL};
+                                            "Crash: thread ", " (sos-crash-main)\n", NULL};
+    static const char *const concurrent_text[] = {" (sos-faulter)\n", NULL};
     static const char *const blocked_text[] = {"Crash: host fault at rip 0x1234, address 0x0\n",
                                                "Crash: the rest of the report timed out; ending by the original signal\n", NULL};
     static const char *const abort_text[] = {"CRASH: signal 6 (SIGABRT)", NULL};
@@ -246,7 +251,7 @@ int main(int argc, char **argv) {
         {"nested", SIGFPE, 1, nested_text},
         {"nested_same", SIGSEGV, 1, NULL},
         {"recover", SIGSEGV, 1, recover_text},
-        {"concurrent", SIGSEGV, 1, NULL},
+        {"concurrent", SIGSEGV, 1, concurrent_text},
         {"hangup", SIGHUP, 0, hangup_text},
         {"blocked", SIGSEGV, 1, blocked_text},
     };

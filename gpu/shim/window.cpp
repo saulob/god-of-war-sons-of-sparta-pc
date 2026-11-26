@@ -255,11 +255,42 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title, GraphicsApi api
                 display ? int(display - displays.data()) + 1 : 0, displays.size(), display_name.c_str(),
                 window_width, window_height, settings.vsync ? "on" : "off", settings.show_fps_title ? "on" : "off",
                 settings.show_resolution_title ? "on" : "off");
+    // dcp: the size above is the Windowed size setting; in Borderless the window covers the display. The surface the
+    // swapchain is sized from, in pixels, next to the logical size and scale (Wayland fractional scaling, HiDPI).
+    LogSurfaceGeometry("created");
     const SDL_DisplayMode* current = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
     std::printf("Display: refresh %.2f Hz\n", current ? current->refresh_rate : 0.0f);
 #ifndef _WIN32
     std::printf("Session: %s\n", DcpPresent::DescribeSession(DcpPresent::GamescopeSession(), std::getenv).c_str());
 #endif
+}
+
+// The window's logical size, its pixel size (what the swapchain follows), density, display scale and display bounds:
+// at creation and on each size change, at most 8 lines, the same line again never.
+void WindowSDL::LogSurfaceGeometry(const char* what) {
+    int logical_w = 0, logical_h = 0, pixel_w = 0, pixel_h = 0;
+    SDL_GetWindowSize(window, &logical_w, &logical_h);
+    SDL_GetWindowSizeInPixels(window, &pixel_w, &pixel_h);
+    SDL_Rect bounds{};
+    SDL_GetDisplayBounds(SDL_GetDisplayForWindow(window), &bounds);
+    const bool fullscreen = display_mode == DcpGraphics::Borderless; // the mode ApplyDisplayMode requested
+    const float density = SDL_GetWindowPixelDensity(window);
+    const float scale = SDL_GetWindowDisplayScale(window);
+    const std::array<int, 9> state{logical_w, logical_h, pixel_w, pixel_h, bounds.w, bounds.h, fullscreen,
+                                   int(density * 100.0f + 0.5f), int(scale * 100.0f + 0.5f)};
+    static std::array<int, 9> last{};
+    static unsigned lines = 0;
+    constexpr unsigned kMaxLines = 8;
+    if (state == last || lines >= kMaxLines) {
+        return;
+    }
+    last = state;
+    ++lines;
+    const char* driver = SDL_GetCurrentVideoDriver();
+    std::printf("Window: surface %s, pixels %dx%d, logical %dx%d, density %.2f, display scale %.2f, display %dx%d, "
+                "%s, video %s\n",
+                what, pixel_w, pixel_h, logical_w, logical_h, density, scale, bounds.w, bounds.h,
+                fullscreen ? "borderless" : "windowed", driver ? driver : "?");
 }
 
 void WindowSDL::LogGamescopeWindow() {
@@ -676,6 +707,7 @@ bool WindowSDL::PollEvents() {
             width = w;
             height = h;
             LogGamescopeWindow();
+            LogSurfaceGeometry("changed");
             break;
         }
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:

@@ -55,7 +55,10 @@ $mutations = @(
     @{ Name = 'MAXIMIZED does not end a minimize'; File = $present; Old = "        case WindowEvent::Restored:`n        case WindowEvent::Maximized:`n            minimized = false;"; New = "        case WindowEvent::Restored:`n            minimized = false;`n            break;`n        case WindowEvent::Maximized:" },
     @{ Name = 'the window drops MAXIMIZED'; File = $window; Old = "        case SDL_EVENT_WINDOW_MAXIMIZED:`n            ApplyWindowEvent(DcpPresent::WindowEvent::Maximized);`n            break;`n"; New = '' },
     @{ Name = 'the window flags never correct the event stream'; File = $window; Old = 'visibility.Sync((flags & SDL_WINDOW_MINIMIZED) != 0, (flags & SDL_WINDOW_HIDDEN) != 0);'; New = '(void)flags;' },
-    @{ Name = 'Sync keeps a stale minimize'; File = $present; Old = "        minimized = minimized_now;`n        hidden = hidden_now;"; New = "        minimized = minimized || minimized_now;`n        hidden = hidden_now;" }
+    @{ Name = 'Sync keeps a stale minimize'; File = $present; Old = "        minimized = minimized_now;`n        hidden = hidden_now;"; New = "        minimized = minimized || minimized_now;`n        hidden = hidden_now;" },
+    @{ Name = 'a Wayland swapchain ignores the surface limits'; File = $present; Old = 'return {std::max(min_width, std::min(max_width, pixel_width)), std::max(min_height, std::min(max_height, pixel_height))};'; New = 'return {pixel_width, pixel_height};' },
+    @{ Name = 'a fixed surface extent is overridden by the window size'; File = $present; Old = "    if (current_width != UINT32_MAX) {`n        return {current_width, current_height};`n    }"; New = '' },
+    @{ Name = 'a resize stores the logical size'; File = $window; Old = "            SDL_GetWindowSizeInPixels(window, &w, &h);`n            width = w;`n            height = h;`n            LogGamescopeWindow();"; New = "            SDL_GetWindowSize(window, &w, &h);`n            width = w;`n            height = h;`n            LogGamescopeWindow();" }
 )
 $code = Invoke-HostMutationTest -Name 'presentation_swapchain' -Root $root -Test 'tests/presentation_swapchain_tests.cpp' `
     -Copy @($present, $swapchain, $presenter, $window, $windowHeader, $watch) -Mutations $mutations

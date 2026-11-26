@@ -34,6 +34,12 @@ int dcpgpu_init(const DcpGpuConfig *config);
 uintptr_t dcpgpu_resolve(const char *scoped_nid);
 /* A compact one-line summary of the first-frame stages, for the STOP/crash report. */
 void dcpgpu_first_frame_summary(char *out, size_t size);
+/* The first guest GPU operations (shader translation, SPIR-V, pipelines, draw, dispatch, acquire): each none, done,
+ * FAILED or STARTED (in flight, with its shader hashes), for the crash report (gpu/shim/dcp_first_ops.h). */
+void dcpgpu_first_ops_summary(char *out, size_t size);
+/* Prints the GPU trace (last GPU events, unfinished submissions and their pipelines) once per process; uses stdio, so
+ * only the best-effort part of a fault report calls it. */
+void dcpgpu_crash_trace(const char *reason);
 /* Called first by the loader's fault handler: 1 when a GPU page-tracking fault was handled. */
 int dcpgpu_handle_fault(void *context, void *address);
 void dcpgpu_dump_guest_writes(void *context);

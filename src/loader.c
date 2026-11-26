@@ -203,6 +203,11 @@ static void crash_detail(EXCEPTION_POINTERS *info) {
     dcpgpu_first_frame_summary(graphics, sizeof(graphics));
     fprintf(stderr, "  graphics progress: %s\n", graphics);
     {
+        static char first_ops[512];
+        dcpgpu_first_ops_summary(first_ops, sizeof(first_ops));
+        fprintf(stderr, "  first GPU operations: %s\n", first_ops);
+    }
+    {
         static char operations[3072];
         const int fault_address = info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
                                   info->ExceptionRecord->NumberParameters >= 2;
@@ -392,6 +397,7 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
     /* 1. The essential report, async-signal-safe only, then drained into the log file before anything that can block. */
     sos_fault_write_header(2, sig, si);
     sos_fault_write_context(2);
+    sos_fault_write_thread(2);
     const uintptr_t rip = uc_void ? (uintptr_t)((ucontext_t *)uc_void)->uc_mcontext.gregs[REG_RIP] : 0;
     const int guest = image && rip - (uintptr_t)image < image_size;
     sos_fault_write_location(2, (unsigned long)rip, (unsigned long)(uintptr_t)(si ? si->si_addr : NULL), guest,
@@ -414,6 +420,31 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
         const ssize_t written = write(2, line, strlen(line));
         (void)written;
     }
+    {
+        /* Which first guest GPU operation was in flight (SOS-BXG9UT ended between the renderer's own first present and
+         * the game's first frame, with nothing to say which). */
+        static char operations[sizeof(line)];
+        dcpgpu_first_ops_summary(operations, sizeof(operations) - 40);
+        snprintf(line, sizeof(line), "Crash: first GPU operations: %s\n", operations);
+        const ssize_t written = write(2, line, strlen(line));
+        (void)written;
+    }
+    runtime_log_drain();
+    /* As the Windows crash report: the guest memory operations before the fault and the last PS4 calls. */
+    {
+        static char operations[3072];
+        const int has_address = si && (sig == SIGSEGV || sig == SIGBUS);
+        const size_t used = runtime_memory_recent(operations, sizeof(operations),
+                                                  has_address ? (uintptr_t)si->si_addr : 0);
+        if (used) {
+            const ssize_t written = write(2, operations, used);
+            (void)written;
+        }
+    }
+    runtime_history_dump();
+    /* The GPU's last events, unfinished submissions and their pipelines (printed once per process). */
+    if (gpu_enabled) dcpgpu_crash_trace("fatal signal");
+    runtime_log_drain();
     /* Host call chain (frames with unwind information; guest frames end it). */
     void *frames[32];
     const int depth = backtrace(frames, 32);

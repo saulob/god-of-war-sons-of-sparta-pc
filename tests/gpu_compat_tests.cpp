@@ -89,6 +89,40 @@ Capabilities IntelNoBarycentric() {
 Capabilities Nvk() {
     return {.vendor_id = NvidiaVendor, .provoking_vertex = true};
 }
+// SOS-BXG9UT, Intel Arc 140T / Graphics ARL, Mesa ANV 26.2.7 on Xe KMD: no VK_AMD_shader_explicit_vertex_parameter, no
+// VK_KHR_fragment_shader_barycentric, no VK_AMD_mixed_attachment_samples / VK_NV_framebuffer_mixed_samples; with
+// VK_EXT_provoking_vertex (and VK_KHR_pipeline_binary, which the routes do not depend on).
+Capabilities IntelArl() {
+    return {.vendor_id = IntelVendor, .nvidia_proprietary = false, .amd_explicit_vertex_parameter = false,
+            .fragment_shader_barycentric = false, .mixed_depth_samples = false, .provoking_vertex = true};
+}
+
+void TestIntelArlProfile() {
+    const Capabilities arl = IntelArl();
+    const InterpolationRoute route = ChooseInterpolation(arl);
+    Check(route.interpolation == Interpolation::Fallback, "SOS-BXG9UT ARL: driver interpolation (fallback)");
+    Check(!route.manual_interpolation, "SOS-BXG9UT ARL: no manual interpolation (it would need barycentrics)");
+    Check(route.integer_fix, "SOS-BXG9UT ARL: interpolated-integer fix on");
+    const std::uint32_t mixed[2] = {4, 1};
+    Check(!NeedsMixedSamplesInfo(arl.mixed_depth_samples, 4, mixed, 2, true, 1),
+          "SOS-BXG9UT ARL: no VkAttachmentSampleCountInfoAMD without mixed-sample support");
+    Check(Summary(arl) == "GPU: compatibility vendor=0x8086 interpolation=fallback manual_interpolation=off "
+                          "integer_fix=on mixed_samples=no provoking_vertex=yes",
+          "SOS-BXG9UT ARL: the log's compatibility line: " + Summary(arl));
+    // The profile wiring: the shader profile takes the route's flags, never the raw extension list.
+    const std::string cache = Source("gpu/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp");
+    Check(Contains(cache, ".needs_manual_interpolation = interpolation.manual_interpolation,") &&
+              Contains(cache, ".needs_integer_interpolation_fix = interpolation.integer_fix,") &&
+              Contains(cache, ".supports_fragment_shader_barycentric = instance_.IsFragmentShaderBarycentricSupported(),"),
+          "the shader profile follows the interpolation route");
+    // Barycentrics are only asked for when AMD explicit is absent, and their feature struct is unlinked without them.
+    const std::string instance = Source("gpu/shadps4/video_core/renderer_vulkan/vk_instance.cpp");
+    Check(Contains(instance, "    if (!fragment_shader_barycentric) {\n        device_chain.unlink<vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR>();"),
+          "no barycentric feature struct in pNext when the extension is absent");
+    Check(Contains(instance, "    if (!pipeline_binaries) {\n        device_chain.unlink<vk::PhysicalDevicePipelineBinaryFeaturesKHR>();") &&
+              Contains(instance, "feature_chain.get<vk::PhysicalDevicePipelineBinaryFeaturesKHR>().pipelineBinaries &&"),
+          "VK_KHR_pipeline_binary only with its feature, its struct unlinked otherwise");
+}
 
 void TestMixedSamples() {
     const std::uint32_t one[2] = {1, 1};
@@ -374,6 +408,7 @@ int main() {
     TestMixedSamples();
     TestTkxb2vRegression();
     TestInterpolationRoutes();
+    TestIntelArlProfile();
     TestSummary();
     TestIntegerNudge();
     TestSparseRequirement();

@@ -78,6 +78,7 @@ private:
     };
     void ApplyDisplayMode(int mode);
     void LogGamescopeWindow();
+    void LogSurfaceGeometry(const char* what);
     void ToggleBorderless();
     void UpdateFpsTitle();
     void UpdateCursor();

@@ -88,6 +88,16 @@ swapchain, module registration, guest entry and first present. A stage that runs
 focus changes are logged a few times each (`Launcher input:`).
 
 A fatal signal (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT) writes one `CRASH: signal` report with the startup phase,
-the last completed stage and a host backtrace, then the process ends by that same signal: the system's core dump
-policy (`ulimit -c`, `core_pattern`, systemd-coredump) and the exit status Steam sees are unchanged. SIGTERM and SIGINT
-(Steam's Exit game) stay a normal quit; SIGHUP is logged before it ends the process.
+the last completed stage, the faulting thread (`Crash: thread <tid> (<name>)`, a guest thread by its guest name), the
+first guest GPU operations and which one was in flight (`Crash: first GPU operations: ...`), the last guest memory
+operations and PS4 calls, the GPU trace (last GPU events, unfinished submissions and their pipelines) and a host
+backtrace, then the process ends by that same signal: the system's core dump policy (`ulimit -c`, `core_pattern`,
+systemd-coredump) and the exit status Steam sees are unchanged. SIGTERM and SIGINT (Steam's Exit game) stay a normal
+quit; SIGHUP is logged before it ends the process. A GPU library assertion (exit status 23) drains the log before the
+process ends, so its message and trace reach the file.
+
+Between the renderer's own first present and the game's first frame (`Runtime: first present`), the first guest shader
+translation, SPIR-V module (with its interpolation route), graphics and compute pipeline (with every `VkResult` and
+whether the pipeline binary cache is used), draw, dispatch and swapchain acquire each log one `Runtime: first <operation>
+started: ...` and one `... finished: ...` line. `Window: surface ...` lines give the window's size in pixels (what the
+swapchain follows), its logical size, pixel density and display scale (Wayland fractional scaling, HiDPI).

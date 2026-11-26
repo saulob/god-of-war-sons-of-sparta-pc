@@ -25,6 +25,7 @@ $mutations = @(
     @{ Name = 'the device-lost monitor does not print the trace'; File = $monitor; Old = "    if (hooks.capture) {`n        hooks.capture(root);`n    }`n"; New = '' },
     @{ Name = 'the production monitor has no capture hook'; File = $monitor; Old = '    .capture = CaptureGpuTrace,'; New = '    .capture = nullptr,' },
     @{ Name = 'a GPU assertion does not print the trace'; File = $assert; Old = '    Common::GpuTrace::Dump("GPU assertion failed");'; New = '' },
+    @{ Name = 'a GPU assertion ends without draining the session log (SOS-BXG9UT)'; File = $assert; Old = "    if (auto* flush = Common::DeviceLost::Global().ExitFlush()) {`n        flush();`n    }`n"; New = '' },
     @{ Name = 'the unfinished-tick filter takes the completed tick as unfinished'; File = $trace; Old = 'tick > completed && tick <= submitted'; New = 'tick >= completed && tick <= submitted' },
     @{ Name = 'the unfinished-tick filter ignores the submitted tick'; File = $trace; Old = 'tick > completed && tick <= submitted'; New = 'tick > completed' },
     @{ Name = 'a present submission takes the draw pipelines'; File = $trace; Old = "    if (timeline != Timeline::Draw) {`n        return;`n    }`n    // The set recorded"; New = '    // The set recorded' },

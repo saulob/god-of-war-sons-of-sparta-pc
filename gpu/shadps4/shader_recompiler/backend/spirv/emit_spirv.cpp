@@ -3,13 +3,16 @@
 
 #include <algorithm>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 #include <magic_enum/magic_enum.hpp>
 
+#include <cstdio>
 #include "common/assert.h"
 #include "common/func_traits.h"
+#include "dcp_first_ops.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/geometry_output.h"
@@ -671,6 +674,20 @@ void PatchPhiNodes(const IR::Program& program, EmitContext& ctx) {
 
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info,
                            const IR::Program& program, Bindings& binding) {
+    // dcp: the first module of the process names its shader and interpolation route (SOS-BXG9UT).
+    auto& first_ops = DcpFirstOps::Global();
+    bool first = false;
+    if (first_ops.Get(DcpFirstOps::SpirvEmit) == DcpFirstOps::State::None) {
+        char detail[DcpFirstOps::DetailChars];
+        std::snprintf(detail, sizeof(detail), "%s shader 0x%016llx, interpolation %s",
+                      std::string(magic_enum::enum_name(program.info.sw_stage)).c_str(),
+                      static_cast<unsigned long long>(program.info.pgm_hash),
+                      profile.supports_amd_shader_explicit_vertex_parameter ? "amd_explicit"
+                      : profile.supports_fragment_shader_barycentric
+                          ? (profile.needs_manual_interpolation ? "native_barycentric (manual)" : "native_barycentric")
+                          : "fallback");
+        first = first_ops.Begin(DcpFirstOps::SpirvEmit, detail);
+    }
     EmitContext ctx{profile, runtime_info, program.info, binding};
     const Id main{DefineMain(ctx, program)};
     DefineEntryPoint(program.info, runtime_info, ctx, main);
@@ -678,7 +695,11 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     SetupFloatMode(ctx, profile, runtime_info, main);
     PatchPhiNodes(program, ctx);
     binding.user_data += program.info.ud_mask.NumRegs();
-    return ctx.Assemble();
+    auto words = ctx.Assemble();
+    if (first) {
+        first_ops.Finish(DcpFirstOps::SpirvEmit, 0, "emitted");
+    }
+    return words;
 }
 
 Id EmitPhi(EmitContext& ctx, IR::Inst* inst) {

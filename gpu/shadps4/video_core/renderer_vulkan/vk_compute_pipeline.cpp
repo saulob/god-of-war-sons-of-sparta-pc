@@ -3,6 +3,7 @@
 
 #include <boost/container/small_vector.hpp>
 
+#include "dcp_first_ops.h"
 #include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -107,6 +108,13 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .stage = shader_ci,
         .layout = *pipeline_layout,
     };
+    // dcp: the first compute pipeline of the process and its VkResult (SOS-BXG9UT).
+    auto& first_ops = DcpFirstOps::Global();
+    bool first = false;
+    if (first_ops.Get(DcpFirstOps::ComputePipeline) == DcpFirstOps::State::None) {
+        const auto detail = fmt::format("{} ({})", debug_str, preloading ? "warm-up" : "game");
+        first = first_ops.Begin(DcpFirstOps::ComputePipeline, detail.c_str());
+    }
     auto [pipeline_result, pipe] =
         instance.GetDevice().createComputePipelineUnique(pipeline_cache, compute_pipeline_ci);
     // dcp: as the graphics pipelines: one clean retry without the shared pipeline cache, then a
@@ -122,6 +130,10 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         auto [clean_result, clean] =
             instance.GetDevice().createComputePipelineUnique(nullptr, compute_pipeline_ci);
         if (clean_result != vk::Result::eSuccess) {
+            if (first) {
+                first_ops.Finish(DcpFirstOps::ComputePipeline, static_cast<int>(clean_result),
+                                 vk::to_string(clean_result).c_str());
+            }
             throw PipelineCreationFailed{
                 clean_result, fmt::format("compute pipeline {:#x} ({}): clean creation failed: {}",
                                           hash, debug_str, vk::to_string(clean_result))};
@@ -131,6 +143,9 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
     }
     pipeline = std::move(pipe);
     SetObjectName(device, *pipeline, "Compute Pipeline {}", debug_str);
+    if (first) {
+        first_ops.Finish(DcpFirstOps::ComputePipeline, 0, "Success");
+    }
 }
 
 ComputePipeline::~ComputePipeline() = default;

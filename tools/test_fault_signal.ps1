@@ -37,7 +37,14 @@ function Test-LoaderHandler([string]$Text) {
     $risky = @('dladdr(', 'backtrace(', 'snprintf(') | ForEach-Object { $body.IndexOf($_, [StringComparison]::Ordinal) } | Where-Object { $_ -ge 0 }
     $riskyFirst = if ($risky) { ($risky | Measure-Object -Minimum).Minimum } else { [int]::MaxValue }
     $ordered = $deadline -gt $claim -and $location -gt $deadline -and $firstDrain -gt $location -and $riskyFirst -gt $firstDrain
+    # SOS-BXG9UT: the thread in the essential part; the first GPU operations, the PS4 call history, the guest memory
+    # operations and the GPU trace in the best-effort part, after the essential report was drained.
+    $thread = $body.IndexOf('sos_fault_write_thread(2);', [StringComparison]::Ordinal)
+    $extras = @('dcpgpu_first_ops_summary(', 'runtime_history_dump();', 'runtime_memory_recent(', 'dcpgpu_crash_trace(') |
+        ForEach-Object { $body.IndexOf($_, [StringComparison]::Ordinal) }
+    $extrasPlaced = -not ($extras | Where-Object { $_ -lt 0 -or $_ -lt $firstDrain })
     return ($ordered -and $claim -gt $recover -and $claim -gt $gpu -and $recover -ge 0 -and $gpu -ge 0 -and
+        $thread -gt $deadline -and $thread -lt $firstDrain -and $extrasPlaced -and
         $body.Contains('runtime_log_mark_crash();') -and $body.Contains('sos_fault_write_header(2, sig, si);') -and
         $body.Contains('sos_fault_write_context(2);') -and $body.Contains("runtime_log_drain();`n    sos_fault_end(sig);`n}") -and
         -not $body.Contains('_exit(') -and -not $body.Contains('runtime_log_flush()') -and -not $body.Contains('signal(sig, SIG_DFL)'))
@@ -46,6 +53,9 @@ Report 'the loader handler resolves recoverable faults first, then reports once 
 Report 'mutation detected: a handler that ends with _exit fails the source gate' (-not (Test-LoaderHandler $loader.Replace("runtime_log_drain();`n    sos_fault_end(sig);`n}", "runtime_log_drain();`n    _exit(128 + sig);`n}")))
 Report 'mutation detected: a handler that calls dladdr before the deadline is armed fails the source gate' (-not (Test-LoaderHandler $loader.Replace('    sos_fault_arm_deadline(sig, 5);', "    { Dl_info early; dladdr((void *)rip, &early); }`n    sos_fault_arm_deadline(sig, 5);")))
 Report 'mutation detected: a handler that never arms the deadline fails the source gate' (-not (Test-LoaderHandler $loader.Replace('    sos_fault_arm_deadline(sig, 5);', '')))
+Report 'mutation detected: a handler that does not name the thread fails the source gate' (-not (Test-LoaderHandler $loader.Replace("    sos_fault_write_thread(2);`n", '')))
+Report 'mutation detected: a handler without the GPU trace fails the source gate' (-not (Test-LoaderHandler $loader.Replace('    if (gpu_enabled) dcpgpu_crash_trace("fatal signal");', '')))
+Report 'mutation detected: a handler without the first GPU operations fails the source gate' (-not (Test-LoaderHandler $loader.Replace('dcpgpu_first_ops_summary(operations, sizeof(operations) - 40);', '(void)operations;')))
 Report 'mutation detected: a handler that reports before the GPU page-tracking path fails the source gate' (-not (Test-LoaderHandler $loader.Replace('    if (sig == SIGSEGV && si) {', "    if (!sos_fault_begin()) sos_fault_end(sig);`n    if (sig == SIGSEGV && si) {")))
 Report 'the handlers are installed through the module, at start and again after the launcher, with no raw sigaction left' (
     $loader.Contains('sos_fault_install(posix_fault_handler)') -and -not $loader.Contains('sigaction(SIGSEGV') -and
@@ -103,7 +113,9 @@ try {
         @{ Name = 'a second faulting thread writes a second report'; Old = '    if (expected == self) return 0;'; New = '    if (expected == self) return 0;' + "`n    return 1;" },
         @{ Name = 'a blocked report never ends (no deadline)'; Old = '    alarm(seconds);'; New = '    (void)seconds;' },
         @{ Name = 'the deadline ends the process by another signal'; Old = 'sos_fault_end(deadline_signal ? deadline_signal : SIGABRT);'; New = 'sos_fault_end(SIGABRT);' },
-        @{ Name = 'the report lacks the last completed stage'; Old = '    write_text(fd, completed, sizeof(completed) - 1);'; New = '    write_text(fd, completed, 0);' }
+        @{ Name = 'the report lacks the last completed stage'; Old = '    write_text(fd, completed, sizeof(completed) - 1);'; New = '    write_text(fd, completed, 0);' },
+        @{ Name = 'the report does not name the faulting thread'; Old = 'write_string(fd, sos_fault_thread_name(tid, name, sizeof(name)) ? name : "unnamed");'; New = 'write_string(fd, ((void)sos_fault_thread_name(tid, name, sizeof(name)), "unnamed"));' },
+        @{ Name = 'the thread name is read for another thread'; Old = 'at += sos_fault_format_unsigned(path + at, sizeof(path) - at, (unsigned long)tid);'; New = 'at += sos_fault_format_unsigned(path + at, sizeof(path) - at, (unsigned long)(tid ? getpid() : getpid()));' }
     )
     $detected = 0
     foreach ($mutation in $mutations) {

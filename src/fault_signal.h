@@ -39,6 +39,13 @@ const char *sos_fault_signal_name(int sig);
 size_t sos_fault_format_unsigned(char *out, size_t size, unsigned long value);
 size_t sos_fault_format_hex(char *out, size_t size, unsigned long value);
 
+/* The name of thread `tid` from /proc/self/task/<tid>/comm (a guest thread's host name is its guest name), NUL-terminated
+ * in `out`; returns its length, 0 when unknown. Async-signal-safe (open, read, close). */
+size_t sos_fault_thread_name(long tid, char *out, size_t size);
+
+/* "Crash: thread <tid> (<name>)" for the calling thread. Async-signal-safe. */
+void sos_fault_write_thread(int fd);
+
 /* "Crash: guest fault at guest offset 0x..., address 0x..." or "Crash: host fault at rip 0x..., address 0x...".
  * Async-signal-safe. */
 void sos_fault_write_location(int fd, unsigned long rip, unsigned long address, int guest, unsigned long guest_offset);

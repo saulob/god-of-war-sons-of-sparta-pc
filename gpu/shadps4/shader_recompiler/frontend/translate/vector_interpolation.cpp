@@ -80,7 +80,8 @@ void Translator::V_INTERP_P2_F32(const GcnInst& inst) {
                ir.Imm32(DefaultValTable[attr.default_value][inst.control.vintrp.chan]));
         return;
     }
-    ASSERT(!attr.is_flat);
+    ASSERT_MSG(!attr.is_flat, "V_INTERP_P2_F32 on flat attribute {} in shader {:#018x}", attr_index,
+               info.pgm_hash);
     if (!profile.needs_manual_interpolation) {
         interp = GetInterpolation(vgpr_to_interp[inst.src[0].code]);
         SetDst(inst.dst[0], ir.GetAttribute(attrib, inst.control.vintrp.chan));
@@ -101,10 +102,16 @@ void Translator::V_INTERP_MOV_F32(const GcnInst& inst) {
     const auto& attr = runtime_info.hw.fs.inputs[attr_index];
     auto& interp = info.fs_interpolation[attr_index];
     const u32 src_select = inst.src[0].code;
-    ASSERT_MSG(src_select < 3, "Invalid V_INTERP_MOV_F32 selector {}", src_select);
-    ASSERT(attr.is_flat || src_select == 2 ||
-           profile.supports_amd_shader_explicit_vertex_parameter ||
-           profile.supports_fragment_shader_barycentric);
+    ASSERT_MSG(src_select < 3, "Invalid V_INTERP_MOV_F32 selector {} in shader {:#018x}", src_select,
+               info.pgm_hash);
+    // dcp: P10/P20 of a smooth attribute need per-vertex values, which only VK_AMD_shader_explicit_vertex_parameter
+    // and VK_KHR_fragment_shader_barycentric give; without either (Intel ARL, SOS-BXG9UT) the stop names the shader.
+    ASSERT_MSG(attr.is_flat || src_select == 2 ||
+                   profile.supports_amd_shader_explicit_vertex_parameter ||
+                   profile.supports_fragment_shader_barycentric,
+               "V_INTERP_MOV_F32 P{} of smooth attribute {} in shader {:#018x} needs per-vertex attributes "
+               "(no AMD explicit vertex parameter, no fragment shader barycentrics)",
+               src_select == 0 ? "10" : "20", attr_index, info.pgm_hash);
     if (profile.supports_amd_shader_explicit_vertex_parameter ||
         profile.supports_fragment_shader_barycentric) {
         // VSRC 0=P10, 1=P20, 2=P0

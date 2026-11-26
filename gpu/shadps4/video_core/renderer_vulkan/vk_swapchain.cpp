@@ -11,6 +11,7 @@
 #include "common/gpu_trace.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
+#include "dcp_first_ops.h"
 #include "dcp_present.h"
 #include "dcp_startup_watch.h"
 #include "dcp_settings.h"
@@ -220,6 +221,15 @@ void Swapchain::SetHDR(bool hdr) {
 
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
+    // dcp: the first acquire of the process and its result (SOS-BXG9UT: Wayland, Mailbox).
+    auto& first_ops = DcpFirstOps::Global();
+    bool first = false;
+    if (first_ops.Get(DcpFirstOps::Acquire) == DcpFirstOps::State::None) [[unlikely]] {
+        char detail[DcpFirstOps::DetailChars];
+        std::snprintf(detail, sizeof(detail), "swapchain %ux%u, %zu images, %s", extent.width, extent.height,
+                      images.size(), vk::to_string(present_mode).c_str());
+        first = first_ops.Begin(DcpFirstOps::Acquire, detail);
+    }
     const auto result = vk::Result(Common::DeviceLost::CallWhileHealthy(
         Common::DeviceLost::Global(), Common::DeviceLost::Operation::AcquireNextImage, "acquire", 0,
         Common::DeviceLost::Timeline::Present, [&] {
@@ -227,6 +237,9 @@ bool Swapchain::AcquireNextImage() {
                                               image_acquired[frame_index], VK_NULL_HANDLE,
                                               &image_index);
         }));
+    if (first) {
+        first_ops.Finish(DcpFirstOps::Acquire, static_cast<int>(result), vk::to_string(result).c_str());
+    }
 
     ReportResult(false, result);
     surface_lost |= result == vk::Result::eErrorSurfaceLostKHR;
@@ -445,13 +458,12 @@ void Swapchain::SetSurfaceProperties() {
     ASSERT_MSG(capabilities_result == vk::Result::eSuccess,
                "Failed to query surface capabilities: {}", vk::to_string(capabilities_result));
 
-    extent = capabilities.currentExtent;
-    if (capabilities.currentExtent.width == std::numeric_limits<u32>::max()) {
-        extent.width = std::max(capabilities.minImageExtent.width,
-                                std::min(capabilities.maxImageExtent.width, width));
-        extent.height = std::max(capabilities.minImageExtent.height,
-                                 std::min(capabilities.maxImageExtent.height, height));
-    }
+    // width/height: the window's size in pixels (WindowSDL keeps SDL_GetWindowSizeInPixels).
+    const DcpPresent::Extent chosen = DcpPresent::SwapchainExtent(
+        capabilities.currentExtent.width, capabilities.currentExtent.height, capabilities.minImageExtent.width,
+        capabilities.minImageExtent.height, capabilities.maxImageExtent.width, capabilities.maxImageExtent.height, width,
+        height);
+    extent = vk::Extent2D{chosen.width, chosen.height};
 
     surface_min_images = capabilities.minImageCount;
     surface_max_images = capabilities.maxImageCount;

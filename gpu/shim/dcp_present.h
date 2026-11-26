@@ -70,6 +70,23 @@ inline bool SurfaceHasArea(std::uint32_t current_width, std::uint32_t current_he
            (current_width == UINT32_MAX || (current_width > 0 && current_height > 0));
 }
 
+/// The swapchain extent. A surface that fixes its size (X11, Win32, Gamescope) gives it as currentExtent; a Wayland
+/// surface reports UINT32_MAX and takes the window's size in pixels (SDL_GetWindowSizeInPixels: logical size x
+/// fractional scale), clamped to the surface limits; never the logical size (SOS-BXG9UT: KDE Wayland, 1755x987 logical
+/// windowed size, 2194x1234 pixels).
+struct Extent {
+    std::uint32_t width;
+    std::uint32_t height;
+};
+inline Extent SwapchainExtent(std::uint32_t current_width, std::uint32_t current_height, std::uint32_t min_width,
+                              std::uint32_t min_height, std::uint32_t max_width, std::uint32_t max_height,
+                              std::uint32_t pixel_width, std::uint32_t pixel_height) {
+    if (current_width != UINT32_MAX) {
+        return {current_width, current_height};
+    }
+    return {std::max(min_width, std::min(max_width, pixel_width)), std::max(min_height, std::min(max_height, pixel_height))};
+}
+
 inline constexpr int kSurfaceLostResult = -1000000000; ///< VK_ERROR_SURFACE_LOST_KHR
 
 /// What vkGetPhysicalDeviceSurfaceCapabilitiesKHR says about the surface. Another error is left to the creation, which

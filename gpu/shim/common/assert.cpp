@@ -16,6 +16,13 @@ void assert_fail_impl() {
     // What the GPU was doing, before the stop line (printed once: a failed Vulkan call may have printed it already).
     Common::GpuTrace::Dump("GPU assertion failed");
     std::fputs("STOP: GPU library assertion failed (see GPU log above)\n", stderr);
+    std::fflush(stderr);
+    // On Linux the session log is a pipe the log thread copies into the file: _Exit would drop whatever it had not read
+    // yet, this assertion's own lines included (SOS-BXG9UT ended with no trace of its cause). The same flush as a device
+    // loss: phase line, crash mark, drained log.
+    if (auto* flush = Common::DeviceLost::Global().ExitFlush()) {
+        flush();
+    }
     std::_Exit(23);
 }
 

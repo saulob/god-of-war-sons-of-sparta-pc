@@ -2,6 +2,8 @@
 // Presenter progress telemetry for Gamescope sessions (dcp_startup_watch.h).
 #include "dcp_startup_watch.h"
 
+#include "common/gpu_trace.h"
+#include "dcp_first_ops.h"
 #include "dcp_present.h"
 
 #include <array>
@@ -185,6 +187,23 @@ extern "C" void dcpgpu_startup_video_frame(const void* source) {
         video_frame.compare_exchange_strong(none, kVideoFrameDelivered)) {
         sos_startup_milestone("first video frame");
     }
+}
+
+namespace DcpFirstOps {
+Tracker& Global() noexcept {
+    static constinit Tracker tracker{};
+    return tracker;
+}
+} // namespace DcpFirstOps
+
+// The first GPU operations behind the game's first frame and which one was in flight (crash reports).
+extern "C" void dcpgpu_first_ops_summary(char* out, size_t size) {
+    DcpFirstOps::Global().Describe(out, size);
+}
+
+// The GPU trace (gpu/shim/common/gpu_trace.h) for a fatal signal's best-effort report: printed once per process.
+extern "C" void dcpgpu_crash_trace(const char* reason) {
+    Common::GpuTrace::Dump(reason);
 }
 
 namespace DcpStartupWatch {

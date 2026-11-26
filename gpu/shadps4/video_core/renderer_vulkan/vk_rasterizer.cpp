@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <xxhash.h>
 #include "dcp_amd_water_fix.h"
+#include "dcp_first_ops.h"
 #include "dcp_toggles.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
@@ -1064,6 +1065,16 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             draw();
         }
     });
+    if (auto& first_ops = DcpFirstOps::Global();
+        first_ops.Get(DcpFirstOps::Draw) == DcpFirstOps::State::None) [[unlikely]] {
+        const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        char detail[DcpFirstOps::DetailChars];
+        std::snprintf(detail, sizeof(detail), "recorded, vs 0x%08llx ps 0x%08llx, %u %s, %u instances",
+                      static_cast<unsigned long long>(vs_info.pgm_hash),
+                      static_cast<unsigned long long>(ps ? ps->pgm_hash : 0), num_indices,
+                      is_indexed ? "indices" : "vertices", num_instances);
+        first_ops.Once(DcpFirstOps::Draw, detail);
+    }
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
@@ -1294,6 +1305,13 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
     });
+    if (auto& first_ops = DcpFirstOps::Global();
+        first_ops.Get(DcpFirstOps::Dispatch) == DcpFirstOps::State::None) [[unlikely]] {
+        char detail[DcpFirstOps::DetailChars];
+        std::snprintf(detail, sizeof(detail), "recorded, cs 0x%08llx, groups %ux%ux%u",
+                      static_cast<unsigned long long>(cs.pgm_hash), dim_x, dim_y, dim_z);
+        first_ops.Once(DcpFirstOps::Dispatch, detail);
+    }
     DebugState.IncDispatch();
 
     ResetBindings(true);

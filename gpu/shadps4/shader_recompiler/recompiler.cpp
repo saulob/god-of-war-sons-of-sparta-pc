@@ -3,8 +3,10 @@
 
 #include <unordered_map>
 
+#include <cstdio>
 #include <iterator>
 #include "common/gpu_trace.h"
+#include "dcp_first_ops.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -147,6 +149,16 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     const u32 hw_stage = u32(info.hw_stage);
     Common::GpuTrace::Record(Common::GpuTrace::Event::ShaderCompile, info.pgm_hash,
                              Common::GpuTrace::Tag(hw_stage < std::size(hw_stage_tags) ? hw_stage_tags[hw_stage] : "?"));
+    // dcp: the first guest shader of the process, started and finished (SOS-BXG9UT).
+    auto& first_ops = DcpFirstOps::Global();
+    bool first = false;
+    if (first_ops.Get(DcpFirstOps::ShaderTranslate) == DcpFirstOps::State::None) {
+        char detail[DcpFirstOps::DetailChars];
+        std::snprintf(detail, sizeof(detail), "%s shader 0x%016llx, %zu dwords",
+                      hw_stage < std::size(hw_stage_tags) ? hw_stage_tags[hw_stage] : "?",
+                      static_cast<unsigned long long>(info.pgm_hash), code.size());
+        first = first_ops.Begin(DcpFirstOps::ShaderTranslate, detail);
+    }
     // Ensure first instruction is expected.
     constexpr u32 token_mov_vcchi = 0xBEEB03FF;
     if (code[0] != token_mov_vcchi) {
@@ -242,6 +254,9 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::CollectShaderInfoPass(program, profile);
     Shader::IR::DumpProgram(program, info);
 
+    if (first) {
+        first_ops.Finish(DcpFirstOps::ShaderTranslate, 0, "translated");
+    }
     return program;
 }
 

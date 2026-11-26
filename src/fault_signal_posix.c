@@ -6,7 +6,9 @@
 #include "runtime_log.h"
 #include "startup_phase.h"
 
+#include <errno.h>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -119,6 +121,40 @@ size_t sos_fault_format_hex(char *out, size_t size, unsigned long value) {
     while (count && used + 1 < size) out[used++] = reversed[--count];
     if (size) out[used] = 0;
     return used;
+}
+
+size_t sos_fault_thread_name(long tid, char *out, size_t size) {
+    if (!size) return 0;
+    out[0] = 0;
+    /* "/proc/self/task/<tid>/comm" without stdio. */
+    char path[64] = "/proc/self/task/";
+    size_t at = strlen(path);
+    at += sos_fault_format_unsigned(path + at, sizeof(path) - at, (unsigned long)tid);
+    static const char comm[] = "/comm";
+    if (at + sizeof(comm) > sizeof(path)) return 0;
+    memcpy(path + at, comm, sizeof(comm));
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t got;
+    do got = read(fd, out, size - 1); while (got < 0 && errno == EINTR);
+    close(fd);
+    size_t used = got > 0 ? (size_t)got : 0;
+    while (used && (out[used - 1] == '\n' || out[used - 1] == '\r')) --used;
+    for (size_t i = 0; i < used; ++i)
+        if ((unsigned char)out[i] < 0x20) out[i] = '?';
+    out[used] = 0;
+    return used;
+}
+
+void sos_fault_write_thread(int fd) {
+    const long tid = syscall(SYS_gettid);
+    char number[24], name[32];
+    sos_fault_format_unsigned(number, sizeof(number), (unsigned long)tid);
+    write_string(fd, "Crash: thread ");
+    write_string(fd, number);
+    write_string(fd, " (");
+    write_string(fd, sos_fault_thread_name(tid, name, sizeof(name)) ? name : "unnamed");
+    write_string(fd, ")\n");
 }
 
 void sos_fault_write_location(int fd, unsigned long rip, unsigned long address, int guest, unsigned long guest_offset) {
