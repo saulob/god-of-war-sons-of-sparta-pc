@@ -595,7 +595,7 @@ export const ADMIN_JS = String.raw`(function () {
     settings_save_failed: 'Settings not saved', launcher_close_hang: 'Launcher close hang',
     runtime_handoff_failed: 'Handoff failed', startup_hang: 'Startup hang', startup_crash: 'Startup crash',
     black_screen: 'Black screen', device_lost: 'Device lost', memory_failure: 'Out of memory', crash: 'Crash',
-    normal_exit: 'Normal exit', ended_unexpectedly: 'No closing record', unknown: '-'
+    normal_exit: 'Normal exit', ended_unexpectedly: 'No closing record', install_failed: 'Install failed', unknown: '-'
   };
 
   function removeBugReport(ticket) {

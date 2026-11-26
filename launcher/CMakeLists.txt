@@ -36,7 +36,7 @@ find_package(ZLIB REQUIRED)
 add_library(sos_launcher_core STATIC boot_image.cpp bug_report.cpp bug_report_link.cpp build_diagnostics.cpp
     controller_icons.cpp icon_bundle.cpp controller_prompts.c prompt_dialog.c image_glyphs.c file_browser.cpp
     game_files.cpp
-    game_install.cpp game_process.cpp game_profile.cpp header_art.cpp log_scrubber.cpp options.cpp page_icons.cpp paths.cpp
+    game_install.cpp game_process.cpp game_profile.cpp header_art.cpp install_fs.cpp log_scrubber.cpp options.cpp page_icons.cpp paths.cpp
     pkg_extract.cpp report_history.cpp resolution.cpp settings.cpp trophy_content.cpp localization/ui_text.cpp
     updater/json.cpp
     ${PROJECT_SOURCE_DIR}/src/net/json.cpp ${PROJECT_SOURCE_DIR}/src/net/report_link.cpp

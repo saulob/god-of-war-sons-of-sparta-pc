@@ -24,12 +24,13 @@ inline const std::vector<std::string_view>& SessionOutcomeKeys() {
         "launcher_no_play",       "play_blocked",      "graphics_preflight_failed", "settings_save_failed",
         "launcher_close_hang",    "runtime_handoff_failed", "startup_hang",          "startup_crash",
         "black_screen",           "device_lost",       "memory_failure",            "crash",
-        "normal_exit",            "ended_unexpectedly", "unknown",
+        "normal_exit",            "ended_unexpectedly", "install_failed",           "unknown",
     };
     return keys;
 }
 
 inline const char* SessionOutcomeLabel(std::string_view key) {
+    if (key == "install_failed") return "Game installation failed";
     if (key == "launcher_no_play") return "Launcher open, no PLAY attempt";
     if (key == "play_blocked") return "PLAY requested but blocked";
     if (key == "graphics_preflight_failed") return "Graphics check failed";
@@ -61,6 +62,62 @@ inline std::string StageOf(std::string_view line) {
     return std::string(rest);
 }
 
+inline std::string ValueOf(std::string_view line, std::string_view key, std::string_view until = " ") {
+    const size_t at = line.find(key);
+    if (at == std::string_view::npos) return {};
+    std::string_view rest = line.substr(at + key.size());
+    return std::string(rest.substr(0, std::min(rest.find(until), rest.size())));
+}
+
+// The latest installation attempt; a later success or cancel clears its failure.
+struct InstallTrace {
+    int attempts = 0;
+    bool failed = false;
+    std::string package, error, stage, progress, operation, win32, path_length;
+
+    void Read(std::string_view line) {
+        if (line.starts_with("Launcher: installing the game from ") || line.starts_with("Launcher: installing an update from ")) {
+            const int seen = attempts + 1;
+            *this = InstallTrace{};
+            attempts = seen;
+        } else if (line.starts_with("Launcher: package recognized: ")) {
+            const size_t is = line.find(" is ");
+            if (is != std::string_view::npos) package = std::string(line.substr(is + 4));
+        } else if (line.starts_with("Launcher: game install failed: ")) {
+            failed = true;
+            error = std::string(line.substr(31));
+        } else if (line.starts_with("Launcher: install failure: ")) {
+            stage = ValueOf(line, " stage=", " progress=");
+            progress = ValueOf(line, " progress=");
+        } else if (line.starts_with("Launcher: install filesystem error: ")) {
+            const std::string_view rest = line.substr(36);
+            operation = std::string(rest.substr(0, std::min(rest.find(" failed:"), rest.size())));
+            win32 = ValueOf(line, " win32=", "\n");
+            path_length = ValueOf(line, " path_length=");
+        } else if (line.starts_with("Launcher: game installed: ") || line.starts_with("Launcher: game already up to date") ||
+                   line == "Launcher: game install cancelled") {
+            failed = false;
+        }
+    }
+
+    std::string Detail() const {
+        std::string out;
+        const auto add = [&out](const std::string& part) {
+            if (part.empty()) return;
+            out += (out.empty() ? "" : "; ") + part;
+        };
+        add(package);
+        add(error);
+        if (!stage.empty() && stage != "-") add("stage: " + stage + (progress.empty() || progress == "unknown" ? "" : " at " + progress));
+        if (!operation.empty()) {
+            add(operation + " failed" + (win32.empty() ? "" : ", win32=" + win32) +
+                (path_length.empty() ? "" : ", path_length=" + path_length));
+        }
+        if (attempts > 1) add(std::to_string(attempts) + " install attempts");
+        return out;
+    }
+};
+
 inline bool IsMemoryLine(std::string_view line) {
     return Has(line, "ErrorOutOfDeviceMemory") || Has(line, "ErrorOutOfHostMemory") || Has(line, "OUT_OF_DEVICE_MEMORY") ||
            Has(line, "OUT_OF_HOST_MEMORY") || Has(line, "Out of memory");
@@ -82,6 +139,7 @@ inline SessionOutcome AnalyzeSessionOutcome(std::string_view log) {
     std::string last_stage, watchdog_stage, signal_line;
     std::string trace;  // the GPU trace summary of a device loss or GPU assertion, without its prefix
     std::vector<std::string> recent;  // the last lines before a crash, for the memory check
+    InstallTrace install;
 
     for (size_t at = 0; at < log.size();) {
         const size_t end = std::min(log.find('\n', at), log.size());
@@ -89,6 +147,8 @@ inline SessionOutcome AnalyzeSessionOutcome(std::string_view log) {
         at = end + 1;
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
         if (line.empty()) continue;
+
+        install.Read(line);
 
         if (line.starts_with("Stage: ")) last_stage = StageOf(line);
         if (line.starts_with("Stage") || line.starts_with("Session: ")) modern = true;
@@ -178,6 +238,7 @@ inline SessionOutcome AnalyzeSessionOutcome(std::string_view log) {
 
     const bool game = handoff || game_child || first_present;
     if (!game) {
+        if (install.failed && !play_starting) return with("install_failed", install.Detail());
         if (!launcher_shown && !play) return with("unknown", joined(where, closed_record ? "" : no_record));
         if (!play) {
             return with("launcher_no_play", joined(where, closed_record ? "the launcher was closed" : no_record));

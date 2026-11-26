@@ -92,13 +92,13 @@ try {
     Write-Step 'Cases 5 and 6: the launcher owns installation'
     $installer = Get-Content -LiteralPath (Join-Path $root 'launcher\game_install.cpp') -Raw
     Check ($installer -match 'package\.Extract\(layout\.app0_stage') 'the base install unpacks the whole package into app0'
-    Check (([regex]::Matches($installer, 'WriteMarker\([\s\S]*?"full"\)')).Count -ge 2) 'installs record a full-scope marker'
+    Check (([regex]::Matches($installer, 'WriteMarker\([^;]*?"full"[,)]')).Count -ge 2) 'installs record a full-scope marker'
     Check ($installer -match 'StageUpdate\(base\.app0, update_dir, layout\.app0_stage\)') 'an update starts from the installed base'
     Check ($installer -match 'OverlayUpdate') 'an update lays its files over the base'
     Check ($installer -match 'BuildBootImage\(layout\.app0_stage, layout\.image_stage\)') 'the image is built from the staged tree'
     Check ($installer -match 'CheckGameFiles\(\{layout\.app0_stage, layout\.image_stage\}') 'the staged installation is validated'
     $overlay = [regex]::Match($installer, 'InstallResult OverlayUpdate[\s\S]*?\r?\n\}\r?\n').Value
-    Check ($overlay -match 'fs::rename\(from, to') 'update files replace the staged copies'
+    Check ($overlay -match '(fs|installfs)::[Rr]ename\(from, to') 'update files replace the staged copies'
     Check ($overlay -notmatch 'remove_all\(staged') 'unchanged base files stay in the staged tree'
 
     $profile = Get-Content -LiteralPath (Join-Path $root 'launcher\game_profile.cpp') -Raw

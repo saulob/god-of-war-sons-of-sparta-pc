@@ -926,6 +926,7 @@ private:
             } else {
                 Log("game installed: %zu files (%zu linked), %llu bytes", outcome->files, outcome->linked,
                     static_cast<unsigned long long>(outcome->bytes));
+                LogInstallPaths(*outcome);
             }
             paths_ = ActiveBuildPaths(RootsOf(paths_));
             Recheck();
@@ -942,6 +943,9 @@ private:
         }
         if (outcome->status == InstallStatus::kCancelled) {
             Log("game install cancelled");
+            for (const std::string& leftover : outcome->leftovers) {
+                Log("install staging left for the next attempt: %s", leftover.c_str());
+            }
             launcher_->SetStatus(std::string(message.title) + ". " + message.text, 6.0);
             return;
         }
@@ -949,9 +953,41 @@ private:
             std::printf("%s\n", line.c_str());
         }
         Log("game install failed: %s (%s)", message.title.c_str(), outcome->detail.c_str());
+        LogInstallFailure(*outcome);
         install_failure_ = message.title;
         install_failure_text_ = message.text;
         launcher_->SetStatus(Tr("Install failed: ") + install_failure_, 8.0);
+    }
+
+    // session_outcome.h reads these lines.
+    static void LogInstallFailure(const InstallResult& outcome) {
+        std::string step = outcome.stage;
+        while (!step.empty() && step.back() == '.') {
+            step.pop_back();
+        }
+        std::string progress = "unknown";
+        if (outcome.stage_total > 0) {
+            progress = std::to_string(outcome.stage_done * 100 / outcome.stage_total) + "% (" +
+                       std::to_string(outcome.stage_done) + "/" + std::to_string(outcome.stage_total) + " bytes)";
+        }
+        Log("install failure: status=%s stage=%s progress=%s", InstallStatusKey(outcome.status),
+            step.empty() ? "-" : step.c_str(), progress.c_str());
+        if (outcome.fs_error.failed()) {
+            Log("install filesystem error: %s", outcome.fs_error.Describe().c_str());
+        }
+        LogInstallPaths(outcome);
+        for (const std::string& leftover : outcome.leftovers) {
+            Log("install staging left for the next attempt: %s", leftover.c_str());
+        }
+    }
+
+    static void LogInstallPaths(const InstallResult& outcome) {
+        if (outcome.paths.target > 0) {
+            Log("install paths: target_length=%zu staging_length=%zu longest_final=%zu longest_staging=%zu "
+                "max_path=%zu long_paths=%s longest_file=%s",
+                outcome.paths.target, outcome.paths.staging, outcome.paths.longest_final, outcome.paths.longest_staging,
+                installfs::kMaxPath - 1, outcome.paths.long_paths ? "on" : "off", outcome.paths.longest_relative.c_str());
+        }
     }
 
     const SosAspectRatio& SavedAspectRatio() const {

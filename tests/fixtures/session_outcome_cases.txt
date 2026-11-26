@@ -282,3 +282,72 @@ Stage: guest entry started +15517 ms (after linked modules initialization, 3 ms)
 === empty log
 expect: unknown
 [run] God of War: Sons of Sparta PC
+=== SOS-6Y8NVY (v0.1.0 Windows 10 log: the base package fails at the same file on every attempt)
+expect: install_failed
+detail: CUSA57767 1.00 USA (base, layer 1 of 1); Could not install the game (cannot create <install>.install-temp\Media/StreamingAssets/aa/PS4/rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle); 4 install attempts
+[run] God of War: Sons of Sparta PC
+[run] boot (selected by the launcher)
+[run] log logs\sons_of_sparta_004.log
+CPU: Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
+Launcher: game files in <install>: missing (game folder not found)
+Launcher: opening: game files not ready, show_launcher on
+Launcher: shown
+Updater: No update available
+Launcher: installing the game from <folder>\UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100-CyB1K.pkg
+Launcher: package recognized: UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100-CyB1K.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game install failed: Could not install the game (cannot create <install>.install-temp\Media/StreamingAssets/aa/PS4/rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle)
+Launcher: installing the game from <folder>\UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0101-V0100-7.00-CyB1K.pkg
+Launcher: package recognized: UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0101-V0100-7.00-CyB1K.pkg is CUSA57767 1.01 USA (update, layer 2 of 2, laid over CUSA57767 1.00 USA)
+Launcher: game install failed: This is an update package (update package for CUSA57767 1.01 USA)
+Launcher: installing the game from <folder>\UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0101-V0100-7.00-CyB1K.pkg
+Launcher: package recognized: UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0101-V0100-7.00-CyB1K.pkg is CUSA57767 1.01 USA (update, layer 2 of 2, laid over CUSA57767 1.00 USA)
+Launcher: game install failed: This is an update package (update package for CUSA57767 1.01 USA)
+Launcher: installing the game from <folder>\UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100-CyB1K.pkg
+Launcher: package recognized: UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100-CyB1K.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game install failed: Could not install the game (cannot create <install>.install-temp\Media/StreamingAssets/aa/PS4/rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle)
+Launcher performance: renderer=direct3d11 render_hz=59.9 cpu=2.4% build=0.2ms submit=0.2ms present=4.1ms frame=4.4ms slow_presents=0 minimized=0% wakes=0
+Launcher: closed
+=== install failure with the filesystem diagnostics of 0.1.1
+expect: install_failed
+detail: stage: Unpacking the game files at 43%; create file failed, win32=3 ERROR_PATH_NOT_FOUND, path_length=271
+Launcher: shown
+Launcher: installing the game from <folder>\UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100.pkg
+Launcher: package recognized: UP9000-CUSA57767_00-SONSOFSPARTAPS40-A0100-V0100.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game install failed: Could not install the game (cannot create <install>.install-temp\Media\StreamingAssets\aa\PS4\rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle: The system cannot find the path specified)
+Launcher: install failure: status=write_failed stage=Unpacking the game files progress=43% (4120309346/9508144635 bytes)
+Launcher: install filesystem error: create file failed: path=<install>.install-temp\Media\StreamingAssets\aa\PS4\rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle path_length=271 error=3 category=system message=The system cannot find the path specified win32=3 ERROR_PATH_NOT_FOUND
+Launcher: install paths: target_length=137 staging_length=150 longest_final=258 longest_staging=271 max_path=259 long_paths=off longest_file=Media\StreamingAssets\aa\PS4\rewardassets_assets_onenemyhitorbs_normaldmg_spirit_2301b2731ef4afeb9fccafb7fd438410.bundle
+Launcher: closed
+Session: normal exit
+=== a failed installation that a later attempt completed
+expect: launcher_no_play
+detail: the launcher was closed
+Launcher: shown
+Launcher: installing the game from <folder>\base.pkg
+Launcher: package recognized: base.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game install failed: Could not install the game (cannot create <install>.install-temp\eboot.bin: Access is denied)
+Launcher: install failure: status=write_failed stage=Unpacking the game files progress=0% (0/9508144635 bytes)
+Launcher: installing the game from <folder>\base.pkg
+Launcher: package recognized: base.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game installed: 4137 files (0 linked), 9508144635 bytes
+Launcher: closed
+Session: normal exit
+=== a failed installation, then one the player cancelled
+expect: launcher_no_play
+Launcher: shown
+Launcher: installing the game from <folder>\base.pkg
+Launcher: game install failed: Not enough free space (needs 9508144635 bytes, 1000 available)
+Launcher: installing the game from <folder>\base.pkg
+Launcher: game install cancelled
+Launcher: closed
+Session: normal exit
+=== a failed installation, then PLAY refused for the missing game files
+expect: install_failed
+detail: The port's folder path is too long
+Launcher: shown
+Launcher: installing the game from <folder>\base.pkg
+Launcher: package recognized: base.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game install failed: The port's folder path is too long (the installed game's longest file would be 262 characters, Windows allows 259 without long paths: <install>\Media\StreamingAssets\aa\PS4\x.bundle)
+Launcher: install failure: status=path_too_long stage=Checking the package progress=unknown
+Stage event: PLAY requested input=mouse +5000 ms
+Stage event: PLAY blocked: game files missing +5010 ms

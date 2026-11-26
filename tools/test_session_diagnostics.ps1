@@ -164,6 +164,8 @@ try {
         @{ Name = 'a failed graphics preflight reads as a plain refusal'; File = 'launcher/session_outcome.h'; Old = 'if (blocked.starts_with("graphics preflight")) return with("graphics_preflight_failed", blocked);'; New = '' },
         @{ Name = 'the Bug Report ignores stage lines'; File = 'launcher/bug_report.cpp'; Old = 'if (started != std::string_view::npos && started > 0) {'; New = 'if (false) {' },
         @{ Name = 'the preview loses the session outcome'; File = 'launcher/bug_report.cpp'; Old = "        if (field.key == kLogTextKey) {`n            // Derived"; New = "        if (false) {`n            // Derived" },
+        @{ Name = 'a failed installation reads as a launcher left without PLAY'; File = 'launcher/session_outcome.h'; Old = 'if (install.failed && !play_starting) return with("install_failed", install.Detail());'; New = '' },
+        @{ Name = 'install attempts are not counted'; File = 'launcher/session_outcome.h'; Old = '            attempts = seen;'; New = '' },
         @{ Name = 'a shared case changed (the dashboard and the launcher disagree)'; File = 'tests/fixtures/session_outcome_cases.txt'; Old = "expect: graphics_preflight_failed"; New = "expect: play_blocked" }
     )
     $detected = 0

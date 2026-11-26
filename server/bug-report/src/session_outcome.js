@@ -3,12 +3,12 @@
 // reports get it too and the launcher sends no new field. A log that just stops is never called a crash.
 
 // Raise when a rule changes: stored outcomes of older rules are classified again when the service starts.
-export const SESSION_OUTCOME_RULES = 3;
+export const SESSION_OUTCOME_RULES = 4;
 
 export const SESSION_OUTCOMES = [
   'launcher_no_play', 'play_blocked', 'graphics_preflight_failed', 'settings_save_failed', 'launcher_close_hang',
   'runtime_handoff_failed', 'startup_hang', 'startup_crash', 'black_screen', 'device_lost', 'memory_failure', 'crash',
-  'normal_exit', 'ended_unexpectedly', 'unknown',
+  'normal_exit', 'ended_unexpectedly', 'install_failed', 'unknown',
 ];
 
 const LABELS = {
@@ -26,6 +26,7 @@ const LABELS = {
   crash: 'Crash during play',
   normal_exit: 'Normal exit',
   ended_unexpectedly: 'Ended without a closing record',
+  install_failed: 'Game installation failed',
   unknown: 'Not enough information',
 };
 
@@ -46,6 +47,58 @@ function stageOf(line) {
 
 const joined = (a, b) => (!a ? b : !b ? a : `${a}; ${b}`);
 
+function valueOf(line, key, until = ' ') {
+  const at = line.indexOf(key);
+  if (at < 0) return '';
+  const rest = line.slice(at + key.length);
+  const end = rest.indexOf(until);
+  return end >= 0 ? rest.slice(0, end) : rest;
+}
+
+// The latest installation attempt; a later success or cancel clears its failure.
+const newInstall = (attempts = 0) => ({
+  attempts, failed: false, pkg: '', error: '', stage: '', progress: '', operation: '', win32: '', pathLength: '',
+});
+
+function readInstall(install, line) {
+  if (line.startsWith('Launcher: installing the game from ') || line.startsWith('Launcher: installing an update from ')) {
+    return newInstall(install.attempts + 1);
+  }
+  if (line.startsWith('Launcher: package recognized: ')) {
+    const is = line.indexOf(' is ');
+    if (is >= 0) install.pkg = line.slice(is + 4);
+  } else if (line.startsWith('Launcher: game install failed: ')) {
+    install.failed = true;
+    install.error = line.slice(31);
+  } else if (line.startsWith('Launcher: install failure: ')) {
+    install.stage = valueOf(line, ' stage=', ' progress=');
+    install.progress = valueOf(line, ' progress=');
+  } else if (line.startsWith('Launcher: install filesystem error: ')) {
+    const rest = line.slice(36);
+    const at = rest.indexOf(' failed:');
+    install.operation = at >= 0 ? rest.slice(0, at) : rest;
+    install.win32 = valueOf(line, ' win32=', '\n');
+    install.pathLength = valueOf(line, ' path_length=');
+  } else if (line.startsWith('Launcher: game installed: ') || line.startsWith('Launcher: game already up to date') ||
+             line === 'Launcher: game install cancelled') {
+    install.failed = false;
+  }
+  return install;
+}
+
+function installDetail(install) {
+  const parts = [install.pkg, install.error];
+  if (install.stage && install.stage !== '-') {
+    parts.push(`stage: ${install.stage}${!install.progress || install.progress === 'unknown' ? '' : ` at ${install.progress}`}`);
+  }
+  if (install.operation) {
+    parts.push(`${install.operation} failed${install.win32 ? `, win32=${install.win32}` : ''}` +
+      `${install.pathLength ? `, path_length=${install.pathLength}` : ''}`);
+  }
+  if (install.attempts > 1) parts.push(`${install.attempts} install attempts`);
+  return parts.filter(Boolean).join('; ');
+}
+
 export function analyzeSessionOutcome(log) {
   const s = {
     launcherShown: false, play: false, playStarting: false, launcherClosed: false, handoff: false, gameChild: false,
@@ -62,10 +115,12 @@ export function analyzeSessionOutcome(log) {
   let gameQuit = false;
   let modern = false;
   const recent = [];
+  let install = newInstall();
 
   for (let line of String(log ?? '').split('\n')) {
     if (line.endsWith('\r')) line = line.slice(0, -1);
     if (!line) continue;
+    install = readInstall(install, line);
     if (line.startsWith('Stage: ')) lastStage = stageOf(line);
     if (line.startsWith('Stage') || line.startsWith('Session: ')) modern = true;
     if (line === 'Launcher: shown') s.launcherShown = true;
@@ -141,6 +196,7 @@ export function analyzeSessionOutcome(log) {
 
   const game = s.handoff || s.gameChild || s.firstPresent;
   if (!game) {
+    if (install.failed && !s.playStarting) return out('install_failed', installDetail(install));
     if (!s.launcherShown && !s.play) return out('unknown', joined(where, closedRecord ? '' : NO_RECORD));
     if (!s.play) return out('launcher_no_play', joined(where, closedRecord ? 'the launcher was closed' : NO_RECORD));
     if (blocked && !s.playStarting) {

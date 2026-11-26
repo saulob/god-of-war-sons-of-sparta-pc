@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "game_files.h"
+#include "install_fs.h"
 
 namespace sos {
 
@@ -35,6 +36,19 @@ enum class InstallStatus {
     kExpectedBasePackage,
     kExpectedUpdatePackage,
     kUpdateForOtherTitle,
+    // The installed game's longest file would not fit MAX_PATH and the process has no long paths.
+    kPathTooLong,
+};
+
+const char* InstallStatusKey(InstallStatus status);
+
+struct InstallPaths {
+    size_t target = 0;
+    size_t staging = 0;
+    size_t longest_final = 0;
+    size_t longest_staging = 0;
+    std::string longest_relative;
+    bool long_paths = true;
 };
 
 // What the player asked to install. An update and a base package are refused for each other's action.
@@ -46,6 +60,11 @@ struct InstallResult {
     std::vector<std::string> diagnostics; // kUnsupportedBuild: the block for the log
     std::string recognition; // a recognized package: its file, build, kind and layer, for the log
     std::string update_title_id, installed_title_id; // kUpdateForOtherTitle
+    installfs::FsError fs_error;
+    std::string stage; // failures only, like the two below
+    uint64_t stage_done = 0, stage_total = 0;
+    std::vector<std::string> leftovers;
+    InstallPaths paths;
     uint64_t bytes = 0;
     size_t files = 0, linked = 0;
     const GameBuild* build = nullptr; // the build that was installed
@@ -60,6 +79,8 @@ struct InstallHooks {
     std::function<bool(uint64_t done, uint64_t total)> progress;
     bool replace_active = false; // install the package even when its build is the active, ready one
     PackageKind expected = PackageKind::kAny;
+    // Empty: BuildBootImage. Tests replace it so synthetic files reach activation.
+    std::function<std::string(const std::filesystem::path& app0, const std::filesystem::path& image)> build_image;
 };
 
 // The build is the one the source identifies as; it is installed into BuildPaths(roots, build). An update is laid over the

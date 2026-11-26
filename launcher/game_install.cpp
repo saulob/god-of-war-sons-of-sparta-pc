@@ -15,8 +15,10 @@
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -26,6 +28,7 @@
 
 #include "boot_image.h"
 #include "build_diagnostics.h"
+#include "install_fs.h"
 #include "localization/ui_text.h"
 #include "pkg_extract.h"
 #include "utf8.h"
@@ -34,14 +37,27 @@ namespace sos {
 namespace {
 
 namespace fs = std::filesystem;
+using installfs::FsError;
+using installfs::FsProblem;
 
 constexpr uint64_t kSpaceMargin = 256ull << 20;
 constexpr int kRenameAttempts = 10;
+constexpr char kCleanupPhase[] = "Removing the incomplete installation...";
 
 InstallResult Failure(InstallStatus status, std::string detail = {}) {
     InstallResult result;
     result.status = status;
     result.detail = std::move(detail);
+    return result;
+}
+
+// A full disk is reported as one.
+InstallResult FsFailure(InstallStatus status, const std::string& verb, FsError error) {
+    if (status == InstallStatus::kWriteFailed && error.problem() == FsProblem::kDiskFull) {
+        status = InstallStatus::kNoSpace;
+    }
+    InstallResult result = Failure(status, verb + " " + Utf8(error.path) + ": " + error.code.message());
+    result.fs_error = std::move(error);
     return result;
 }
 
@@ -61,16 +77,20 @@ fs::path Normal(const fs::path& path) {
 }
 
 // The antivirus scanner can hold a freshly written folder for a moment.
-bool RenameWithRetry(const fs::path& from, const fs::path& to) {
+bool RenameWithRetry(const fs::path& from, const fs::path& to, FsError& error) {
     for (int attempt = 0; attempt < kRenameAttempts; ++attempt) {
-        std::error_code ec;
-        fs::rename(from, to, ec);
-        if (!ec) {
+        error = {};
+        if (installfs::Rename(from, to, error)) {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     return false;
+}
+
+bool RenameWithRetry(const fs::path& from, const fs::path& to) {
+    FsError ignored;
+    return RenameWithRetry(from, to, ignored);
 }
 
 // Hard links need both paths on one volume: the drive on Windows, the device of the nearest existing folder elsewhere.
@@ -93,33 +113,39 @@ bool SameVolume(const fs::path& a, const fs::path& b) {
 
 // An existing folder is only replaced when it is empty or already holds what the installer writes there.
 bool IsReplaceable(const fs::path& dir, const char* own_file) {
-    std::error_code ec;
-    if (!fs::exists(dir, ec)) {
+    if (!installfs::Exists(dir)) {
         return true;
     }
-    return fs::is_directory(dir, ec) && (fs::is_empty(dir, ec) || fs::exists(dir / own_file, ec));
+    return installfs::IsDirectory(dir) && (installfs::IsEmptyDirectory(dir) || installfs::Exists(dir / own_file));
 }
+
+using Leftovers = std::vector<std::string>;
 
 class StagingGuard {
 public:
-    explicit StagingGuard(fs::path dir) : dir_(std::move(dir)) {}
+    StagingGuard(fs::path dir, const InstallHooks& hooks, Leftovers& leftovers)
+        : dir_(std::move(dir)), hooks_(hooks), leftovers_(leftovers) {}
     ~StagingGuard() {
-        if (armed_) {
-            std::error_code ec;
-            fs::remove_all(dir_, ec);
+        if (!armed_ || !installfs::Exists(dir_)) {
+            return;
+        }
+        if (hooks_.phase) {
+            hooks_.phase(kCleanupPhase);
+        }
+        if (FsError error; !installfs::RemoveAll(dir_, error)) {
+            leftovers_.push_back(error.Describe());
         }
     }
     void Release() { armed_ = false; }
 
 private:
     fs::path dir_;
+    const InstallHooks& hooks_;
+    Leftovers& leftovers_;
     bool armed_ = true;
 };
 
-struct SourceFile {
-    fs::path relative;
-    uint64_t size;
-};
+using SourceFile = installfs::ListedFile;
 
 // Skipped as scripts/game_view.py skips them: extraction leftovers and an earlier preparation's marker.
 bool IsSkipped(const fs::path& name) {
@@ -146,63 +172,25 @@ struct CopyContext {
 
 enum class Transfer { kLinked, kCopied, kCancelled, kFailed };
 
-#ifdef _WIN32
-DWORD CALLBACK CopyProgress(LARGE_INTEGER, LARGE_INTEGER transferred, LARGE_INTEGER, LARGE_INTEGER, DWORD, DWORD,
-                            HANDLE, HANDLE, LPVOID data) {
-    auto* context = static_cast<CopyContext*>(data);
-    if (context->hooks->progress &&
-        !context->hooks->progress(context->done + uint64_t(transferred.QuadPart), context->total)) {
-        context->cancelled = true;
-        return PROGRESS_CANCEL;
-    }
-    return PROGRESS_CONTINUE;
-}
-
 // A hard link costs no space; another drive gets a copy.
-Transfer TransferFile(const fs::path& from, const fs::path& to, CopyContext& copy, std::string& error) {
-    if (CreateHardLinkW(to.c_str(), from.c_str(), nullptr)) {
+Transfer TransferFile(const fs::path& from, const fs::path& to, CopyContext& copy, FsError& error) {
+    if (FsError link_error; installfs::HardLink(from, to, link_error)) {
         return Transfer::kLinked;
     }
-    if (CopyFileExW(from.c_str(), to.c_str(), CopyProgress, &copy, nullptr, COPY_FILE_FAIL_IF_EXISTS)) {
-        return Transfer::kCopied;
+    const auto progress = [&copy](uint64_t copied) {
+        if (copy.hooks->progress && !copy.hooks->progress(copy.done + copied, copy.total)) {
+            copy.cancelled = true;
+            return false;
+        }
+        return true;
+    };
+    switch (installfs::CopyFileTo(from, to, progress, error)) {
+    case installfs::CopyOutcome::kCopied: return Transfer::kCopied;
+    case installfs::CopyOutcome::kCancelled: return Transfer::kCancelled;
+    case installfs::CopyOutcome::kFailed: break;
     }
-    error = "error " + std::to_string(GetLastError());
     return copy.cancelled ? Transfer::kCancelled : Transfer::kFailed;
 }
-#else
-Transfer TransferFile(const fs::path& from, const fs::path& to, CopyContext& copy, std::string& error) {
-    std::error_code ec;
-    fs::create_hard_link(from, to, ec);
-    if (!ec) {
-        return Transfer::kLinked;
-    }
-    std::ifstream in(from, std::ios::binary);
-    std::ofstream out(to, std::ios::binary | std::ios::trunc);
-    if (!in || !out) {
-        error = "cannot open the file";
-        return Transfer::kFailed;
-    }
-    std::vector<char> block(1u << 20);
-    uint64_t transferred = 0;
-    while (in.read(block.data(), std::streamsize(block.size())).gcount() > 0) {
-        out.write(block.data(), in.gcount());
-        transferred += uint64_t(in.gcount());
-        if (!out) {
-            error = "cannot write the file";
-            return Transfer::kFailed;
-        }
-        if (copy.hooks->progress && !copy.hooks->progress(copy.done + transferred, copy.total)) {
-            copy.cancelled = true;
-            return Transfer::kCancelled;
-        }
-    }
-    if (!in.eof() || !out.flush()) {
-        error = "cannot copy the file";
-        return Transfer::kFailed;
-    }
-    return Transfer::kCopied;
-}
-#endif
 
 InstallStatus FromCheck(const GameCheck& check) {
     switch (check.state) {
@@ -274,21 +262,23 @@ bool OverlapsAnyBuild(const fs::path& source, const GameRoots& roots, std::span<
 
 // Creates the parent folders, checks the free space and clears old staging folders.
 InstallResult PrepareStaging(const Layout& layout, uint64_t needed) {
-    std::error_code ec;
     for (const fs::path& dir : {layout.app0.parent_path(), layout.image.parent_path()}) {
-        fs::create_directories(dir, ec);
-        if (ec) {
-            return Failure(InstallStatus::kWriteFailed, "cannot create " + Utf8(dir) + ": " + ec.message());
+        if (FsError error; !installfs::CreateDirectories(dir, error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot create", std::move(error));
         }
     }
-    const fs::space_info space = fs::space(layout.app0.parent_path(), ec);
-    if (!ec && needed && space.available < needed + kSpaceMargin) {
+    uint64_t available = 0;
+    if (FsError error; installfs::SpaceAvailable(layout.app0.parent_path(), available, error) && needed &&
+                       available < needed + kSpaceMargin) {
         return Failure(InstallStatus::kNoSpace,
-                       "needs " + std::to_string(needed) + " bytes, " + std::to_string(space.available) + " available");
+                       "needs " + std::to_string(needed) + " bytes, " + std::to_string(available) + " available");
     }
     for (const fs::path& dir : {layout.app0_stage, layout.image_stage}) {
-        fs::remove_all(dir, ec);
-        if (ec || fs::exists(dir, ec)) {
+        FsError error;
+        if (!installfs::RemoveAll(dir, error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot clear", std::move(error));
+        }
+        if (installfs::Exists(dir)) {
             return Failure(InstallStatus::kWriteFailed, "cannot clear " + Utf8(dir));
         }
     }
@@ -298,14 +288,19 @@ InstallResult PrepareStaging(const Layout& layout, uint64_t needed) {
 // The marker scripts/game_view.py writes, so the development tools see an installed game as prepared. A marker that is
 // a link into an installed game is removed, not written through.
 bool WriteMarker(const fs::path& app0, const fs::path& source, size_t linked, size_t copied, const GameBuild& build,
-                 const char* scope) {
-    std::error_code ec;
-    fs::remove(app0 / kPreparedMarker, ec);
-    std::ofstream marker(app0 / kPreparedMarker, std::ios::binary | std::ios::trunc);
+                 const char* scope, FsError& error) {
+    std::ostringstream marker;
     marker << "{\n  \"layers\": [\n    " << JsonQuote(Utf8(source)) << "\n  ],\n  \"description\": \""
            << build.title_id << ' ' << build.version << "\",\n  \"link\": " << linked << ",\n  \"copy\": " << copied
            << ",\n  \"replaced\": 0,\n  \"version\": \"" << build.version << "\",\n  \"scope\": \"" << scope << "\"\n}";
-    return bool(marker.flush());
+    const std::string text = marker.str();
+    installfs::OutputFile file;
+    return installfs::Remove(app0 / kPreparedMarker, error) && file.Open(app0 / kPreparedMarker, error) &&
+           file.Write(text.data(), text.size(), error) && file.Close(error);
+}
+
+InstallResult MarkerFailure(FsError error) {
+    return FsFailure(InstallStatus::kWriteFailed, "cannot write the preparation marker", std::move(error));
 }
 
 InstallResult Activate(const Layout& layout, StagingGuard& app0_guard, StagingGuard* image_guard);
@@ -321,7 +316,9 @@ InstallResult BuildAndActivate(const Layout& layout, StagingGuard& app0_guard, S
         }
     };
     phase("Preparing the game...");
-    if (const std::string error = BuildBootImage(layout.app0_stage, layout.image_stage); !error.empty()) {
+    if (const std::string error = hooks.build_image ? hooks.build_image(layout.app0_stage, layout.image_stage)
+                                                    : BuildBootImage(layout.app0_stage, layout.image_stage);
+        !error.empty()) {
         return Failure(InstallStatus::kPrepareFailed, error);
     }
 
@@ -340,19 +337,26 @@ InstallResult BuildAndActivate(const Layout& layout, StagingGuard& app0_guard, S
 // Puts the staged folders in place of the installed ones; without an image the installed image is removed, since it
 // was built from another installation. A failed step puts the installed folders back.
 InstallResult Activate(const Layout& layout, StagingGuard& app0_guard, StagingGuard* image_guard) {
-    std::error_code ec;
     const fs::path &app0 = layout.app0, &image = layout.image;
-    const bool had_app0 = fs::exists(app0, ec), had_image = fs::exists(image, ec);
-    fs::remove_all(layout.app0_backup, ec);
-    fs::remove_all(layout.image_backup, ec);
-    if (had_app0 && !RenameWithRetry(app0, layout.app0_backup)) {
-        return Failure(InstallStatus::kWriteFailed, "cannot move aside " + Utf8(app0));
+    FsError error;
+    // A backup left by a failed restore is the previous installation.
+    for (const auto& [own, backup] : {std::pair{&app0, &layout.app0_backup}, std::pair{&image, &layout.image_backup}}) {
+        if (!installfs::Exists(*own) && installfs::Exists(*backup) && !RenameWithRetry(*backup, *own, error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot restore", std::move(error));
+        }
     }
-    if (!RenameWithRetry(layout.app0_stage, app0)) {
+    const bool had_app0 = installfs::Exists(app0), had_image = installfs::Exists(image);
+    if (!installfs::RemoveAll(layout.app0_backup, error) || !installfs::RemoveAll(layout.image_backup, error)) {
+        return FsFailure(InstallStatus::kWriteFailed, "cannot clear", std::move(error));
+    }
+    if (had_app0 && !RenameWithRetry(app0, layout.app0_backup, error)) {
+        return FsFailure(InstallStatus::kWriteFailed, "cannot move aside", std::move(error));
+    }
+    if (!RenameWithRetry(layout.app0_stage, app0, error)) {
         if (had_app0) {
             RenameWithRetry(layout.app0_backup, app0);
         }
-        return Failure(InstallStatus::kWriteFailed, "cannot activate " + Utf8(app0));
+        return FsFailure(InstallStatus::kWriteFailed, "cannot activate", std::move(error));
     }
     const auto restore_app0 = [&] {
         RenameWithRetry(app0, layout.app0_stage);
@@ -360,51 +364,45 @@ InstallResult Activate(const Layout& layout, StagingGuard& app0_guard, StagingGu
             RenameWithRetry(layout.app0_backup, app0);
         }
     };
-    if (had_image && !RenameWithRetry(image, layout.image_backup)) {
+    if (had_image && !RenameWithRetry(image, layout.image_backup, error)) {
         restore_app0();
-        return Failure(InstallStatus::kWriteFailed, "cannot move aside " + Utf8(image));
+        return FsFailure(InstallStatus::kWriteFailed, "cannot move aside", std::move(error));
     }
-    if (image_guard && !RenameWithRetry(layout.image_stage, image)) {
+    if (image_guard && !RenameWithRetry(layout.image_stage, image, error)) {
         if (had_image) {
             RenameWithRetry(layout.image_backup, image);
         }
         restore_app0();
-        return Failure(InstallStatus::kWriteFailed, "cannot activate " + Utf8(image));
+        return FsFailure(InstallStatus::kWriteFailed, "cannot activate", std::move(error));
     }
     app0_guard.Release();
     if (image_guard) {
         image_guard->Release();
     }
-    fs::remove_all(layout.app0_backup, ec);
-    fs::remove_all(layout.image_backup, ec);
+    installfs::RemoveAll(layout.app0_backup, error);
+    installfs::RemoveAll(layout.image_backup, error);
     return {};
 }
 
 // Lays the files of `from` into `to` as links (copies across volumes); the installed game is not changed.
 InstallResult LinkTree(const fs::path& from, const fs::path& to) {
-    std::error_code ec;
     std::vector<SourceFile> files;
-    uint64_t total = 0;
-    for (fs::recursive_directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
-        if (it->is_regular_file(ec)) {
-            const uint64_t size = it->file_size(ec);
-            files.push_back({it->path().lexically_relative(from), size});
-            total += size;
-        }
+    if (FsError error; !installfs::ListFiles(from, files, error)) {
+        return FsFailure(InstallStatus::kReadFailed, "cannot list", std::move(error));
     }
-    if (ec) {
-        return Failure(InstallStatus::kReadFailed, "cannot list " + Utf8(from) + ": " + ec.message());
+    uint64_t total = 0;
+    for (const SourceFile& file : files) {
+        total += file.size;
     }
     const InstallHooks no_progress;
     CopyContext copy{&no_progress, 0, total, false};
     for (const SourceFile& file : files) {
-        fs::create_directories((to / file.relative).parent_path(), ec);
-        if (ec) {
-            return Failure(InstallStatus::kWriteFailed, "cannot create " + Utf8(to / file.relative.parent_path()));
+        FsError error;
+        if (!installfs::CreateDirectories((to / file.relative).parent_path(), error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot create", std::move(error));
         }
-        std::string error;
         if (TransferFile(from / file.relative, to / file.relative, copy, error) == Transfer::kFailed) {
-            return Failure(InstallStatus::kWriteFailed, "cannot copy " + Utf8(file.relative) + " (" + error + ")");
+            return FsFailure(InstallStatus::kWriteFailed, "cannot copy", std::move(error));
         }
         copy.done += file.size;
     }
@@ -414,26 +412,18 @@ InstallResult LinkTree(const fs::path& from, const fs::path& to) {
 // Lays the files of an unpacked update over the staged game. A staged file is replaced, never written through: it may
 // be a link into the installed game.
 InstallResult OverlayUpdate(const fs::path& update, const fs::path& staged) {
-    std::error_code ec;
-    std::vector<fs::path> files;
-    for (fs::recursive_directory_iterator it(update, ec), end; !ec && it != end; it.increment(ec)) {
-        if (it->is_regular_file(ec)) {
-            files.push_back(it->path());
-        }
+    std::vector<SourceFile> files;
+    if (FsError error; !installfs::ListFiles(update, files, error)) {
+        return FsFailure(InstallStatus::kReadFailed, "cannot list", std::move(error));
     }
-    if (ec) {
-        return Failure(InstallStatus::kReadFailed, "cannot list " + Utf8(update) + ": " + ec.message());
-    }
-    for (const fs::path& from : files) {
-        const fs::path to = staged / from.lexically_relative(update);
-        fs::create_directories(to.parent_path(), ec);
-        if (ec) {
-            return Failure(InstallStatus::kWriteFailed, "cannot create " + Utf8(to.parent_path()));
+    for (const SourceFile& file : files) {
+        const fs::path from = update / file.relative, to = staged / file.relative;
+        FsError error;
+        if (!installfs::CreateDirectories(to.parent_path(), error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot create", std::move(error));
         }
-        fs::remove(to, ec);
-        fs::rename(from, to, ec);
-        if (ec) {
-            return Failure(InstallStatus::kWriteFailed, "cannot place " + Utf8(to));
+        if (!installfs::Remove(to, error) || !installfs::Rename(from, to, error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot place", std::move(error));
         }
     }
     return {};
@@ -450,6 +440,63 @@ InstallStatus FromPackage(PackageResult::Code code) {
     case PackageResult::kCancelled: return InstallStatus::kCancelled;
     }
     return InstallStatus::kReadFailed;
+}
+
+InstallResult FromPackageResult(const PackageResult& package) {
+    if (package.fs.failed()) {
+        InstallResult result = FsFailure(FromPackage(package.code), "", package.fs);
+        result.detail = package.detail;
+        return result;
+    }
+    return Failure(FromPackage(package.code), package.detail);
+}
+
+// Without long paths the game's own file layer cannot open MAX_PATH or more, so such an installation is refused
+// before anything is written; staging has no such limit.
+std::optional<InstallResult> MeasurePaths(const Layout& layout, const std::vector<fs::path>& relatives,
+                                          InstallPaths& paths) {
+    paths.target = installfs::PathLength(layout.app0);
+    paths.staging = installfs::PathLength(layout.app0_stage);
+    paths.long_paths = installfs::ProcessLongPathsEnabled();
+    size_t longest = 0;
+    for (const fs::path& relative : relatives) {
+        if (relative.native().size() > longest) {
+            longest = relative.native().size();
+            paths.longest_relative = Utf8(relative);
+        }
+    }
+    paths.longest_final = longest ? paths.target + 1 + longest : 0;
+    paths.longest_staging = longest ? paths.staging + 1 + longest : 0;
+#ifdef _WIN32
+    if (!paths.long_paths && paths.longest_final >= installfs::kMaxPath) {
+        InstallResult result = Failure(InstallStatus::kPathTooLong,
+                                       "the installed game's longest file would be " +
+                                           std::to_string(paths.longest_final) + " characters, Windows allows " +
+                                           std::to_string(installfs::kMaxPath - 1) + " without long paths: " +
+                                           Utf8(layout.app0 / PathFromUtf8(paths.longest_relative)));
+        result.paths = paths;
+        return result;
+    }
+#endif
+    return std::nullopt;
+}
+
+std::vector<fs::path> RelativesOf(const std::vector<PackageFile>& files) {
+    std::vector<fs::path> relatives;
+    relatives.reserve(files.size());
+    for (const PackageFile& file : files) {
+        relatives.push_back(PathFromUtf8(file.path).make_preferred());
+    }
+    return relatives;
+}
+
+std::vector<fs::path> RelativesOf(const std::vector<SourceFile>& files) {
+    std::vector<fs::path> relatives;
+    relatives.reserve(files.size());
+    for (const SourceFile& file : files) {
+        relatives.push_back(file.relative);
+    }
+    return relatives;
 }
 
 // A package whose build is already completely and correctly prepared needs no (re)installing. Which build is
@@ -512,7 +559,8 @@ std::optional<InstallResult> RejectForeignExecutable(Package& package, const Gam
 
 // A package that finishes its build by itself: the base package of a build without updates.
 InstallResult InstallBasePackage(const fs::path& source, Package& package, const PackageResult& loaded, const Layout& layout,
-                                 const InstallHooks& hooks, std::span<const GameBuild> builds, const GameBuild& build) {
+                                 const InstallHooks& hooks, std::span<const GameBuild> builds, const GameBuild& build,
+                                 InstallPaths& paths, Leftovers& leftovers) {
     const auto phase = [&](const char* text) {
         if (hooks.phase) {
             hooks.phase(text);
@@ -522,20 +570,23 @@ InstallResult InstallBasePackage(const fs::path& source, Package& package, const
         return Failure(InstallStatus::kForeignFolder, Utf8(layout.app0) + " or " + Utf8(layout.image));
     }
     if (!loaded.ok()) {
-        return Failure(FromPackage(loaded.code), loaded.detail);
+        return FromPackageResult(loaded);
+    }
+    if (std::optional<InstallResult> refused = MeasurePaths(layout, RelativesOf(package.Files()), paths)) {
+        return *refused;
     }
     const uint64_t total = package.total_bytes();
     if (InstallResult prepared = PrepareStaging(layout, total); !prepared.ok()) {
         return prepared;
     }
-    StagingGuard app0_guard(layout.app0_stage), image_guard(layout.image_stage);
+    StagingGuard app0_guard(layout.app0_stage, hooks, leftovers), image_guard(layout.image_stage, hooks, leftovers);
 
     phase("Unpacking the game files...");
     if (const PackageResult extracted = package.Extract(layout.app0_stage, hooks.progress); !extracted.ok()) {
-        return Failure(FromPackage(extracted.code), extracted.detail);
+        return FromPackageResult(extracted);
     }
-    if (!WriteMarker(layout.app0_stage, source, 0, package.file_count(), build, "full")) {
-        return Failure(InstallStatus::kWriteFailed, "cannot write the preparation marker");
+    if (FsError error; !WriteMarker(layout.app0_stage, source, 0, package.file_count(), build, "full", error)) {
+        return MarkerFailure(std::move(error));
     }
     phase("Checking the game files...");
     const GameCheck unpacked = CheckGameTree(layout.app0_stage, builds);
@@ -557,7 +608,7 @@ InstallResult InstallBasePackage(const fs::path& source, Package& package, const
 // An update laid over the installed base build of its title, staged and checked like any other installation.
 InstallResult InstallUpdatePackage(const fs::path& source, Package& package, const PackageResult& loaded, const Layout& layout,
                                    const GameRoots& roots, const InstallHooks& hooks, std::span<const GameBuild> builds,
-                                   const GameBuild& build) {
+                                   const GameBuild& build, InstallPaths& paths, Leftovers& leftovers) {
     const auto phase = [&](const char* text) {
         if (hooks.phase) {
             hooks.phase(text);
@@ -577,30 +628,45 @@ InstallResult InstallUpdatePackage(const fs::path& source, Package& package, con
         return Failure(InstallStatus::kForeignFolder, Utf8(layout.app0) + " or " + Utf8(layout.image));
     }
     if (!loaded.ok()) {
-        return Failure(FromPackage(loaded.code), loaded.detail);
+        return FromPackageResult(loaded);
+    }
+    std::vector<SourceFile> base_files;
+    if (FsError error; !installfs::ListFiles(base.app0, base_files, error)) {
+        return FsFailure(InstallStatus::kReadFailed, "cannot list", std::move(error));
+    }
+    std::vector<fs::path> relatives = RelativesOf(base_files);
+    for (fs::path& relative : RelativesOf(package.Files())) {
+        relatives.push_back(std::move(relative));
+    }
+    if (std::optional<InstallResult> refused = MeasurePaths(layout, relatives, paths)) {
+        return *refused;
     }
     const uint64_t total = package.total_bytes();
-    if (InstallResult prepared = PrepareStaging(layout, 0); !prepared.ok()) {
+    if (InstallResult prepared = PrepareStaging(layout, total); !prepared.ok()) {
         return prepared;
     }
-    StagingGuard app0_guard(layout.app0_stage), image_guard(layout.image_stage);
+    StagingGuard app0_guard(layout.app0_stage, hooks, leftovers), image_guard(layout.image_stage, hooks, leftovers);
 
     const fs::path update_dir = WithSuffix(layout.app0, ".install-update");
-    std::error_code ec;
-    fs::remove_all(update_dir, ec);
+    if (FsError error; !installfs::RemoveAll(update_dir, error)) {
+        return FsFailure(InstallStatus::kWriteFailed, "cannot clear", std::move(error));
+    }
+    StagingGuard update_guard(update_dir, hooks, leftovers);
     phase("Unpacking the update...");
     if (const PackageResult extracted = package.Extract(update_dir, hooks.progress); !extracted.ok()) {
-        fs::remove_all(update_dir, ec);
-        return Failure(FromPackage(extracted.code), extracted.detail);
+        return FromPackageResult(extracted);
     }
     phase("Copying the game files...");
     InstallResult staged = StageUpdate(base.app0, update_dir, layout.app0_stage);
-    fs::remove_all(update_dir, ec);
+    if (FsError error; !installfs::RemoveAll(update_dir, error)) {
+        leftovers.push_back(error.Describe());
+    }
+    update_guard.Release();
     if (!staged.ok()) {
         return staged;
     }
-    if (!WriteMarker(layout.app0_stage, source, 0, package.file_count(), build, "full")) {
-        return Failure(InstallStatus::kWriteFailed, "cannot write the preparation marker");
+    if (FsError error; !WriteMarker(layout.app0_stage, source, 0, package.file_count(), build, "full", error)) {
+        return MarkerFailure(std::move(error));
     }
     phase("Checking the game files...");
     const GameCheck merged = CheckGameTree(layout.app0_stage, builds);
@@ -643,7 +709,7 @@ bool IsLinkOrJunction(const fs::path& path) {
         return true;
     }
 #ifdef _WIN32
-    const DWORD attributes = GetFileAttributesW(path.c_str());
+    const DWORD attributes = GetFileAttributesW(installfs::Extended(path).c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT);
 #else
     return false;
@@ -660,13 +726,11 @@ bool OwnedFolders(const GameRoots& roots, const GameBuild& build, const Layout& 
 }
 
 bool RemoveAside(const fs::path& aside, std::string& detail) {
-    std::error_code ec;
-    if (!fs::exists(aside, ec)) {
+    if (!installfs::Exists(aside)) {
         return true;
     }
-    fs::remove_all(aside, ec);
-    if (ec) {
-        detail += (detail.empty() ? "" : "; ") + Utf8(aside) + " left for later: " + ec.message();
+    if (FsError error; !installfs::RemoveAll(aside, error)) {
+        detail += (detail.empty() ? "" : "; ") + Utf8(aside) + " left for later: " + error.Describe();
         return false;
     }
     return true;
@@ -689,32 +753,35 @@ RemoveResult RemoveInstalledUpdate(const GameRoots& roots, const GameBuild& buil
     if (!OwnedFolders(roots, build, layout)) {
         return fail(RemoveStatus::kForeignFolder, Utf8(layout.app0) + " is not the update's own folder");
     }
-    std::error_code ec;
-    if (!fs::exists(layout.app0, ec) && !fs::exists(layout.image, ec)) {
+    if (!installfs::Exists(layout.app0) && !installfs::Exists(layout.image)) {
         return fail(RemoveStatus::kNotInstalled, std::string(build.label) + " is not installed");
     }
-    std::ifstream sfo_file(layout.app0 / "sce_sys" / "param.sfo", std::ios::binary);
-    const std::string sfo((std::istreambuf_iterator<char>(sfo_file)), std::istreambuf_iterator<char>());
+    std::string sfo;
+    std::ifstream sfo_file;
+    if (FsError ignored; installfs::OpenForRead(layout.app0 / "sce_sys" / "param.sfo", sfo_file, ignored)) {
+        sfo.assign(std::istreambuf_iterator<char>(sfo_file), std::istreambuf_iterator<char>());
+    }
     sfo_file.close();
-    if (fs::exists(layout.app0, ec) && CheckSfoIdentity(sfo, builds).build != &build) {
+    if (installfs::Exists(layout.app0) && CheckSfoIdentity(sfo, builds).build != &build) {
         return fail(RemoveStatus::kForeignFolder, Utf8(layout.app0) + " does not hold " + build.label);
     }
     const fs::path app0_aside = WithSuffix(layout.app0, kRemovingSuffix);
     const fs::path image_aside = WithSuffix(layout.image, kRemovingSuffix);
     RemoveAside(app0_aside, result.detail);
     RemoveAside(image_aside, result.detail);
-    if (fs::exists(app0_aside, ec) || fs::exists(image_aside, ec)) {
+    if (installfs::Exists(app0_aside) || installfs::Exists(image_aside)) {
         return fail(RemoveStatus::kInUse, "an earlier removal is still in use: " + result.detail);
     }
-    const bool app0_moved = !fs::exists(layout.app0, ec) || RenameWithRetry(layout.app0, app0_aside);
+    FsError error;
+    const bool app0_moved = !installfs::Exists(layout.app0) || RenameWithRetry(layout.app0, app0_aside, error);
     if (!app0_moved) {
-        return fail(RemoveStatus::kInUse, Utf8(layout.app0) + " is in use");
+        return fail(RemoveStatus::kInUse, Utf8(layout.app0) + " is in use: " + error.Describe());
     }
-    if (fs::exists(layout.image, ec) && !RenameWithRetry(layout.image, image_aside)) {
-        if (fs::exists(app0_aside, ec)) {
+    if (installfs::Exists(layout.image) && !RenameWithRetry(layout.image, image_aside, error)) {
+        if (installfs::Exists(app0_aside)) {
             RenameWithRetry(app0_aside, layout.app0);
         }
-        return fail(RemoveStatus::kInUse, Utf8(layout.image) + " is in use");
+        return fail(RemoveStatus::kInUse, Utf8(layout.image) + " is in use: " + error.Describe());
     }
     RemoveAside(app0_aside, result.detail);
     RemoveAside(image_aside, result.detail);
@@ -789,9 +856,8 @@ bool RefusedPackageKind(InstallStatus status) {
 
 InstallResult InstallGame(const fs::path& source, const GameRoots& roots, const InstallHooks& hooks,
                           std::span<const GameBuild> builds) {
-    std::error_code ec;
-    return fs::is_directory(source, ec) ? InstallFromFolder(source, roots, hooks, builds)
-                                        : InstallFromPackage(source, roots, hooks, builds);
+    return installfs::IsDirectory(source) ? InstallFromFolder(source, roots, hooks, builds)
+                                          : InstallFromPackage(source, roots, hooks, builds);
 }
 
 // The package as recognized: its build, whether it is the base or an update, and the base an update goes over.
@@ -806,8 +872,47 @@ static std::string PackageRecognition(const fs::path& file, const GameCheck& ide
     return text + ")";
 }
 
-InstallResult InstallFromPackage(const fs::path& package_file, const GameRoots& roots, const InstallHooks& hooks,
-                                 std::span<const GameBuild> builds) {
+// A failure reports the step the player saw, not the cleanup after it.
+template <class Body>
+static InstallResult Tracked(const InstallHooks& hooks, Body body) {
+    struct Track {
+        std::string phase;
+        uint64_t done = 0, total = 0;
+    };
+    const auto track = std::make_shared<Track>();
+    InstallHooks tracked = hooks;
+    tracked.phase = [track, outer = hooks.phase](const char* text) {
+        if (std::string_view(text) != kCleanupPhase) {
+            track->phase = text;
+            track->done = track->total = 0;
+        }
+        if (outer) {
+            outer(text);
+        }
+    };
+    tracked.progress = [track, outer = hooks.progress](uint64_t done, uint64_t total) {
+        track->done = done;
+        track->total = total;
+        return outer ? outer(done, total) : true;
+    };
+    InstallPaths paths;
+    Leftovers leftovers;
+    InstallResult result = body(tracked, paths, leftovers);
+    if (result.paths.target == 0) {
+        result.paths = paths;
+    }
+    result.leftovers = std::move(leftovers);
+    if (!result.ok()) {
+        result.stage = track->phase;
+        result.stage_done = track->done;
+        result.stage_total = track->total;
+    }
+    return result;
+}
+
+static InstallResult InstallFromPackageFile(const fs::path& package_file, const GameRoots& roots,
+                                            const InstallHooks& hooks, std::span<const GameBuild> builds,
+                                            InstallPaths& paths, Leftovers& leftovers) {
     const auto phase = [&](const char* text) {
         if (hooks.phase) {
             hooks.phase(text);
@@ -816,8 +921,7 @@ InstallResult InstallFromPackage(const fs::path& package_file, const GameRoots& 
     const fs::path source = Normal(package_file);
 
     phase("Checking the package...");
-    std::error_code ec;
-    if (!fs::is_regular_file(source, ec)) {
+    if (!installfs::IsRegularFile(source)) {
         return Failure(InstallStatus::kNotPackage, Utf8(source));
     }
     if (OverlapsAnyBuild(source, roots, builds)) {
@@ -825,7 +929,7 @@ InstallResult InstallFromPackage(const fs::path& package_file, const GameRoots& 
     }
     Package package;
     if (const PackageResult opened = package.Open(source); !opened.ok()) {
-        return Failure(FromPackage(opened.code), opened.detail);
+        return FromPackageResult(opened);
     }
     const GameCheck identity = CheckPackageIdentity(package.sfo(), builds);
     if (identity.state != GameFileState::kValid) {
@@ -860,23 +964,30 @@ InstallResult InstallFromPackage(const fs::path& package_file, const GameRoots& 
     }
     const Layout layout(BuildPaths(roots, build));
     if (identity.layer > 0) {
-        return recognized(InstallUpdatePackage(source, package, loaded, layout, roots, hooks, builds, build));
+        return recognized(
+            InstallUpdatePackage(source, package, loaded, layout, roots, hooks, builds, build, paths, leftovers));
     }
-    return recognized(InstallBasePackage(source, package, loaded, layout, hooks, builds, build));
+    return recognized(InstallBasePackage(source, package, loaded, layout, hooks, builds, build, paths, leftovers));
 }
 
-InstallResult InstallFromFolder(const fs::path& source_dir, const GameRoots& roots, const InstallHooks& hooks,
-                                std::span<const GameBuild> builds) {
+InstallResult InstallFromPackage(const fs::path& package_file, const GameRoots& roots, const InstallHooks& hooks,
+                                 std::span<const GameBuild> builds) {
+    return Tracked(hooks, [&](const InstallHooks& tracked, InstallPaths& paths, Leftovers& leftovers) {
+        return InstallFromPackageFile(package_file, roots, tracked, builds, paths, leftovers);
+    });
+}
+
+static InstallResult InstallFromGameFolder(const fs::path& source_dir, const GameRoots& roots, const InstallHooks& hooks,
+                                           std::span<const GameBuild> builds, InstallPaths& paths, Leftovers& leftovers) {
     const auto phase = [&](const char* text) {
         if (hooks.phase) {
             hooks.phase(text);
         }
     };
-    std::error_code ec;
     const fs::path source = Normal(source_dir);
 
     phase("Checking the game folder...");
-    if (!fs::is_regular_file(source / "eboot.bin", ec) || !fs::is_regular_file(source / "sce_sys" / "param.sfo", ec)) {
+    if (!installfs::IsRegularFile(source / "eboot.bin") || !installfs::IsRegularFile(source / "sce_sys" / "param.sfo")) {
         return Failure(InstallStatus::kNotGameFolder, Utf8(source));
     }
     if (OverlapsAnyBuild(source, roots, builds)) {
@@ -905,22 +1016,15 @@ InstallResult InstallFromFolder(const fs::path& source_dir, const GameRoots& roo
     }
 
     std::vector<SourceFile> files;
-    uint64_t total = 0;
-    for (fs::recursive_directory_iterator it(source, ec), end; !ec && it != end; it.increment(ec)) {
-        if (IsSkipped(it->path().filename())) {
-            if (it->is_directory(ec)) {
-                it.disable_recursion_pending();
-            }
-            continue;
-        }
-        if (it->is_regular_file(ec)) {
-            const uint64_t size = it->file_size(ec);
-            files.push_back({it->path().lexically_relative(source), size});
-            total += size;
-        }
+    if (FsError error; !installfs::ListFiles(source, files, error, IsSkipped)) {
+        return FsFailure(InstallStatus::kReadFailed, "cannot list", std::move(error));
     }
-    if (ec) {
-        return Failure(InstallStatus::kReadFailed, "cannot list " + Utf8(source) + ": " + ec.message());
+    uint64_t total = 0;
+    for (const SourceFile& file : files) {
+        total += file.size;
+    }
+    if (std::optional<InstallResult> refused = MeasurePaths(layout, RelativesOf(files), paths)) {
+        return *refused;
     }
 
     // The same drive gets hard links, which need no space.
@@ -928,32 +1032,30 @@ InstallResult InstallFromFolder(const fs::path& source_dir, const GameRoots& roo
         !prepared.ok()) {
         return prepared;
     }
-    StagingGuard app0_guard(layout.app0_stage), image_guard(layout.image_stage);
+    StagingGuard app0_guard(layout.app0_stage, hooks, leftovers), image_guard(layout.image_stage, hooks, leftovers);
 
     phase("Copying the game files...");
     CopyContext copy{&hooks, 0, total, false};
     size_t linked = 0;
     for (const SourceFile& file : files) {
         const fs::path from = source / file.relative, to = layout.app0_stage / file.relative;
-        fs::create_directories(to.parent_path(), ec);
-        if (ec) {
-            return Failure(InstallStatus::kWriteFailed, "cannot create " + Utf8(to.parent_path()) + ": " + ec.message());
+        FsError error;
+        if (!installfs::CreateDirectories(to.parent_path(), error)) {
+            return FsFailure(InstallStatus::kWriteFailed, "cannot create", std::move(error));
         }
-        std::string error;
         switch (TransferFile(from, to, copy, error)) {
         case Transfer::kLinked: ++linked; break;
         case Transfer::kCopied: break;
         case Transfer::kCancelled: return Failure(InstallStatus::kCancelled);
-        case Transfer::kFailed:
-            return Failure(InstallStatus::kWriteFailed, "cannot copy " + Utf8(file.relative) + " (" + error + ")");
+        case Transfer::kFailed: return FsFailure(InstallStatus::kWriteFailed, "cannot copy", std::move(error));
         }
         copy.done += file.size;
         if (hooks.progress && !hooks.progress(copy.done, total)) {
             return Failure(InstallStatus::kCancelled);
         }
     }
-    if (!WriteMarker(layout.app0_stage, source, linked, files.size() - linked, build, "full")) {
-        return Failure(InstallStatus::kWriteFailed, "cannot write the preparation marker");
+    if (FsError error; !WriteMarker(layout.app0_stage, source, linked, files.size() - linked, build, "full", error)) {
+        return MarkerFailure(std::move(error));
     }
     if (InstallResult activated = BuildAndActivate(layout, app0_guard, image_guard, hooks, builds, build, total);
         !activated.ok()) {
@@ -966,6 +1068,40 @@ InstallResult InstallFromFolder(const fs::path& source_dir, const GameRoots& roo
     result.linked = linked;
     result.build = &build;
     return result;
+}
+
+InstallResult InstallFromFolder(const fs::path& source_dir, const GameRoots& roots, const InstallHooks& hooks,
+                                std::span<const GameBuild> builds) {
+    return Tracked(hooks, [&](const InstallHooks& tracked, InstallPaths& paths, Leftovers& leftovers) {
+        return InstallFromGameFolder(source_dir, roots, tracked, builds, paths, leftovers);
+    });
+}
+
+const char* InstallStatusKey(InstallStatus status) {
+    switch (status) {
+    case InstallStatus::kInstalled: return "installed";
+    case InstallStatus::kCancelled: return "cancelled";
+    case InstallStatus::kNotPackage: return "not_package";
+    case InstallStatus::kUnsupportedPackage: return "unsupported_package";
+    case InstallStatus::kNotGameFolder: return "not_game_folder";
+    case InstallStatus::kWrongGame: return "wrong_game";
+    case InstallStatus::kWrongVersion: return "wrong_version";
+    case InstallStatus::kIncomplete: return "incomplete";
+    case InstallStatus::kReadFailed: return "read_failed";
+    case InstallStatus::kOverlapping: return "overlapping";
+    case InstallStatus::kForeignFolder: return "foreign_folder";
+    case InstallStatus::kNoSpace: return "no_space";
+    case InstallStatus::kWriteFailed: return "write_failed";
+    case InstallStatus::kPrepareFailed: return "prepare_failed";
+    case InstallStatus::kUpdateNeedsBase: return "update_needs_base";
+    case InstallStatus::kUpToDate: return "up_to_date";
+    case InstallStatus::kUnsupportedBuild: return "unsupported_build";
+    case InstallStatus::kExpectedBasePackage: return "expected_base_package";
+    case InstallStatus::kExpectedUpdatePackage: return "expected_update_package";
+    case InstallStatus::kUpdateForOtherTitle: return "update_for_other_title";
+    case InstallStatus::kPathTooLong: return "path_too_long";
+    }
+    return "unknown";
 }
 
 InstallMessage DescribeInstall(InstallStatus status) {
@@ -1026,6 +1162,10 @@ InstallMessage DescribeInstall(InstallStatus status) {
         return {Tr("God of War: Sons of Sparta version not supported yet"),
                 Tr("Diagnostic information was written to the latest log. Please share the latest log when reporting "
                    "this version on GitHub.")};
+    case InstallStatus::kPathTooLong:
+        return {Tr("The port's folder path is too long"),
+                Tr("Windows cannot open the game's longest files from this folder. Move the port to a shorter folder, "
+                   "such as C:\\Games\\Sons of Sparta, or turn on Windows long paths, then try again.")};
     }
     return {Tr("Could not install the game"), Tr("An unexpected error occurred.")};
 }
@@ -1035,6 +1175,26 @@ InstallMessage DescribeInstall(const InstallResult& result) {
     if (result.status == InstallStatus::kUpdateForOtherTitle) {
         message.title = Tr("This update is for ") + result.update_title_id + Tr(", but the installed game is ") +
                         result.installed_title_id;
+    }
+    if (result.status == InstallStatus::kWriteFailed) {
+        switch (result.fs_error.problem()) {
+        case FsProblem::kAccessDenied:
+            message.text = Tr("Access to the port's game folder was denied. Antivirus software or the folder's "
+                              "permissions may be blocking it. The log has the details.");
+            break;
+        case FsProblem::kInUse:
+            message.text = Tr("A game file is in use by another program, such as antivirus software. Close it and "
+                              "try again.");
+            break;
+        case FsProblem::kPathTooLong:
+            message.text = DescribeInstall(InstallStatus::kPathTooLong).text;
+            break;
+        case FsProblem::kInvalidName:
+            message.text = Tr("The drive of the port's folder does not accept one of the game's file names. Move the "
+                              "port to an NTFS drive and try again.");
+            break;
+        default: break;
+        }
     }
     return message;
 }

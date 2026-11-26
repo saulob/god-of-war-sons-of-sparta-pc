@@ -217,7 +217,12 @@ uint64_t Be64(const uint8_t* p) {
 }
 
 PackageResult Fail(PackageResult::Code code, std::string detail) {
-    return {code, std::move(detail)};
+    return {code, std::move(detail), {}};
+}
+
+PackageResult Fail(PackageResult::Code code, const char* verb, installfs::FsError error) {
+    std::string detail = std::string(verb) + " " + Utf8(error.path) + ": " + error.code.message();
+    return {code, std::move(detail), std::move(error)};
 }
 
 std::string EntryName(uint32_t id) {
@@ -264,13 +269,6 @@ bool DecryptWithIvKey(const uint8_t (&ivkey)[32], uint8_t* data, size_t size) {
     uint8_t iv[16];
     std::memcpy(iv, ivkey, sizeof(iv));
     return key.Decrypt(data, whole, iv);
-}
-
-bool WriteWholeFile(const fs::path& path, const uint8_t* data, size_t size) {
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    return file && file.write(reinterpret_cast<const char*>(data), std::streamsize(size)).flush();
 }
 
 } // namespace
@@ -509,11 +507,9 @@ size_t Package::file_count() const {
 
 PackageResult Package::Open(const fs::path& path) {
     Impl& p = *impl_;
-    std::error_code ec;
-    p.file_size = fs::file_size(path, ec);
-    p.file.open(path, std::ios::binary);
-    if (ec || !p.file) {
-        return Fail(PackageResult::kReadFailed, "cannot open " + Utf8(path));
+    installfs::FsError error;
+    if (!installfs::FileSize(path, p.file_size, error) || !installfs::OpenForRead(path, p.file, error)) {
+        return Fail(PackageResult::kReadFailed, "cannot open", std::move(error));
     }
     uint8_t header[0x1000];
     if (p.file_size < sizeof(header) || !p.ReadAt(0, header, sizeof(header)) || Be32(header) != kPkgMagic) {
@@ -726,27 +722,27 @@ PackageResult Package::Extract(const fs::path& out, const std::function<bool(uin
             return Fail(PackageResult::kUnsupported, "cannot decrypt entry " + std::to_string(entry.id));
         }
         const fs::path target = out / "sce_sys" / PathFromUtf8(EntryName(entry.id));
-        if (!WriteWholeFile(target, data.data(), data.size())) {
-            return Fail(PackageResult::kWriteFailed, "cannot write " + Utf8(target));
+        if (installfs::FsError error; !installfs::WriteWholeFile(target, data.data(), data.size(), error)) {
+            return Fail(PackageResult::kWriteFailed, "cannot write", std::move(error));
         }
     }
 
-    std::error_code ec;
     uint64_t done = 0;
     Bytes chunk;
     for (const Item& item : p.items) {
-        const fs::path target = out / PathFromUtf8(item.path);
-        fs::create_directories(item.type == kPfsDir ? target : target.parent_path(), ec);
-        if (ec) {
-            return Fail(PackageResult::kWriteFailed, "cannot create " + Utf8(target) + ": " + ec.message());
+        // Extended-length paths do not accept '/'.
+        const fs::path target = (out / PathFromUtf8(item.path)).make_preferred();
+        installfs::FsError error;
+        if (!installfs::CreateDirectories(item.type == kPfsDir ? target : target.parent_path(), error)) {
+            return Fail(PackageResult::kWriteFailed, "cannot create", std::move(error));
         }
         if (item.type == kPfsDir) {
             continue;
         }
         const Inode& node = p.inodes[item.inode];
-        std::ofstream file(target, std::ios::binary | std::ios::trunc);
-        if (!file) {
-            return Fail(PackageResult::kWriteFailed, "cannot create " + Utf8(target));
+        installfs::OutputFile file;
+        if (!file.Open(target, error)) {
+            return Fail(PackageResult::kWriteFailed, "cannot create", std::move(error));
         }
         uint64_t remaining = uint64_t(node.size);
         for (uint64_t block = 0; remaining > 0; block += kChunkBlocks) {
@@ -754,8 +750,8 @@ PackageResult Package::Extract(const fs::path& out, const std::function<bool(uin
                 return Fail(PackageResult::kReadFailed, "cannot read " + item.path);
             }
             const uint64_t length = std::min<uint64_t>(remaining, chunk.size());
-            if (!file.write(reinterpret_cast<const char*>(chunk.data()), std::streamsize(length))) {
-                return Fail(PackageResult::kWriteFailed, "cannot write " + Utf8(target));
+            if (!file.Write(chunk.data(), size_t(length), error)) {
+                return Fail(PackageResult::kWriteFailed, "cannot write", std::move(error));
             }
             remaining -= length;
             done += length;
@@ -763,8 +759,8 @@ PackageResult Package::Extract(const fs::path& out, const std::function<bool(uin
                 return Fail(PackageResult::kCancelled, {});
             }
         }
-        if (!file.flush()) {
-            return Fail(PackageResult::kWriteFailed, "cannot write " + Utf8(target));
+        if (!file.Close(error)) {
+            return Fail(PackageResult::kWriteFailed, "cannot write", std::move(error));
         }
     }
     return {};

@@ -12,12 +12,15 @@
 #include <string>
 #include <vector>
 
+#include "install_fs.h"
+
 namespace sos {
 
 struct PackageResult {
     enum Code { kOk, kNotPackage, kUnsupported, kIncomplete, kReadFailed, kWriteFailed, kCancelled };
     Code code = kOk;
     std::string detail; // for the log, not the UI
+    installfs::FsError fs;
     bool ok() const { return code == kOk; }
 };
 
