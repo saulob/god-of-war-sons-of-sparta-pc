@@ -35,8 +35,9 @@ try {
     $thread = Get-Content -LiteralPath (Join-Path $root 'src\runtime_thread.c') -Raw
     $source = Get-Content -LiteralPath $entry -Raw
     $loaderCalls = ([regex]::Matches($loader, 'sos_guest_enter\(')).Count
-    if ($loaderCalls -eq 2 -and $loader.Contains('sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, NULL);') -and
-        $loader.Contains('sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, stack + MAIN_STACK - 64);') -and
+    if ($loaderCalls -eq 1 -and $loader.Contains('sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, NULL);') -and
+        $loader.Contains('runtime_thread_enter_on_stack((void *)(image + entry), &params, (void *)guest_exit, stack, MAIN_STACK);') -and
+        $thread.Contains('void *result=sos_guest_enter(entry,arg0,arg1,(unsigned char *)stack+size-64);') -and
         -not $loader.Contains('((Entry)(image + entry))(&params, guest_exit);')) {
         Write-Host '  [ok]   the loader enters the guest through the zero-frame trampoline on both targets'
     } else {

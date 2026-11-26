@@ -64,6 +64,10 @@ uintptr_t runtime_thread_resolve(const char *name);
 void runtime_thread_report(void);
 void runtime_set_main_tls(const void *data, uint64_t filesz, uint64_t memsz, uint64_t align);
 void runtime_thread_attach_main(void);
+#ifndef _WIN32
+/* Calls a guest entry on [stack, stack+size); the calling thread's guest stack bounds are that range while it runs. */
+void *runtime_thread_enter_on_stack(void *entry, void *arg0, void *arg1, void *stack, size_t size);
+#endif
 uint32_t runtime_thread_tcb_offset(void);
 uint32_t runtime_thread_thread_offset(void);
 void runtime_thread_reserve_tls(void);

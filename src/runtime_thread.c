@@ -268,6 +268,17 @@ void runtime_thread_attach_main(void) {
     GuestThread *t=runtime_thread_current();
     snprintf(t->name,sizeof(t->name),"main");
 }
+#ifndef _WIN32
+/* Collectors scan from the stack pointer to the base the guest reads back, so it must be the stack in use. */
+void *runtime_thread_enter_on_stack(void *entry,void *arg0,void *arg1,void *stack,size_t size) {
+    GuestThread *t=runtime_thread_current();
+    const uintptr_t host_low=t->stack_low, host_high=t->stack_high;
+    t->stack_low=(uintptr_t)stack; t->stack_high=(uintptr_t)stack+size;
+    void *result=sos_guest_enter(entry,arg0,arg1,(unsigned char *)stack+size-64);
+    t->stack_low=host_low; t->stack_high=host_high;
+    return result;
+}
+#endif
 static GuestThread *find_thread(void *handle) {
     GuestThread *found=NULL;
     pthread_mutex_lock(&lock);

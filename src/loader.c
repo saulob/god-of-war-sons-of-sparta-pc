@@ -1404,7 +1404,8 @@ int main(int argc, char **argv) {
     enum { MAIN_STACK = 8 * 1024 * 1024 };
     unsigned char *stack = runtime_low_map(MAIN_STACK, PROT_READ | PROT_WRITE);
     if (!stack) fail("cannot allocate guest main stack");
-    sos_guest_enter((void *)(image + entry), &params, (void *)guest_exit, stack + MAIN_STACK - 64);
+    printf("Runtime: guest main stack 0x%" PRIxPTR "-0x%" PRIxPTR "\n", (uintptr_t)stack, (uintptr_t)stack + MAIN_STACK);
+    runtime_thread_enter_on_stack((void *)(image + entry), &params, (void *)guest_exit, stack, MAIN_STACK);
 #endif
     fprintf(stderr,"Runtime: guest entry unexpectedly returned; entry=guest image+0x%" PRIx64 ", startup phase=%s, module operation=%s\n",
             entry,sos_startup_phase_current(),runtime_module_operation());
