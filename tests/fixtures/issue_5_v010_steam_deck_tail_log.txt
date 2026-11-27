@@ -1,0 +1,27 @@
+Settings: God of War: Sons of Sparta PC v0.1.0, Linux x86-64, game build CUSA57767 1.01 USA
+GPU: selected AMD Custom GPU 0932 (RADV VANGOGH)
+GPU: Vulkan device AMD Custom GPU 0932 (RADV VANGOGH) (radv 26.1.99, Vulkan 1.4.350)
+Runtime: UserService initialized (user 1 logged in)
+Runtime: no mount for guest path / (prefix /, thread 1 main)
+Runtime: open(/app0/debug.log) -> Read-only file system
+Runtime: guest thread 'SceFiosZlib0' created (stack=65536, prio=700, entry=0x80214a710, arg=0x802181d80)
+Runtime: guest thread 'SceFiosZlib1' created (stack=65536, prio=700, entry=0x80214a710, arg=0x802181da8)
+Runtime: open(/app0/archive.psarc) -> not found
+Runtime: open(/app0/archive_patch.psarc) -> not found
+Runtime: AppContent host provider loaded; references=1
+Runtime: AppContent initialized; offline base-game profile, no mounted add-ons
+Runtime: AppContent host provider loaded; references=2
+[libil2cpp] sceAppContentInitialize returned 0x80d90003
+
+Runtime: mapped flexible memory 0x108aec0000, size=19398656, prot=0x3
+Runtime: dlsym handle 0 scriptingGetMem -> 0x801411d40
+Runtime: direct allocation offset=0x8aa50000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c140000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8aa90000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c180000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8aad0000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c1c0000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8ab10000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c200000, size=262144, prot=0x33
+Runtime: semaphore id=1, attr=0, initial=0, max=256
+Runtime: semaphore id=2, attr=0, initial=0, max=256

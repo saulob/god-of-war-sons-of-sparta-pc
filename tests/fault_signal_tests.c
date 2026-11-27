@@ -119,6 +119,17 @@ static int run_child(const char *which, const char *dir, long core_limit) {
         say("Test: continued after the recovered fault\n");
         *(volatile int *)0 = 1;
     }
+    if (!strcmp(which, "issue6")) {
+        /* Issue #6: v0.1.0 ended here with no line at all; the guest's own output goes through the log pipe unbuffered. */
+        setvbuf(stdout, NULL, _IONBF, 0);
+        sos_startup_phase("linked modules initialization");
+        sos_startup_phase("guest entry");
+        sos_checkpoint("Unity bootstrap entered at guest image+0x%x", 0x13550);
+        printf("Runtime: AppContent initialized; offline base-game profile, no mounted add-ons\n");
+        printf("Runtime: semaphore id=1, attr=0, initial=0, max=256\n");
+        printf("Runtime: semaphore id=2, attr=0, initial=0, max=256\n");
+        *(volatile int *)0 = 1;
+    }
     if (!strcmp(which, "concurrent")) {
         pthread_t threads[2];
         pthread_barrier_init(&together, NULL, 2);
@@ -169,7 +180,13 @@ typedef struct {
     const char *const *expect;
 } Case;
 
-static void run_case(const char *self, const Case *test, long core_limit, int *core_dumped) {
+/* Where the report must place the fault; without one, the launcher phases every child starts with. */
+typedef struct {
+    const char *phase, *completed, *checkpoint;
+    const char *before_crash; /* a line that must reach the file ahead of the report */
+} Context;
+
+static void run_case(const char *self, const Case *test, const Context *context, long core_limit, int *core_dumped) {
     char dir[256];
     snprintf(dir, sizeof(dir), "/tmp/sos-fault-signal-%d-%s", (int)getpid(), test->mode);
     remove_folder(dir);
@@ -209,10 +226,20 @@ static void run_case(const char *self, const Case *test, long core_limit, int *c
     if (log) {
         CHECK(count_of(log, "CRASH: signal ") == test->reports);
         if (test->reports) {
-            CHECK(strstr(log, "Crash: startup phase: play: graphics preflight\n") != NULL);
-            CHECK(strstr(log, "Crash: last completed stage: launcher running\n") != NULL);
-            CHECK(strstr(log, "Crash: context phase=play: graphics preflight, ") != NULL);
-            CHECK(strstr(log, "] Launcher: shown\n") != NULL);
+            char line[256];
+            const char *phase = context ? context->phase : "play: graphics preflight";
+            snprintf(line, sizeof(line), "Crash: startup phase: %s\n", phase);
+            CHECK(strstr(log, line) != NULL);
+            snprintf(line, sizeof(line), "Crash: last completed stage: %s\n", context ? context->completed : "launcher running");
+            CHECK(strstr(log, line) != NULL);
+            snprintf(line, sizeof(line), "Crash: context phase=%s, ", phase);
+            CHECK(strstr(log, line) != NULL);
+            snprintf(line, sizeof(line), "] %s\n", context ? context->checkpoint : "Launcher: shown");
+            CHECK(strstr(log, line) != NULL);
+        }
+        if (context && context->before_crash) {
+            const char *before = strstr(log, context->before_crash), *report = strstr(log, "CRASH: signal ");
+            CHECK(before != NULL && report != NULL && before < report);
         }
         /* The stage lines written before the fault reached the file (the log thread was drained). */
         CHECK(strstr(log, "Stage: play: graphics preflight started +") != NULL);
@@ -241,6 +268,8 @@ int main(int argc, char **argv) {
     static const char *const hangup_text[] = {
         "Session: ended by signal 1 (SIGHUP) during phase: play: graphics preflight; last completed stage: launcher running\n",
         NULL};
+    static const char *const issue6_text[] = {"CRASH: signal 11 (SIGSEGV) code ", "Crash: thread ",
+                                              "Stage: guest entry started +", NULL};
     static const Case cases[] = {
         {"segv", SIGSEGV, 1, segv_text},
         {"bus", SIGBUS, 1, NULL},
@@ -255,15 +284,36 @@ int main(int argc, char **argv) {
         {"hangup", SIGHUP, 0, hangup_text},
         {"blocked", SIGSEGV, 1, blocked_text},
     };
+    static const Case issue6 = {"issue6", SIGSEGV, 1, issue6_text};
+    static const Context issue6_context = {"guest entry", "linked modules initialization",
+                                           "Unity bootstrap entered at guest image+0x13550",
+                                           "Runtime: semaphore id=2, attr=0, initial=0, max=256\n"};
+    /* --only <mode>: one case, without the core file check. */
+    if (argc == 3 && !strcmp(argv[1], "--only")) {
+        int ignored = 0, found = 0;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i)
+            if (!strcmp(cases[i].mode, argv[2])) {
+                run_case(argv[0], &cases[i], NULL, 1, &ignored);
+                found = 1;
+            }
+        if (!strcmp(argv[2], issue6.mode)) {
+            run_case(argv[0], &issue6, &issue6_context, 1, &ignored);
+            found = 1;
+        }
+        CHECK(found);
+        printf("fault signal tests (%s): %d checks, %d failed\n", argv[2], checks, failures);
+        return failures ? 1 : 0;
+    }
     /* RLIMIT_CORE 1 writes no core anywhere: a core_pattern pipe ignores 0, not 1. */
     const long no_core = 1, small_core = 64L * 1024 * 1024;
     int core_dumped = 0;
-    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) run_case(argv[0], &cases[i], no_core, &core_dumped);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) run_case(argv[0], &cases[i], NULL, no_core, &core_dumped);
+    run_case(argv[0], &issue6, &issue6_context, no_core, &core_dumped);
 
     char pattern[512] = "";
     if (core_files_stay_local(pattern, sizeof(pattern))) {
         static const Case with_core = {"segv", SIGSEGV, 1, NULL};
-        run_case(argv[0], &with_core, small_core, &core_dumped);
+        run_case(argv[0], &with_core, NULL, small_core, &core_dumped);
         CHECK(core_dumped);
     } else {
         printf("note: core_pattern \"%s\" is not a local file; the end by signal (which keeps the system's core dump "

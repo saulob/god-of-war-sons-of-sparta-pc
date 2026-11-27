@@ -351,3 +351,17 @@ Launcher: game install failed: The port's folder path is too long (the installed
 Launcher: install failure: status=path_too_long stage=Checking the package progress=unknown
 Stage event: PLAY requested input=mouse +5000 ms
 Stage event: PLAY blocked: game files missing +5010 ms
+=== issue #6 (v0.1.0 Linux, Intel ARL): the log stops after semaphore id=2, as issue #5 on the Steam Deck
+expect: startup_hang
+detail: without a closing record
+Launcher: shown
+Launcher: settings saved, starting the game
+Launcher: closed, starting the game
+Overlay compatibility: original game process
+Settings: God of War: Sons of Sparta PC v0.1.0, Linux x86-64, game build CUSA57767 1.01 USA
+GPU: selected Intel(R) Graphics (ARL)
+Startup: first present +940 ms (process +906 ms)
+Runtime: Unity bootstrap entered
+Runtime: AppContent initialized; offline base-game profile, no mounted add-ons
+Runtime: semaphore id=1, attr=0, initial=0, max=256
+Runtime: semaphore id=2, attr=0, initial=0, max=256

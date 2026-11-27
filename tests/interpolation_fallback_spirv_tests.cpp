@@ -73,6 +73,8 @@ constexpr u32 CvtF32U32(u32 vdst, u32 src) { return Vop1(6, vdst, src); }
 constexpr u32 CvtU32F32(u32 vdst, u32 src) { return Vop1(7, vdst, src); }
 constexpr u32 ExpMrt0Word0 = (0x3Eu << 26) | (1u << 12) | (1u << 11) | (0u << 4) | 0xFu; // mrt0, xyzw, done, vm
 constexpr u32 ExpVgprs(u32 a, u32 b, u32 c, u32 d) { return a | (b << 8) | (c << 16) | (d << 24); }
+// target 12 = pos0, 32 = param0; xyzw
+constexpr u32 ExpWord0(u32 target, bool done) { return (0x3Eu << 26) | (done ? 1u << 11 : 0u) | (target << 4) | 0xFu; }
 constexpr u32 SMovVccHi = 0xBEEB03FFu; // s_mov_b32 vcc_hi, literal (every PS4 shader starts with it)
 constexpr u32 SEndPgm = 0xBF810000u;
 
@@ -152,17 +154,46 @@ Shader::RuntimeInfo FragmentRuntime() {
     return runtime;
 }
 
-std::vector<u32> Compile(const std::vector<u32>& code, u64 hash, const Shader::Profile& profile) {
+Shader::RuntimeInfo VertexRuntime() {
+    Shader::RuntimeInfo runtime{};
+    runtime.Initialize(Shader::HwStage::Vertex, Shader::SwStage::Vertex);
+    runtime.props.num_allocated_vgprs = 8;
+    return runtime;
+}
+
+Shader::RuntimeInfo ComputeRuntime() {
+    Shader::RuntimeInfo runtime{};
+    runtime.Initialize(Shader::HwStage::Compute, Shader::SwStage::Compute);
+    runtime.hw.cs.workgroup_size = {64, 1, 1};
+    runtime.props.num_allocated_vgprs = 8;
+    return runtime;
+}
+
+// v0 is the vertex index: one parameter (interpolated by the pixel shaders above) and the position.
+std::vector<u32> VertexShader() {
+    return {SMovVccHi, 0, CvtF32U32(1, 0), ExpWord0(32, false), ExpVgprs(1, 1, 1, 1), ExpWord0(12, true),
+            ExpVgprs(1, 1, 1, 1), SEndPgm};
+}
+
+std::vector<u32> ComputeShader() {
+    return {SMovVccHi, 0, CvtF32U32(1, 0), SEndPgm};
+}
+
+std::vector<u32> CompileStage(const std::vector<u32>& code, u64 hash, const Shader::Profile& profile,
+                              Shader::RuntimeInfo runtime) {
     Shader::Pools pools;
     Shader::Info info{};
-    info.hw_stage = Shader::HwStage::Fragment;
-    info.sw_stage = Shader::SwStage::Fragment;
+    info.hw_stage = runtime.hw_stage;
+    info.sw_stage = runtime.sw_stage;
     info.pgm_hash = hash;
     info.pgm_base = reinterpret_cast<VAddr>(code.data());
-    Shader::RuntimeInfo runtime = FragmentRuntime();
     const auto program = Shader::TranslateProgram(std::span<const u32>{code}, pools, info, runtime, profile);
     Shader::Backend::Bindings bindings{};
     return Shader::Backend::SPIRV::EmitSPIRV(profile, runtime, program, bindings);
+}
+
+std::vector<u32> Compile(const std::vector<u32>& code, u64 hash, const Shader::Profile& profile) {
+    return CompileStage(code, hash, profile, FragmentRuntime());
 }
 
 int Run(const std::string& command, std::string* output) {
@@ -206,9 +237,36 @@ const Route kRoutes[] = {
     {"Intel Xe2 ANV (native barycentrics, driver interpolation)",
      {.vendor_id = 0x8086, .fragment_shader_barycentric = true, .provoking_vertex = true}, false, 32},
     // SOS-BXG9UT: no AMD explicit, no KHR barycentrics, no mixed samples, provoking vertex; also no shaderFloat64.
-    {"Intel Arc 140T ARL (fallback, SOS-BXG9UT)", {.vendor_id = 0x8086, .provoking_vertex = true}, false, 32},
+    // Issue #6 is the same device: tests/intel_arc_linux_tests.cpp derives these capabilities from its log.
+    {"Intel Arc 140T ARL (fallback, SOS-BXG9UT, issue #6)", {.vendor_id = 0x8086, .provoking_vertex = true}, false, 32},
 };
 constexpr size_t FallbackRoute = 3;
+
+const char* const kNotOnArl[] = {"FragmentBarycentricKHR", "SPV_KHR_fragment_shader_barycentric", "BaryCoordKHR",
+                                 "BaryCoordNoPerspKHR", "PerVertexKHR", "SPV_AMD_shader_explicit_vertex_parameter",
+                                 "ExplicitInterpAMD", "InterpolateAtVertexAMD", "BaryCoordSmoothAMD",
+                                 "BaryCoordPullModelAMD", "Float64"};
+
+void TestVertexAndComputeOnEveryRoute() {
+    for (size_t r = 0; r < std::size(kRoutes); ++r) {
+        const Route& route = kRoutes[r];
+        const auto profile = MakeProfile(route);
+        const Module vertex =
+            Validate(CompileStage(VertexShader(), 0x5070000000000001ull + r, profile, VertexRuntime()), "vs_" + std::to_string(r));
+        Check(vertex.valid && Has(vertex.text, "OpEntryPoint Vertex"),
+              std::string(route.name) + ": vertex shader passes spirv-val" + (vertex.valid ? "" : ("\n" + vertex.errors)));
+        const Module compute = Validate(CompileStage(ComputeShader(), 0x5080000000000001ull + r, profile, ComputeRuntime()),
+                                        "cs_" + std::to_string(r));
+        Check(compute.valid && Has(compute.text, "OpEntryPoint GLCompute") && Has(compute.text, "LocalSize 64 1 1"),
+              std::string(route.name) + ": compute shader passes spirv-val" + (compute.valid ? "" : ("\n" + compute.errors)));
+        if (r == FallbackRoute) {
+            for (const char* banned : kNotOnArl) {
+                Check(!Has(vertex.text, banned) && !Has(compute.text, banned),
+                      std::string("ARL vertex and compute modules have no ") + banned);
+            }
+        }
+    }
+}
 
 void TestSmoothFlatIntegerOnEveryRoute() {
     const auto code = SmoothFlatIntegerShader();
@@ -224,10 +282,7 @@ void TestSmoothFlatIntegerOnEveryRoute() {
         const bool nudged = Has(module.text, "1.00001526");
         Check(nudged == fix, std::string(route.name) + ": interpolated-integer fix " + (fix ? "applied" : "absent"));
         if (r == FallbackRoute) {
-            for (const char* banned :
-                 {"FragmentBarycentricKHR", "SPV_KHR_fragment_shader_barycentric", "BaryCoordKHR", "BaryCoordNoPerspKHR",
-                  "PerVertexKHR", "SPV_AMD_shader_explicit_vertex_parameter", "ExplicitInterpAMD", "InterpolateAtVertexAMD",
-                  "BaryCoordSmoothAMD", "BaryCoordPullModelAMD", "Float64"}) {
+            for (const char* banned : kNotOnArl) {
                 Check(!Has(module.text, banned),
                       std::string("fallback module has no ") + banned + " (the ARL device lacks it)");
             }
@@ -291,6 +346,7 @@ int main(int argc, char** argv) {
         return 77;
     }
     TestSmoothFlatIntegerOnEveryRoute();
+    TestVertexAndComputeOnEveryRoute();
     TestPerVertexEdgeNeedsPerVertexRoutes();
     TestFallbackStopsWithAName(self);
     Run("rm -rf '" + g_work + "'", nullptr);

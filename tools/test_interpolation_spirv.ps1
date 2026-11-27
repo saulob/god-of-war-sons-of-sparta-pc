@@ -6,7 +6,7 @@
 # without them the group reports not applicable. Mutated copies of the recompiler sources must fail it.
 # No window, GPU, launcher or game; the repository is only read.
 [CmdletBinding()]
-param()
+param([switch]$BaseOnly)
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -51,8 +51,9 @@ try {
     $run.Lines | Where-Object { $_ -notmatch '^GPU \[' } | ForEach-Object { Write-Host "  $_" }
     if ($run.Code -eq 97) { throw 'the interpolation SPIR-V test did not build under WSL' }
     if ($run.Code -ne 0) { $failures++ }
+    if ($BaseOnly) { exit $failures }
 
-    $interp = 'gpu/shadps4/shader_recompiler/frontend/translate/vector_interpolation.cpp'
+    $interp ='gpu/shadps4/shader_recompiler/frontend/translate/vector_interpolation.cpp'
     $emit = 'gpu/shadps4/shader_recompiler/backend/spirv/emit_spirv.cpp'
     $context = 'gpu/shadps4/shader_recompiler/backend/spirv/spirv_emit_context.cpp'
     $integer = 'gpu/shadps4/shader_recompiler/ir/passes/interpolated_integer_pass.cpp'
