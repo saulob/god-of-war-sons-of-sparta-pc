@@ -1,97 +1,13 @@
 // SOS-PLTEYS (SteamOS, Steam Deck RADV VANGOGH, v0.1.0, build 1.00): the reporter's log read with the production
 // session rules and compared with the issue #5 (1.01, Steam Deck) and issue #6 (1.01, Intel ARL) logs.
-#include <algorithm>
-#include <cstdio>
-#include <fstream>
-#include <iterator>
 #include <string>
-#include <string_view>
-#include <vector>
 
 #include "session_outcome.h"
-
-#define SOS_STRING_(x) #x
-#define SOS_STRING(x) SOS_STRING_(x)
+#include "v010_linux_silent_end.h"
 
 namespace {
 
-int g_checks = 0;
-int g_failures = 0;
-
-void Check(bool ok, const std::string& name) {
-    ++g_checks;
-    if (!ok) ++g_failures;
-    std::printf("  [%s] %s\n", ok ? "ok" : "fail", name.c_str());
-}
-
-std::string Read(const char* path) {
-    std::ifstream in(std::string(SOS_STRING(SOS_SOURCE_DIR)) + "/" + path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-}
-
-using Lines = std::vector<std::string>;
-
-Lines Split(const std::string& text) {
-    Lines lines;
-    size_t at = 0;
-    while (at < text.size()) {
-        size_t end = text.find('\n', at);
-        if (end == std::string::npos) end = text.size();
-        std::string line = text.substr(at, end - at);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        lines.push_back(line);
-        at = end + 1;
-    }
-    while (!lines.empty() && lines.back().empty()) lines.pop_back();
-    return lines;
-}
-
-std::string Join(const Lines& lines) {
-    std::string text;
-    for (const std::string& line : lines) text += line + "\n";
-    return text;
-}
-
-bool StartsWith(const std::string& line, std::string_view prefix) { return line.compare(0, prefix.size(), prefix) == 0; }
-
-bool AnyLine(const Lines& lines, std::string_view prefix) {
-    return std::any_of(lines.begin(), lines.end(), [&](const std::string& line) { return StartsWith(line, prefix); });
-}
-
-Lines From(const Lines& lines, std::string_view first) {
-    for (size_t i = 0; i < lines.size(); ++i) {
-        if (StartsWith(lines[i], first)) return {lines.begin() + std::ptrdiff_t(i), lines.end()};
-    }
-    return {};
-}
-
-constexpr std::string_view kLastLine = "Runtime: semaphore id=2, attr=0, initial=0, max=256";
-constexpr std::string_view kTailStart = "Runtime: UserService initialized";
-constexpr std::string_view kGuestEntry = "Entering original x86-64 code at guest offset 0x13550";
-
-// The silent v0.1.0 end of issue #5: the same 24 lines after UserService, ending at semaphore id=2, with no report.
-bool IsIssue5SilentEnd(const Lines& log, const Lines& issue5) {
-    const Lines tail = From(log, kTailStart);
-    return !log.empty() && log.back() == kLastLine && tail.size() == 24 && tail == From(issue5, kTailStart) &&
-           !AnyLine(log, "CRASH:") && !AnyLine(log, "STOP:");
-}
-
-// Guest startup from the entry point on, as a multiset: timings and the order of concurrently created threads vary.
-Lines GuestStartup(const Lines& log) {
-    Lines lines;
-    for (const std::string& line : From(log, kGuestEntry)) {
-        if (!StartsWith(line, "Startup: ") && !StartsWith(line, "Checkpoint: ")) lines.push_back(line);
-    }
-    std::sort(lines.begin(), lines.end());
-    return lines;
-}
-
-std::string Value(const Lines& log, std::string_view prefix) {
-    for (const std::string& line : log) {
-        if (StartsWith(line, prefix)) return line.substr(prefix.size());
-    }
-    return {};
-}
+using namespace sos_silent_end;
 
 void TestReportedMachine(const Lines& log) {
     Check(AnyLine(log, "Settings: God of War: Sons of Sparta PC v0.1.0, Linux x86-64, game build CUSA57767 1.00 USA") &&
