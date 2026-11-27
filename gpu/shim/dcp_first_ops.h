@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// dcp: the first time each GPU operation behind the game's first frame starts and ends (SOS-BXG9UT). The renderer's own
+// dcp: the first time each GPU operation behind the game's first frame starts and ends. The renderer's own
 // "first present" comes before guest entry; between it and the game's first frame ("Runtime: first present") the guest's
 // first shader translation, SPIR-V module, pipeline creations, draw and swapchain acquire happen, and a crash there must
 // name the one it was in. Each operation prints at most two lines per process ("Runtime: first <op> started: <detail>",

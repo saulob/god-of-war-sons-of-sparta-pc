@@ -674,7 +674,7 @@ void PatchPhiNodes(const IR::Program& program, EmitContext& ctx) {
 
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info,
                            const IR::Program& program, Bindings& binding) {
-    // dcp: the first module of the process names its shader and interpolation route (SOS-BXG9UT).
+    // dcp: the first module of the process names its shader and interpolation route.
     auto& first_ops = DcpFirstOps::Global();
     bool first = false;
     if (first_ops.Get(DcpFirstOps::SpirvEmit) == DcpFirstOps::State::None) {

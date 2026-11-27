@@ -561,7 +561,9 @@ void TestWiring() {
     const auto protect_at = loader.find("protect(image, round_page(size), 0);");
     Check(redzone_at != std::string::npos && apply_at > redzone_at && apply_at < protect_at,
           "loader: the patch goes in after the red zone analysis, before the image is protected");
-    Check(Has(loader, "image = allocate(round_page(size) + stub_area);") && Has(loader, "protect(image + round_page(size), stub_area, 5);"),
+    Check(Has(loader, "image = allocate(round_page(size) + stub_area + compat_area);") &&
+              Has(loader, "protect(image + round_page(size), stub_area, 5);") &&
+              Has(loader, "if (compat_area) protect(image + round_page(size) + stub_area, compat_area, 5);"),
           "loader: the title stub's page follows the image and ends up read and execute only");
     Check(Has(loader, "image + round_page(size), stub_area, skip_message"), "loader: the stub goes in the page after the image");
     Check(!Has(loader, "sos_trace") && !Has(Read("CMakeLists.txt"), "sos_trace") && !fs::exists(fs::path(SOS_SOURCE_DIR) / "src/sos_trace.c"),

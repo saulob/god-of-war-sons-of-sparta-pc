@@ -1,5 +1,4 @@
-/* Touchscreen routing under Gamescope (SteamOS Gaming Mode, Steam Deck and other handhelds), after Dragon's Crown Pro
- * (c5a05e2148ed, eb6ac2b67330).
+/* Touchscreen routing under Gamescope (SteamOS Gaming Mode, Steam Deck and other handhelds).
  *
  * Gamescope turns a touch into a mouse pointer and a left click unless its touch click mode is Passthrough, and it keeps
  * one mode for the whole compositor: the newest STEAM_TOUCH_CLICK_MODE write on any of its Xwayland roots wins. Gaming

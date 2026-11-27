@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // dcp: capability-driven renderer routes, kept free of Vulkan headers so they can be tested headless
-// (tests/gpu_compat_tests.cpp). Follows Dragon's Crown Pro's vk_gpu_compat.h.
+// (tests/gpu_compat_tests.cpp).
 #pragma once
 
 #include <atomic>

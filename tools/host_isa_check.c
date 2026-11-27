@@ -1,8 +1,9 @@
 /* The instruction sets of the port's own Windows binaries and the libraries shipped with them.
  *
  * sons_of_sparta.exe and trg-updater.exe run their startup and the processor check on any x86-64: they may hold nothing
- * beyond SSE2 but XGETBV (behind OSXSAVE) and TZCNT, which processors without BMI1 run as BSF (LLVM's encoding of a
- * count whose zero case is undefined). A shipped library may use what every processor the game accepts has (AVX,
+ * beyond SSE2 but XGETBV (behind OSXSAVE), TZCNT, which processors without BMI1 run as BSF (LLVM's encoding of a
+ * count whose zero case is undefined), and CMPXCHG16B, which only the cheats' code writes use, after the processor
+ * check that requires it. A shipped library may use what every processor the game accepts has (AVX,
  * POPCNT, CMPXCHG16B and the SSE levels below AVX); anything newer only in a library that picks it by CPUID at run time.
  *
  *   host_isa_check FILE.exe|FILE.dll ...      exit 1 when a file breaks its rule */
@@ -45,7 +46,7 @@ static int game_minimum(ZydisISASet s) {
 }
 
 static int allowed(const ZydisDecodedInstruction *in, int own) {
-    if (in->mnemonic == ZYDIS_MNEMONIC_TZCNT || in->mnemonic == ZYDIS_MNEMONIC_XGETBV) return 1;
+    if (in->mnemonic == ZYDIS_MNEMONIC_TZCNT || in->mnemonic == ZYDIS_MNEMONIC_XGETBV || in->mnemonic == ZYDIS_MNEMONIC_CMPXCHG16B) return 1;
     return own ? baseline(in->meta.isa_set) : game_minimum(in->meta.isa_set);
 }
 

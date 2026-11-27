@@ -108,7 +108,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .stage = shader_ci,
         .layout = *pipeline_layout,
     };
-    // dcp: the first compute pipeline of the process and its VkResult (SOS-BXG9UT).
+    // dcp: the first compute pipeline of the process and its VkResult.
     auto& first_ops = DcpFirstOps::Global();
     bool first = false;
     if (first_ops.Get(DcpFirstOps::ComputePipeline) == DcpFirstOps::State::None) {

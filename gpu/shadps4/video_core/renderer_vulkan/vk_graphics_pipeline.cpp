@@ -464,7 +464,7 @@ GraphicsPipeline::GraphicsPipeline(
     };
 
     const auto binary_directory = Storage::PipelineBinaryDirectory();
-    // dcp: the first graphics pipeline of the process, its shaders and every VkResult (SOS-BXG9UT).
+    // dcp: the first graphics pipeline of the process, its shaders and every VkResult.
     auto& first_ops = DcpFirstOps::Global();
     bool first = false;
     if (first_ops.Get(DcpFirstOps::GraphicsPipeline) == DcpFirstOps::State::None) {

@@ -82,6 +82,8 @@ extern "C" void runtime_thread_attach_host(const char* name) {
     }
 }
 
+extern "C" void sos_thread_label_set(const char*) {}
+
 static std::atomic<const void*> g_startup_source{nullptr}, g_startup_frame_source{nullptr};
 static std::atomic<bool> g_startup_requested{false};
 extern "C" void dcpgpu_startup_video_requested() { g_startup_requested = true; }

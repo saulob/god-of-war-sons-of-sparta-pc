@@ -221,7 +221,7 @@ void Swapchain::SetHDR(bool hdr) {
 
 bool Swapchain::AcquireNextImage() {
     vk::Device device = instance.GetDevice();
-    // dcp: the first acquire of the process and its result (SOS-BXG9UT: Wayland, Mailbox).
+    // dcp: the first acquire of the process and its result.
     auto& first_ops = DcpFirstOps::Global();
     bool first = false;
     if (first_ops.Get(DcpFirstOps::Acquire) == DcpFirstOps::State::None) [[unlikely]] {

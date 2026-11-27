@@ -1,19 +1,40 @@
 # God of War: Sons of Sparta PC v@VERSION@
 
-A bugfix release of this unofficial PC port, on top of v0.1.0. It focuses on compatibility, game installation and crash diagnostics. The port runs the PlayStation 4 version of *God of War: Sons of Sparta* natively on Windows x64 and, experimentally, on Linux x86-64 and Steam Deck. It is a fan project, not affiliated with or endorsed by Sony Interactive Entertainment, Santa Monica Studio or any other rights holder
+An update of this unofficial PC port, on top of v0.1.0. It adds optional cheats with an in-game menu and focuses on compatibility, game installation and crash diagnostics. The port runs the PlayStation 4 version of *God of War: Sons of Sparta* natively on Windows x64 and, experimentally, on Linux x86-64 and Steam Deck. It is a fan project, not affiliated with or endorsed by Sony Interactive Entertainment, Santa Monica Studio or any other rights holder
 
 **No game files are included.** You need your own legally obtained *God of War: Sons of Sparta* PS4 package of a supported build: `CUSA57767` USA **1.00**, or `CUSA57767` USA **1.01** (the 1.01 update installed over 1.00). Install it from the launcher's **Play** page
 
 Updating from v0.1.0 keeps your installed game files, saves and settings
 
+## What's new in v0.1.1
+
+### Cheats
+
+Optional cheats for both `CUSA57767` 1.00 and 1.01. Every cheat is **Off by default**, also after updating from v0.1.0
+
+- **God Mode**
+- **Infinite Spartan Spirit**
+- **Infinite Magic**
+- **Damage Multiplier**: the player's hits on enemies, Off, 2x, 4x or 6x
+- **Movement Speed**: the player's own walking and running, Off or 2x
+- **Jump Height**: Off, 2x, 4x or 6x
+- **Add 1000 Blood Orbs** and **Add 10 Upgrade Materials**: one-shot actions in the F10 menu
+- **Launcher configuration**: the new **Cheats** page saves the values the next game starts with
+- **F10 in-game menu**: opens over the game, below the frame counter when it is shown. Changes made there apply to the current session only and are never saved
+- **Keyboard, mouse and controller navigation** in the F10 menu. While it is open the game receives no input, and the key or button that closes it does not reach the game
+
+A cheat changes the game's code only while it is On; Off is the original code. When a cheat cannot be applied safely to the installed build, it is shown as unavailable instead. The run log records which cheats were active and whether any was used in the session. See [docs/CHEATS.md](https://github.com/saulob/god-of-war-sons-of-sparta-pc/blob/main/docs/CHEATS.md) for details
+
+Requested in [Issue #7](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/7). A Red Orb multiplier and infinite usable items are not included
+
 ## What's fixed in v0.1.1
 
 ### Fixed
 
-- **Linux and Steam Deck startup crash**: every v0.1.0 Linux log we received, on Steam Deck and on Intel Linux systems, stopped silently while the game was starting. The game's garbage collector was told the wrong stack bounds for the main game thread and crashed while scanning it. The runtime now reports the stack the game really runs on. This affects the native Linux build and AppImage only; Windows is unchanged
-- **Processors without AVX2**: AVX2 was never needed by the game, but v0.1.0 refused Intel processors without LZCNT (such as Sandy Bridge and Ivy Bridge) and had no fallback for F16C. The port now supplies LZCNT, TZCNT and F16C in software, alongside its existing MOVBE, BMI1 and SSE4a fallbacks. Processors with AVX and without AVX2 are supported; processors without AVX are still not supported
-- **Game installation in long Windows folder paths**: installing the game package into a deeply nested folder could fail partway through (around 43%) once a file path went past the classic Windows 260-character limit. The installer now works with long paths, its staging and rollback leave the installed game untouched when an install fails or is cancelled, and its error messages name the step, file and system error. This change is in the installer
-- **Intel GPUs**: Intel graphics on Linux, such as the Arc 140T (Core Ultra 7 255H), now use a renderer profile without fragment shader barycentrics, with corrected integer values on the driver interpolation path. The Intel Linux reports received for v0.1.0 ended at the same point as the Steam Deck crash above, so that fix also applies to them
+- **Linux and Steam Deck startup crash**: every v0.1.0 Linux log we received, on Steam Deck and on Intel Linux systems, stopped silently while the game was starting. The game's garbage collector was told the wrong stack bounds for the main game thread and crashed while scanning it. The runtime now reports the stack the game really runs on. This affects the native Linux build and AppImage only; Windows is unchanged ([Issue #5](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/5), Bug Reports **SOS-PLTEYS** and **SOS-4ECCUG**)
+- **Processors without AVX2**: AVX2 was never needed by the game, but v0.1.0 refused Intel processors without LZCNT (such as Sandy Bridge and Ivy Bridge) and had no fallback for F16C. The port now supplies LZCNT, TZCNT and F16C in software, alongside its existing MOVBE, BMI1 and SSE4a fallbacks. Processors with AVX and without AVX2 are supported; processors without AVX are still not supported ([Issue #1](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/1))
+- **Game installation in long Windows folder paths**: installing the game package into a deeply nested folder could fail partway through (around 43%) once a file path went past the classic Windows 260-character limit. The installer now works with long paths, its staging and rollback leave the installed game untouched when an install fails or is cancelled, and its error messages name the step, file and system error. This change is in the installer (Bug Report **SOS-6Y8NVY**)
+- **Intel GPUs**: Intel graphics on Linux, such as the Arc 140T (Core Ultra 7 255H), now use a renderer profile without fragment shader barycentrics, with corrected integer values on the driver interpolation path. The Intel Linux reports received for v0.1.0 ended at the same point as the Steam Deck crash above, so that fix also applies to them ([Issue #6](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/6), Bug Report **SOS-BXG9UT**)
 - **SteamOS and Vulkan reliability**:
   - A lost Vulkan surface is rebuilt for the same window instead of failing on every recreation
   - When the preferred video memory is full, buffer memory and frame images fall back to another memory type instead of failing, which helps low-VRAM and shared-memory systems such as the Steam Deck
@@ -32,9 +53,31 @@ These changes do not fix a crash by themselves. They make the next log from an a
 - **Linux crash reports**: a fatal signal (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT) now writes a crash report to the log with the startup phase, the last completed step, the crashing thread, recent PS4 calls and GPU activity and a backtrace, instead of ending silently as v0.1.0 could. The log is flushed before a fatal exit, including GPU library assertions
 - **Startup steps**: every log starts with a short system summary, and each step from PLAY to the first frame is logged with its duration and result, with a warning when a step takes unusually long
 - **First GPU operations**: the first shader translation, pipeline creation, draw and swapchain acquire are logged, so a crash before the first frame shows which one was in progress
-- **Intel/Vulkan startup crash diagnostics on Windows**: crashes inside a driver or other DLL now name the module, its offset and its file version, the log describes the rendering pass in progress (including unbound colour attachments), and renderer threads have names. This was prompted by an Intel UHD 630 crash report; **that crash is not confirmed fixed yet**
+- **Intel/Vulkan startup crash diagnostics on Windows**: crashes inside a driver or other DLL now name the module, its offset and its file version, the log describes the rendering pass in progress (including unbound colour attachments), and renderer threads have names. This was prompted by an Intel UHD 630 crash report ([Issue #2](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/2)); **that crash is not confirmed fixed yet**
 - **Installer diagnostics**: a failed install logs its stage, progress, file path lengths, the failing file operation and the system error
-- **Bug Reports**: the launcher's preview and the report dashboard classify each session (launcher only, failed install, startup hang or crash, device loss, crash during play, normal exit and others), so reports reach the right investigation faster
+- **Bug Reports**: the launcher's preview and the report dashboard classify each session (launcher only, failed install, startup hang or crash, device loss, crash during play, normal exit and others), so reports reach the right investigation faster (prompted by Bug Report **SOS-VLHSWP**)
+
+## Bug Reports addressed
+
+| Report | Area / symptom | Status in v0.1.1 |
+| --- | --- | --- |
+| **SOS-6Y8NVY** | Windows game installation failed at about 43%, on every attempt, once a file path went past 260 characters | **Fixed**. The installer works with long paths, and a failed or cancelled install leaves the installed game untouched |
+| **SOS-PLTEYS** | Steam Deck (SteamOS), build 1.00: the game stopped silently while starting, after `semaphore id=2` | **Fixed** by the Linux main stack correction, the same crash as [Issue #5](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/5). **Reporter confirmation is still needed** |
+| **SOS-4ECCUG** | Steam Deck (SteamOS), build 1.01: the same silent stop while starting | **Fixed** by the same Linux main stack correction. **Reporter confirmation is still needed** |
+| **SOS-BXG9UT** | Linux on Intel Arc 140T (Mesa ANV): the game stopped silently while starting, at the same point as the Steam Deck reports | **Addressed**. The Linux main stack correction covers the observed stop, and Intel Arc gets its own renderer profile. Not reproduced on Intel Arc hardware; confirmation is still needed. Related: [Issue #6](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/6) |
+| **SOS-VLHSWP** | Steam Deck session whose log ended in the launcher, with no PLAY step and no closing record | **Diagnostics improved**. The cause is not identified. It informed the startup steps, session classification, Linux crash reports and the Steam Deck launcher and Vulkan changes above |
+
+Bug Report IDs are diagnostic references generated by the launcher's Bug Report system and do not have public URLs unless the same problem also has a GitHub Issue
+
+## GitHub Issues addressed
+
+| Issue | Status in v0.1.1 |
+| --- | --- |
+| [#1](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/1) Make it work for cpu without avx2 | **Addressed**. AVX2 is no longer required: the port needs AVX, POPCNT and CMPXCHG16B, and supplies the newer instructions the game uses in software. Compatibility tests cover processors with AVX and without AVX2. Confirmation on the reporter's hardware is welcome, and the issue stays open until then |
+| [#2](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/2) startup crash on intel UHD 630 | **Diagnostics improved**, **not fixed**. Crash reports now name the host DLL, the `vkCmdBeginRendering` in progress and its rendering state. A new log from v0.1.1 is needed, and the issue stays open |
+| [#5](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/5) Linux AppImage v0.1.0 segfaults on Steam Deck in Il2Cpp GC stack scan | **Fixed**, reporter confirmation still needed. The Linux runtime gave the game wrong bounds for its main stack, so the IL2CPP garbage collector scanned past it. The runtime now reports the real bounds, and an automated regression test passes. Not yet confirmed on the reporter's Steam Deck |
+| [#6](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/6) Linux - intel 255H with 140T ARC | **Addressed**, confirmation still needed. The log ended at the same `semaphore id=2` point as Issue #5, which the main stack correction covers. The Intel Arc renderer profile and its interpolation fallback have automated tests. Not reproduced on Intel Arc hardware, and the issue stays open until a retest |
+| [#7](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/7) Add Cheats/Enhancements | **Partially addressed**. God Mode, Infinite Spartan Spirit, Infinite Magic, Damage Multiplier, Movement Speed, Jump Height, Add 1000 Blood Orbs and Add 10 Upgrade Materials, with the launcher **Cheats** page, the F10 in-game menu and controller navigation. The requested Red Orb Multiplier and infinite usable items are **not implemented** |
 
 ## Highlights
 
@@ -64,7 +107,8 @@ Both unlock settings are optional and off by default. Your campaign save is neve
 
 ## Validation
 
-- The complete headless release gate passed on Windows: 91 of 91 groups, `Failed: 0`. It now includes regression groups built from the v0.1.0 reports: the Linux main stack crash, the Steam Deck and Intel Arc Linux logs, the long-path installer failure, processors without AVX2 and the Intel UHD 630 crash diagnostics
+- The complete headless release gate passed on Windows: 93 of 93 groups, `Failed: 0`. It now includes regression groups built from the v0.1.0 reports: the Linux main stack crash, the Steam Deck (SteamOS 1.00 and 1.01) and Intel Arc Linux logs, the long-path installer failure, processors without AVX2 and the Intel UHD 630 crash diagnostics
+- The cheats gate checks every cheat site against the real executables of both builds, the default Off values, the session-only F10 changes, the menu's keyboard, mouse and controller handling, and mutated copies that must fail
 - The Windows and Linux release preparation passed, including the Linux build and its tests on Ubuntu 20.04, the AppImage's glibc 2.31 baseline, its library dependencies and its pinned runtime
 - The supported-build contract covers both `CUSA57767` 1.00 and `CUSA57767` 1.01, and the build-dependent checks also passed against the real executables of both builds
 - Windows and Linux feature parity was validated on the final binaries
@@ -86,8 +130,18 @@ Both unlock settings are optional and off by default. Your campaign save is neve
 - Linux and Steam Deck remain experimental. v0.1.1 includes fixes based on reports from real Linux and Steam Deck systems, but runtime coverage is still more limited than on Windows. Bug Reports from Linux and Steam Deck players are very welcome
 - Processors without AVX2 are covered by compatibility tests (Intel Sandy Bridge and Ivy Bridge, AMD FX), but the game has not yet been played on such a processor. MOVBE and BMI1 are emulated as they run there, which may cost performance
 - The Intel UHD 630 startup crash on Windows is still under investigation; this release adds the diagnostics needed to find its cause
+- The cheats have been played on Windows. On Linux and Steam Deck they are covered by the automated checks only
 - Shapes other than 16:9 are labelled experimental in the launcher: some 2D scenes may show the edges of the original backgrounds
 - 4K and the other render resolutions above 1080p use the game's PlayStation 4 Pro mode and need a powerful graphics card
+
+Still open:
+
+- [Issue #1](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/1) processors without AVX2, addressed and waiting for confirmation on the reporter's hardware
+- [Issue #2](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/2) Intel UHD 630 startup crash, **not fixed**. A Bug Report or log from v0.1.1 is needed
+- [Issue #4](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/4) ultrawide rendering issues in the first stage, **not fixed** in v0.1.1. True Ultrawide keeps its known limitations
+- [Issue #5](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/5) Steam Deck startup crash, fixed and waiting for the reporter's confirmation
+- [Issue #6](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/6) Intel Arc on Linux, addressed and waiting for a retest
+- [Issue #7](https://github.com/saulob/god-of-war-sons-of-sparta-pc/issues/7) cheats, partially addressed: the Red Orb multiplier and infinite usable items are not implemented
 
 ## Downloads
 

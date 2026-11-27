@@ -1,4 +1,4 @@
-/* POSIX implementation of fault_signal.h (Linux). Adapted from Alienation b78805c: the report is written without stdio,
+/* POSIX implementation of fault_signal.h (Linux): the report is written without stdio,
  * one thread reports, and the process ends by its own signal so core dumps and the parent's wait status stay intact. */
 #define _GNU_SOURCE
 #include "fault_signal.h"

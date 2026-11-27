@@ -1,4 +1,4 @@
-/* Window backend for Steam-launched Wayland desktop sessions (from Dragon's Crown Pro bb8d365): Steam cannot associate a
+/* Window backend for Steam-launched Wayland desktop sessions: Steam cannot associate a
  * native Wayland window with a non-Steam shortcut, so its Steam Input layout stays on Desktop. Asking SDL for X11
  * (XWayland) first fixes that. Gamescope (Gaming Mode) is left untouched. */
 #ifndef SOS_VIDEO_BACKEND_H

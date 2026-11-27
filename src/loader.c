@@ -447,8 +447,7 @@ static void posix_fault_handler(int sig, siginfo_t *si, void *uc_void) {
         (void)written;
     }
     {
-        /* Which first guest GPU operation was in flight (SOS-BXG9UT ended between the renderer's own first present and
-         * the game's first frame, with nothing to say which). */
+        /* Which first guest GPU operation was in flight. */
         static char operations[sizeof(line)];
         dcpgpu_first_ops_summary(operations, sizeof(operations) - 40);
         snprintf(line, sizeof(line), "Crash: first GPU operations: %s\n", operations);

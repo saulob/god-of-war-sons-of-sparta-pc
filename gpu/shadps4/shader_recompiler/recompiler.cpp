@@ -149,7 +149,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     const u32 hw_stage = u32(info.hw_stage);
     Common::GpuTrace::Record(Common::GpuTrace::Event::ShaderCompile, info.pgm_hash,
                              Common::GpuTrace::Tag(hw_stage < std::size(hw_stage_tags) ? hw_stage_tags[hw_stage] : "?"));
-    // dcp: the first guest shader of the process, started and finished (SOS-BXG9UT).
+    // dcp: the first guest shader of the process, started and finished.
     auto& first_ops = DcpFirstOps::Global();
     bool first = false;
     if (first_ops.Get(DcpFirstOps::ShaderTranslate) == DcpFirstOps::State::None) {

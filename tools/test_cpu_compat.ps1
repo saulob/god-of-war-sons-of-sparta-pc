@@ -296,7 +296,7 @@ try {
         $table = [IO.File]::ReadAllText((Join-Path $root 'src\cpu_compat_sites.inc'))
         $first = [regex]::Match($table, 'cpu_compat_sites_\d+\[\] = \{\s*\{0x([0-9a-f]+),')
         $digest = [regex]::Match($table, '\{"CUSA57767-1\.00", \d+u, 0x([0-9a-f]{16})ull')
-        foreach ($t in @(@{ Name = 'built-in site offset changed'; Old = $first.Value; New = $first.Value -replace '0x([0-9a-f]+),$', { '0x{0:x},' -f ([Convert]::ToUInt32($_.Groups[1].Value, 16) + 1) } },
+        foreach ($t in @(@{ Name = 'built-in site offset changed'; Old = $first.Value; New = [regex]::Replace($first.Value, '0x([0-9a-f]+),$', { param($m) '0x{0:x},' -f ([Convert]::ToUInt32($m.Groups[1].Value, 16) + 1) }) },
                          @{ Name = 'built-in digest changed'; Old = $digest.Value; New = $digest.Value.Substring(0, $digest.Value.Length - 4) + $(if ($digest.Value[-4] -eq '0') { '1' } else { '0' }) + 'ull' })) {
             $work = New-Workspace ('mut' + (++$index))
             Edit-WorkspaceText (Join-Path $work 'src\cpu_compat_sites.inc') $t.Old $t.New

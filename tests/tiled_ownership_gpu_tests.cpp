@@ -29,6 +29,10 @@ extern "C" FILE* sos_stderr_stream(void) {
 
 extern "C" std::uint64_t runtime_disabled_optimizations = 0;
 
+// The scheduler's rendering trace pulls in the startup watch, whose host-runtime hooks are not linked here.
+extern "C" void runtime_history_note(const char*, const char*, std::uintptr_t) {}
+extern "C" void sos_startup_profile_end(void) {}
+
 using namespace VideoCore;
 using Vulkan::StagingBufferRef;
 

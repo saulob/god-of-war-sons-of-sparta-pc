@@ -156,7 +156,9 @@ try {
         $failures++
         Write-Host '  [fail] the v0.1.0 tag is not in this clone: the legacy reproduction cannot run'
     } else {
-        & tar -xf $archive -C $baseline
+        # The Windows tar: a POSIX tar first on PATH (Git Bash) reads "E:" in the archive path as a remote host.
+        $windowsTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        & $(if (Test-Path -LiteralPath $windowsTar) { $windowsTar } else { 'tar' }) -xf $archive -C $baseline
         $oldSources = @($sources | Where-Object { $_ -notin 'install_fs', 'log_scrubber' })
         $oldObjects = Build-Objects $baseline (Join-Path $baseline 'obj') $oldSources @('-w')
         $oldExe = Join-Path $baseline 'install_tests_v010.exe'
@@ -257,7 +259,12 @@ clang++ -std=c++23 -O1 -Wall -Wextra -Werror -DSOS_PORT_VERSION='"$version"' -I 
   "`$out/trg_platform.o" -pthread -lssl -lcrypto -lz -o "`$out/install_tests"
 "`$out/install_tests" "`$out/run" '$wslBase/launcher/pkg_extract.cpp' '$wslRoot'
 "@
-        $linux = & wsl.exe -e bash -c ($script.Replace("`r`n", "`n")) 2>&1
+        # A script file: Windows PowerShell 5.1 breaks the double quotes of a native argument.
+        [IO.File]::WriteAllText((Join-Path $base 'linux_build.sh'), $script.Replace("`r`n", "`n"), (New-Object Text.UTF8Encoding($false)))
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $linux = & wsl.exe -e bash "$wslBase/linux_build.sh" 2>&1 }
+        finally { $ErrorActionPreference = $previous }
         $linuxCode = $LASTEXITCODE
         Write-Host (($linux | ForEach-Object { "$_" }) -join "`n")
         if ($linuxCode -ne 0) { $failures++; Write-Host "  [fail] the Linux run exited with $linuxCode" }

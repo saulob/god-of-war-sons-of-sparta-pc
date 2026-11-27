@@ -1,7 +1,6 @@
 // Launcher input telemetry and the Gamescope gamepad policy, without SDL, so they can be tested headless.
 //
-// A Steam Deck report (SOS-VLHSWP) showed a launcher that ran normally and a session that ended with no PLAY: nothing
-// said whether a tap, the Deck's buttons (Steam Input's virtual pad) or a key ever reached the window. Each kind of input
+// Shows whether a tap, the Deck's buttons (Steam Input's virtual pad) or a key ever reached the window. Each kind of input
 // event and each focus change is logged a few times, and the last input decides the "input=" of the PLAY line.
 #pragma once
 

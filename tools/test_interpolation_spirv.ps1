@@ -41,7 +41,11 @@ function Invoke-SpirvTest([string]$Overlay, [string]$Label) {
         "mkdir -p '$cache/$Label' && ln -sfn '$cache/obj' '$cache/$Label/obj' 2>/dev/null; mkdir -p '$cache/obj'; " +
         "SOS_OVERLAY='$overlayWsl' sh '/tmp/sos_interp_build_$Label.sh' '$repo' '$cache/$Label' || exit 97; " +
         "cd /tmp && '$exe'; code=`$?; rm -f '$exe' '/tmp/sos_interp_build_$Label.sh'; exit `$code"
-    $output = & wsl.exe -e sh -c $script 2>&1
+    # Windows PowerShell 5.1 turns native stderr into terminating errors under Stop.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $output = & wsl.exe -e sh -c $script 2>&1 | ForEach-Object { "$_" } }
+    finally { $ErrorActionPreference = $previous }
     return [pscustomobject]@{ Code = $LASTEXITCODE; Lines = @($output) }
 }
 

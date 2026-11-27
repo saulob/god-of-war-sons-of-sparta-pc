@@ -263,7 +263,7 @@ foreach ($marker in "Write-Host '    PASS'", 'Write-Host "    FAIL: $($result.Re
     Check ($runner.Contains($marker)) "runner still prints $marker"
 }
 Check ($runner.IndexOf('Write-Host "Failed: $failed"') -gt $runner.IndexOf('Format-TimingSummary')) 'Failed line stays last'
-$groups = @((Select-String -InputObject $runner -Pattern "(?m)^    @\{ Name = '([a-z-]+)'; Scope = '(build|host)'; Title" -AllMatches).Matches)
+$groups = @((Select-String -InputObject $runner -Pattern "(?m)^    @\{ Name = '([a-z0-9-]+)'; Scope = '(build|host)'; Title" -AllMatches).Matches)
 $names = @($groups | ForEach-Object { $_.Groups[1].Value })
 Equal $names.Count (@($names | Select-Object -Unique)).Count 'runner group names are unique'
 Check ($names -contains 'progress-reporter') 'progress tests are registered in the runner'

@@ -72,8 +72,7 @@ inline bool SurfaceHasArea(std::uint32_t current_width, std::uint32_t current_he
 
 /// The swapchain extent. A surface that fixes its size (X11, Win32, Gamescope) gives it as currentExtent; a Wayland
 /// surface reports UINT32_MAX and takes the window's size in pixels (SDL_GetWindowSizeInPixels: logical size x
-/// fractional scale), clamped to the surface limits; never the logical size (SOS-BXG9UT: KDE Wayland, 1755x987 logical
-/// windowed size, 2194x1234 pixels).
+/// fractional scale), clamped to the surface limits; never the logical size.
 struct Extent {
     std::uint32_t width;
     std::uint32_t height;

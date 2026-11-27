@@ -105,7 +105,7 @@ void Translator::V_INTERP_MOV_F32(const GcnInst& inst) {
     ASSERT_MSG(src_select < 3, "Invalid V_INTERP_MOV_F32 selector {} in shader {:#018x}", src_select,
                info.pgm_hash);
     // dcp: P10/P20 of a smooth attribute need per-vertex values, which only VK_AMD_shader_explicit_vertex_parameter
-    // and VK_KHR_fragment_shader_barycentric give; without either (Intel ARL, SOS-BXG9UT) the stop names the shader.
+    // and VK_KHR_fragment_shader_barycentric give; without either (Intel ARL) the stop names the shader.
     ASSERT_MSG(attr.is_flat || src_select == 2 ||
                    profile.supports_amd_shader_explicit_vertex_parameter ||
                    profile.supports_fragment_shader_barycentric,

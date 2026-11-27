@@ -1,5 +1,4 @@
-// The launcher's Graphics card list, asked of Vulkan only after the window has drawn a few frames (Dragon's Crown Pro
-// 4552ba3 and fefc78a). The probe creates Vulkan instances on the UI thread: before this, a driver that hung or crashed
+// The launcher's Graphics card list, asked of Vulkan only after the window has drawn a few frames. The probe creates Vulkan instances on the UI thread: before this, a driver that hung or crashed
 // there left no window and no word in the log. A marker file exists only while the probe runs; a start that finds it
 // skips the probe once (the last one did not finish) and removes it, so the start after that asks again. PLAY still runs
 // its own graphics preflight. SDL-free, for headless tests.

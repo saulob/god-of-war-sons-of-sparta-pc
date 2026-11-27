@@ -160,12 +160,24 @@ try {
     Check ($template -notmatch '(?i)first PC release|\bofficial\b') 'it does not read as an official release'
     Check ($template -match '\*\*No game files are included\.\*\*' -and $template -match 'CUSA57767` USA \*\*1\.00\*\*' -and $template -match 'CUSA57767` USA \*\*1\.01\*\*') 'the no-game-files notice names both supported builds'
     $sections = @([regex]::Matches($template, '(?m)^## (.+)$') | ForEach-Object { $_.Groups[1].Value.Trim() })
-    Check (($sections -join '|') -eq "What's fixed in v$released|Highlights|Also included|Validation|VirusTotal|Known limitations|Downloads|SHA-256|Credits") "the changes since the previous release come first, then the Dragon release layout ($($sections -join ', '))"
+    Check (($sections -join '|') -eq "What's new in v$released|What's fixed in v$released|Bug Reports addressed|GitHub Issues addressed|Highlights|Also included|Validation|VirusTotal|Known limitations|Downloads|SHA-256|Credits") "the changes since the previous release come first, then the Dragon release layout ($($sections -join ', '))"
+    $new = Get-Section "What's new in v$released"
+    $cheats = @('God Mode', 'Infinite Spartan Spirit', 'Infinite Magic', 'Damage Multiplier', 'Movement Speed', 'Jump Height', 'Add 1000 Blood Orbs', 'Add 10 Upgrade Materials', 'F10')
+    Check ((@($cheats | Where-Object { -not $new.Contains($_) }).Count -eq 0) -and $new -match '\*\*Off by default\*\*' -and $new -match 'never saved' -and $new -notmatch '(?i)Pass Through Gates') 'the new cheats are listed, Off by default, with session-only F10 changes'
     $changes = Get-Section "What's fixed in v$released"
     $fixedAt = $changes.IndexOf('### Fixed'); $diagnosticsAt = $changes.IndexOf('### Diagnostics improved')
     Check ($fixedAt -ge 0 -and $diagnosticsAt -gt $fixedAt) 'confirmed fixes and improved diagnostics are separate lists'
     Check ($diagnosticsAt -lt 0 -or $changes.Substring($diagnosticsAt) -match 'UHD 630[^\n]*\*\*that crash is not confirmed fixed yet\*\*') 'the Intel UHD 630 crash is listed as diagnostics, not as a fix'
     Check ($fixedAt -lt 0 -or $diagnosticsAt -lt 0 -or $changes.Substring($fixedAt, $diagnosticsAt - $fixedAt) -notmatch 'UHD 630') 'no confirmed fix names the Intel UHD 630'
+    $reports = Get-Section 'Bug Reports addressed'
+    $reportIds = @([regex]::Matches($reports, '(?m)^\| \*\*(SOS-[A-Z0-9]{6})\*\* \|') | ForEach-Object { $_.Groups[1].Value })
+    Check ($reportIds.Count -gt 0 -and $reports -match 'do not have public URLs unless the same problem also has a GitHub Issue' -and $reports -notmatch 'https://[^)]*SOS-') "Bug Report IDs are listed without public URLs ($($reportIds -join ', '))"
+    $issues = Get-Section 'GitHub Issues addressed'
+    function Get-IssueRow([int]$Number) { return [regex]::Match($issues, '(?m)^\| \[#' + $Number + '\]\(https://github\.com/saulob/god-of-war-sons-of-sparta-pc/issues/' + $Number + '\).*$').Value }
+    Check ((Get-IssueRow 2) -match '\*\*not fixed\*\*' -and (Get-IssueRow 2) -notmatch '\*\*Fixed\*\*') 'Issue #2 (Intel UHD 630) is diagnostics only, not a fix'
+    Check ((Get-IssueRow 4) -eq '' -and (Get-Section 'Known limitations') -match 'issues/4\)[^\n]*\*\*not fixed\*\*') 'Issue #4 (ultrawide) is not claimed as addressed and stays listed as not fixed'
+    Check ((Get-IssueRow 7) -match '\*\*Partially addressed\*\*' -and (Get-IssueRow 7) -match 'not implemented') 'Issue #7 (cheats) is only partially addressed'
+    Check ($template -notmatch '(?i)reporter[- ]confirmed|confirmed by the reporter') 'no reporter confirmation is claimed'
     $headline = Get-Section 'Highlights'
     $positions = @('True Ultrawide Hor+', 'Up to 4K', 'High frame rates', 'The Pit of Agonies from the beginning', 'Local two-player co-op in The Pit', 'Unlock The Pit Early', 'Unlock Hermes Mode', 'Skip Intro', 'Xbox and PlayStation controllers', 'Automatic controller prompts' | ForEach-Object { $headline.IndexOf("- **$_") })
     Check (($positions -notcontains -1) -and ((($positions | Sort-Object) -join ',') -eq ($positions -join ','))) 'the highlights are in the requested order'

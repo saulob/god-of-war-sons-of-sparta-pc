@@ -221,7 +221,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title, GraphicsApi api
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
     } else {
-        // offscreen, kmsdrm or dummy: no window the Vulkan presenter can draw to (Dragon d298fa9).
+        // offscreen, kmsdrm or dummy: no window the Vulkan presenter can draw to.
         ExitNoWindow("Unsupported SDL video driver for the game window", driver ? driver : "(none)");
     }
     if (display) {

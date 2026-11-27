@@ -275,7 +275,7 @@ void TestFrameCounter() {
     Check(Contains(overlay, "DcpSettings::Get().show_fps && frame_ms_avg > 0.0f"), "the counter follows show_fps");
     Check(Contains(overlay, "DcpSettings::Get().overlay_scale / 100.0f") && Contains(overlay, "DcpSettings::Get().overlay_corner"),
           "the counter follows scale and corner");
-    Check(Contains(overlay, "return initialized && (loading || background_total || DcpSettings::Get().show_fps || NoticeShown());"),
+    Check(Contains(overlay, "return initialized && (loading || background_total || cheat_open || DcpSettings::Get().show_fps || NoticeShown());"),
           "the overlay is visible while the counter is on");
     Check(Contains(overlay, "ImGui_ImplVulkan_Init(&info)") && Contains(overlay, "ImGui_ImplVulkan_RenderDrawData"),
           "the overlay draws through the ImGui Vulkan backend");
