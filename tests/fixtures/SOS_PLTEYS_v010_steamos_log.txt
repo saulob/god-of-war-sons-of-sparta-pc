@@ -1,0 +1,229 @@
+[run] God of War: Sons of Sparta PC
+[run] boot (selected by the launcher)
+[run] log logs/sons_of_sparta_001.log
+CPU: AMD Custom APU 0932
+Launcher: game files in <install>: missing (game folder not found)
+Launcher: settings file user/sons_of_sparta.ini
+Launcher: opening: game files not ready, show_launcher on
+Launcher placement: stage=created x=64 y=40 size=1152x720 display=1/1 name="Built-in Screen" bounds=0,0,1280x800 usable=0,0,1280x800 scale=1.00 pixels=1152x720 density=1.00 content_scale=1.00 maximized=0 fullscreen=0 saved=none
+Launcher renderer: selected=opengl requested=auto fallback=0 pinned_modules=0
+Launcher renderer: pacing=60hz_deadline vsync_effective=1
+Launcher: window 1152x720 at 1.00x display scale, opengl renderer
+Launcher placement: stage=shown x=64 y=40 size=1152x718 display=1/1 name="Built-in Screen" bounds=0,0,1280x800 usable=0,0,1280x800 scale=1.00 pixels=1152x718 density=1.00 content_scale=1.00 maximized=0 fullscreen=0 saved=none
+Launcher: shown
+Launcher startup: total=493ms renderer=opengl sdl=250 display=0 window=1 renderer=61 ui=3 pages=152 first_present=22 shown=1 loop=0
+Updater: http release metadata: done host=api.github.com status=200 category=none error=0 bytes=15386/-1 redirects=0 elapsed_ms=386
+Updater: update release metadata: ok host=api.github.com status=200 attempts=1 bytes=15386/-1 redirects=0 duration_ms=386 category=none
+Updater: No update available
+Launcher performance: renderer=opengl render_hz=60.1 cpu=4.8% build=0.2ms submit=0.2ms present=0.5ms frame=0.8ms slow_presents=0 minimized=0% wakes=0
+Launcher performance: renderer=opengl render_hz=59.9 cpu=4.6% build=0.2ms submit=0.2ms present=0.5ms frame=0.8ms slow_presents=0 minimized=0% wakes=0
+Launcher: installing the game from <folder>/<package>.pkg
+Launcher performance: renderer=opengl render_hz=59.9 cpu=4.9% build=0.2ms submit=0.2ms present=0.5ms frame=0.9ms slow_presents=0 minimized=0% wakes=0
+Launcher: package recognized: <package>.pkg is CUSA57767 1.00 USA (base, layer 1 of 1)
+Launcher: game installed: 4115 files (0 linked), 9493562583 bytes
+Launcher: game files in <install>: valid
+Launcher: build CUSA57767 1.00 USA (UP9000-CUSA57767_00-SONSOFSPARTAPS40)
+Launcher: eboot.bin SHA-256 19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31
+Launcher: active game build: CUSA57767 1.00 USA (APP_VER 1.00 · VERSION 01.00)
+Launcher performance: renderer=opengl render_hz=59.9 cpu=5.8% build=0.3ms submit=0.2ms present=0.6ms frame=1.0ms slow_presents=0 minimized=0% wakes=0
+Launcher: game files in <install>: valid
+Launcher: build CUSA57767 1.00 USA (UP9000-CUSA57767_00-SONSOFSPARTAPS40)
+Launcher: eboot.bin SHA-256 19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31
+Launcher: settings saved, starting the game
+Startup: launcher closing +63 ms (process +0 ms)
+Launcher: closed, starting the game
+Startup: launcher closed +152 ms (process +88 ms)
+Overlay compatibility: original game process
+Content: profile <folder>/game/image/CUSA57767-1.00/content.bin (SKU 3, parameters 0 0 0 0)
+[run] 2026-11-26T11:40:13
+[run] boot image <folder>/game/image/CUSA57767-1.00/boot.bin
+Build: God of War: Sons of Sparta (USA) 1.00
+Eboot SHA-256: 19e1759adbb8038164bc9c4c40af876ca68fea7c3442034d2b665bbdb9be4a31
+Settings: God of War: Sons of Sparta PC v0.1.0, Linux x86-64, game build CUSA57767 1.00 USA
+Settings: Window Windowed, frame rate 60 FPS (Original), frame counter off, frame rate in title off, render resolution in title off
+Settings: Controller prompts Automatic
+Settings: Skip Intro off
+Settings: Unlock Hermes Mode off
+Settings: Unlock The Pit Early off
+Settings: Overlay programs unsupported
+Launcher placement: stage=created x=360 y=310 size=560x180 display=1/1 name="Built-in Screen" bounds=0,0,1280x800 usable=0,0,1280x800 scale=1.00 pixels=560x180 density=1.00 content_scale=1.00 maximized=0 fullscreen=0 saved=none
+Launcher renderer: selected=opengl requested=auto fallback=0 pinned_modules=0
+Launcher renderer: pacing=60hz_deadline vsync_effective=1
+Launcher: window 560x180 at 1.00x display scale, opengl renderer
+Launcher placement: stage=shown x=360 y=310 size=560x180 display=1/1 name="Built-in Screen" bounds=0,0,1280x800 usable=0,0,1280x800 scale=1.00 pixels=560x180 density=1.00 content_scale=1.00 maximized=0 fullscreen=0 saved=none
+Launcher startup: total=353ms renderer=opengl sdl=256 display=0 window=0 renderer=83 ui=0 first_present=12 shown=1 loop=0
+Controller icons: the left-stick directions have to be prepared
+Controller icons: Source <install>/Media/resources.assets: 130138996 bytes, 51413 objects
+Controller icons: LASUP: sprite 51414, cell (64,0), from PlayStation art at (308,360)
+Controller icons: LASDOWN: sprite 51415, cell (128,0), from PlayStation art at (16,360)
+Controller icons: LASLEFT: sprite 51416, cell (192,0), from PlayStation art at (110,360)
+Controller icons: LASRIGHT: sprite 51417, cell (256,0), from PlayStation art at (209,360)
+Controller icons: Prepared <folder>/game/image/CUSA57767-1.00/controller_icons/resources.assets.new (130145912 bytes) and <folder>/game/image/CUSA57767-1.00/controller_icons/resources.assets.resS.new
+Controller icons: Bundle <install>/Media/StreamingAssets/aa/PS4/0342107720d621839faadc2c6c3deb69.bundle: 1787345 bytes, UnityFS 8 (2022.3.62f3), 120 blocks, serialized node CAB-00064185e71135bfb38b0babcc2854fb (105 types, 1795 objects)
+Controller icons: LASUP: Xbox_LeftStick_Up (8886533676844968633) from PlayStation PS_ButtonPrompts_21 (-2992813360379481105) at (308,360) -> Xbox_LeftStick_Up 8886533676844968633 at (64,0)
+Controller icons: LASDOWN: Xbox_LeftStick_Down (2982459747376948168) from PlayStation PS_ButtonPrompts_15 (710197669354386415) at (16,360) -> Xbox_LeftStick_Down 2982459747376948168 at (128,0)
+Controller icons: LASLEFT: Xbox_LeftStick_Left (7961066134762103589) from PlayStation PS_ButtonPrompts_16 (-4416107871160060945) at (110,360) -> Xbox_LeftStick_Left 7961066134762103589 at (192,0)
+Controller icons: LASRIGHT: Xbox_LeftStick_Right (-3964149339515626128) from PlayStation PS_ButtonPrompts_20 (-193314080216402961) at (209,360) -> Xbox_LeftStick_Right -3964149339515626128 at (256,0)
+Controller icons: Button South Mask: sprite -6388157410896773477
+Controller icons: Button East Mask: sprite 791448796841770651
+Controller icons: Button North Mask: sprite 6786487976465923739
+Controller icons: Button North Mask Filled: sprite -6315621532518302987
+Controller icons: Prepared <folder>/game/image/CUSA57767-1.00/controller_icons/icons.bundle.new (2176266 bytes)
+Controller icons: prepared copies in use
+Controller icons: prepared copies in use
+Save: profile user, title CUSA57767
+Trophies: metadata unavailable (trophy key missing or invalid (user/keys.json)), NP Communication ID NPWR58134_00
+Startup: guest image read, 593302 relocations checked +1711 ms (process +1648 ms)
+Patch: render target 1728x1080, Pro mode off, direct memory pool +0 MiB, 7 game resolution requests
+Display: render resolution 1728x1080 (native), aspect ratio 16:10
+Runtime: direct memory pool 5056 MiB
+Settings: user/sons_of_sparta.ini
+Renderer: selected vulkan, active Vulkan
+Window: Windowed
+Window: display 1 of 1 (Built-in Screen), size 1024x640, VSync on, frame rate in title off, resolution in title off
+Display: refresh 90.00 Hz
+Session: Gamescope no, XDG_CURRENT_DESKTOP=KDE, XDG_SESSION_TYPE=wayland
+Vulkan layers: 13 available (installed, not necessarily loaded)
+Vulkan layers: available VK_LAYER_RENDERDOC_Capture
+Vulkan layers: available VK_LAYER_VALVE_steam_fossilize_64
+Vulkan layers: available VK_LAYER_VALVE_steam_fossilize_32
+Vulkan layers: available VK_LAYER_VALVE_steam_overlay_32
+Vulkan layers: available VK_LAYER_VALVE_steam_overlay_64
+Vulkan layers: available VK_LAYER_MAKO_render
+Vulkan layers: available VK_LAYER_LS_frame_generation
+Vulkan layers: available VK_LAYER_FROG_gamescope_wsi_x86_64
+Vulkan layers: available VK_LAYER_FROG_gamescope_wsi_x86
+Vulkan layers: available VK_LAYER_MANGOHUD_overlay_x86
+Vulkan layers: available VK_LAYER_MANGOHUD_overlay_x86_64
+Vulkan layers: available VK_LAYER_MESA_device_select
+Vulkan layers: available VK_LAYER_MESA_anti_lag
+GPU: Vulkan instance 1.4.350, layers requested: none, extensions: VK_KHR_wayland_surface, VK_KHR_surface, VK_EXT_debug_utils
+GPU: selected AMD Custom GPU 0932 (RADV VANGOGH)
+GPU: Vulkan device AMD Custom GPU 0932 (RADV VANGOGH) (radv 26.1.99, Vulkan 1.4.350)
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:426 operator(): Extension VK_NV_framebuffer_mixed_samples unavailable.
+GPU: Vulkan device extensions: VK_KHR_swapchain, VK_KHR_push_descriptor, VK_EXT_vertex_attribute_divisor, VK_EXT_robustness2, VK_KHR_maintenance5, VK_KHR_pipeline_binary, VK_KHR_maintenance8, VK_EXT_attachment_feedback_loop_layout, VK_EXT_attachment_feedback_loop_dynamic_state, VK_EXT_depth_range_unrestricted, VK_EXT_extended_dynamic_state3, VK_EXT_custom_border_color, VK_EXT_depth_clip_control, VK_EXT_depth_clip_enable, VK_EXT_vertex_input_dynamic_state, VK_EXT_primitive_topology_list_restart, VK_AMD_shader_explicit_vertex_parameter, VK_EXT_provoking_vertex, VK_EXT_shader_stencil_export, VK_AMD_shader_image_load_store_lod, VK_AMD_gcn_shader, VK_AMD_shader_trinary_minmax, VK_AMD_mixed_attachment_samples, VK_EXT_shader_atomic_float, VK_EXT_shader_atomic_float2, VK_KHR_workgroup_memory_explicit_layout, VK_EXT_image_2d_view_of_3d, VK_EXT_image_view_min_lod, VK_EXT_memory_budget, VK_EXT_device_fault, VK_KHR_shader_clock
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:946 CollectImageFormatInfo: Surface format data_format=9, number_format=1 is not fully supported (vk_format=A2B10G10R10SnormPack32, missing features={ SampledImage | StorageImage | ColorAttachment | TransferSrc | TransferDst })
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:946 CollectImageFormatInfo: Surface format data_format=9, number_format=5 is not fully supported (vk_format=A2B10G10R10SintPack32, missing features={ SampledImage | StorageImage | ColorAttachment | TransferSrc | TransferDst })
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:946 CollectImageFormatInfo: Surface format data_format=13, number_format=4 is not fully supported (vk_format=R32G32B32Uint, missing features={ SampledImage | TransferSrc | TransferDst })
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:946 CollectImageFormatInfo: Surface format data_format=13, number_format=5 is not fully supported (vk_format=R32G32B32Sint, missing features={ SampledImage | TransferSrc | TransferDst })
+GPU [Render.Vulkan] <Warning> vk_instance.cpp:946 CollectImageFormatInfo: Surface format data_format=13, number_format=7 is not fully supported (vk_format=R32G32B32Sfloat, missing features={ SampledImage | TransferSrc | TransferDst })
+Swapchain: surface present modes Mailbox, Fifo, Immediate
+Swapchain: VSync on (Fifo)
+Swapchain: images requested 4, got 4 (surface min 3, max 0), Fifo, default count, extent 1024x640
+Swapchain: R8G8B8A8Unorm SrgbNonlinear, 4 images, 1024x640
+GPU: deferred image readback disabled (64 copies, 64 MiB pending limit)
+GPU: draw preparation workers: 0 (+1 scanner, 8 hardware threads)
+GPU: experimental AMD water workaround on (vendor 0x1002, feedback loop layout)
+Pipeline startup: on demand, no bulk warm-up
+VideoOut: vblank 60 Hz, frame rate 60, new frames up to 60 a second, VSync on
+Runtime: first vblank
+GPU: window and presenter ready, 330 HLE symbols
+Startup: GPU ready +2645 ms (process +2582 ms)
+Modules: 4
+  module 0 sce_module/libc.prx base 0x1fe0000 size 0x12a6b0 init 0x1fe0000
+  module 1 sce_module/libSceFios2.prx base 0x2110000 size 0x18c52c init 0x2110000
+  module 2 Media/Modules/PS4Util.prx base 0x22a0000 size 0x400070 init 0x22a0000
+  module 3 Media/Modules/Il2cppUserAssemblies.prx base 0x26b0000 size 0x79928a0 init 0x26b0000
+Startup: first present +2663 ms (process +2600 ms)
+Startup: relocations applied, 1058 import lookups +2697 ms (process +2634 ms)
+Mapped 168044704 bytes, 15 segments; applied 593302 relocations
+Hermes Mode: early unlock off; the game's own availability is kept
+The Pit: early unlock off; the game's own availability is kept
+Controller prompts: Automatic (Automatic prompt hook installed at image+0x47bde10)
+Controller prompts: Settings dialog glyphs hook installed at image+0x50d0810
+Controller prompts: Campfire menu glyph hook installed at image+0x48dc400
+Controller prompts: Pit player menu glyph hook installed at image+0x48dbfc0
+Controller prompts: Menu glyph hooks installed at image+0x92656f0 and the text atlas
+Exit Game: hooks installed (CUSA57767-1.00, 23 languages)
+Starting linked module 0 libc.prx entry 0x801fe0000 (image+0x1fe0000)
+Runtime: thread destructor routine registered: 0x802095e90
+Runtime: application heap API registered
+Runtime: direct allocation offset=0x0, size=268435456 bytes, type=0
+Runtime: mapped direct memory 0x1000000000, size=268435456, prot=0x33
+Module 0 libc.prx initializer returned 0
+Starting linked module 1 libSceFios2.prx entry 0x802110000 (image+0x2110000)
+Module 1 libSceFios2.prx initializer returned 0
+Starting linked module 2 PS4Util.prx entry 0x8022a0000 (image+0x22a0000)
+Module 2 PS4Util.prx initializer returned 0
+Starting linked module 3 Il2cppUserAssemblies.prx entry 0x8026b0000 (image+0x26b0000)
+Module 3 Il2cppUserAssemblies.prx initializer returned 0
+Startup: linked modules initialized +2708 ms (process +2645 ms)
+Entering original x86-64 code at guest offset 0x13550
+Runtime: Unity bootstrap entered
+Startup: Unity bootstrap entered +2708 ms (process +2645 ms)
+Checkpoint: +2.708 s thread 140691522894208: Unity bootstrap entered at guest image+0x13550
+Runtime: _init_env returned (verified libc implementation: RET)
+Runtime: reserved virtual range 0x1010000000, size=1048576
+Runtime: direct allocation offset=0x10000000, size=1048576 bytes, type=0
+Runtime: mapped direct memory 0x1010000000, size=1048576, prot=0x32
+FIOS2: built with SDK version 0x12508001
+Runtime: guest thread 'SceFiosCallback' created (stack=65536, prio=260, entry=0x80214a710, arg=0x802174c98)
+Runtime: guest thread 'SceFiosIO' created (stack=81920, prio=260, entry=0x80214a710, arg=0x802178f60)
+Runtime: internal system module 0xd7 loaded (host implementation)
+Runtime: guest thread 'SceFiosIO /' created (stack=81920, prio=260, entry=0x80214a710, arg=0x80217d1e0)
+Argument Count = 1Arg 0 = /app0/eboot.bin
+********** LAUNCHER CONTROL ************************************
+	File System Root = NONE SPECIFIED
+	Launcher Path = NONE SPECIFIED
+	Launcher Arguments NONE SPECIFIED
+**********/LAUNCHER CONTROL ************************************
+Runtime: module /app0/Media/Modules/PS4Util.prx already loaded, handle 3 (start returned 0)
+Runtime: module /app0/Media/Modules/Il2CppUserAssemblies.prx already loaded, handle 4 (start returned 0)
+Runtime: reserved virtual range 0x1010100000, size=4194304
+Runtime: direct allocation offset=0x10100000, size=4194304 bytes, type=0
+Runtime: mapped direct memory 0x1010100000, size=4194304, prot=0x32
+Runtime: reserved virtual range 0x1010500000, size=16777216
+Runtime: direct allocation offset=0x10500000, size=16777216 bytes, type=0
+Runtime: mapped direct memory 0x1010500000, size=16777216, prot=0x32
+Runtime: direct allocation offset=0x11600000, size=2013265920 bytes, type=3
+Runtime: mapped direct memory 0x1011600000, size=2013265920, prot=0x33
+Runtime: reserved virtual range 0x1089600000, size=8388608
+Runtime: direct allocation offset=0x89600000, size=4194304 bytes, type=0
+Runtime: mapped direct memory 0x1089600000, size=4194304, prot=0x32
+Runtime: reserved virtual range 0x1089e00000, size=16777216
+Runtime: direct allocation offset=0x89a00000, size=16777216 bytes, type=0
+Runtime: mapped direct memory 0x1089e00000, size=16777216, prot=0x32
+Runtime: reserved virtual range 0x1011500000, size=1048576
+Runtime: direct allocation offset=0x11500000, size=1048576 bytes, type=0
+Runtime: guest thread 'AssetGarbageCollectorHelper' created (stack=131072, prio=700, entry=0x800bbb1d0, arg=0x1010715af0)
+Runtime: mapped direct memory 0x1011500000, size=1048576, prot=0x32
+Runtime: reserved virtual range 0x108ae00000, size=262144
+Runtime: direct allocation offset=0x8aa00000, size=65536 bytes, type=0
+Runtime: mapped direct memory 0x108ae00000, size=65536, prot=0x32
+Runtime: direct allocation offset=0x8aa10000, size=65536 bytes, type=0
+Runtime: guest thread 'AssetGarbageCollectorHelper' created (stack=131072, prio=700, entry=0x800bbb1d0, arg=0x1010715c40)
+Runtime: mapped direct memory 0x108ae20000, size=65536, prot=0x32
+Runtime: reserved virtual range 0x108ae40000, size=262144
+Runtime: guest thread 'AssetGarbageCollectorHelper' created (stack=131072, prio=700, entry=0x800bbb1d0, arg=0x1010715d90)
+Runtime: direct allocation offset=0x8aa20000, size=65536 bytes, type=0
+Runtime: mapped direct memory 0x108ae40000, size=65536, prot=0x32
+Runtime: direct allocation offset=0x8aa30000, size=65536 bytes, type=0
+Runtime: thread family 'AssetGarbageCollectorHelper': further creations summarized
+Runtime: mapped direct memory 0x108ae60000, size=65536, prot=0x32
+Runtime: reserved virtual range 0x108ae80000, size=262144
+Runtime: direct allocation offset=0x8aa40000, size=65536 bytes, type=0
+Runtime: mapped direct memory 0x108ae80000, size=65536, prot=0x32
+Runtime: UserService initialized (user 1 logged in)
+Runtime: no mount for guest path / (prefix /, thread 1 main)
+Runtime: open(/app0/debug.log) -> Read-only file system
+Runtime: guest thread 'SceFiosZlib0' created (stack=65536, prio=700, entry=0x80214a710, arg=0x802181d80)
+Runtime: guest thread 'SceFiosZlib1' created (stack=65536, prio=700, entry=0x80214a710, arg=0x802181da8)
+Runtime: open(/app0/archive.psarc) -> not found
+Runtime: open(/app0/archive_patch.psarc) -> not found
+Runtime: AppContent host provider loaded; references=1
+Runtime: AppContent initialized; offline base-game profile, no mounted add-ons
+Runtime: AppContent host provider loaded; references=2
+[libil2cpp] sceAppContentInitialize returned 0x80d90003
+
+Runtime: mapped flexible memory 0x108aec0000, size=19398656, prot=0x3
+Runtime: dlsym handle 0 scriptingGetMem -> 0x801411d40
+Runtime: direct allocation offset=0x8aa50000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c140000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8aa90000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c180000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8aad0000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c1c0000, size=262144, prot=0x33
+Runtime: direct allocation offset=0x8ab10000, size=262144 bytes, type=0
+Runtime: mapped direct memory 0x108c200000, size=262144, prot=0x33
+Runtime: semaphore id=1, attr=0, initial=0, max=256
+Runtime: semaphore id=2, attr=0, initial=0, max=256
