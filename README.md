@@ -23,6 +23,7 @@
 - **Local two-player co-op in The Pit**: the original local co-op, with Kratos and Deimos on the same PC. The story campaign stays single-player
 - **Unlock The Pit Early** and **Unlock Hermes Mode**: two independent launcher options, off by default, that open The Pit and the game's own Hermes Mode from the start. Your campaign save is never modified. See [Hermes Mode](#hermes-mode)
 - **Skip Intro**: skips the startup logos and video and continues to the title screen
+- **Cheats**: God Mode, Infinite Spartan Spirit, Infinite Magic, Damage Multiplier, Movement Speed and Jump Height, all Off by default, with the item actions Add 1000 Blood Orbs and Add 10 Upgrade Materials. The launcher's **Cheats** page saves the defaults; **F10** changes them for the current session only. See [Cheats](#cheats)
 - **Controllers**: DualShock 4, DualSense, Xbox and other SDL gamepads. **Controller prompts: Automatic** shows Xbox symbols while an Xbox controller is used and PlayStation symbols otherwise, or can be forced to either; the Xbox A/B/X/Y, LB/RB and LT/RT glyphs appear in the game's menus and dialogs, including the Settings dialog, the campfire menu and The Pit
 - **Graphics**: SMAA anti-aliasing, anisotropic texture filtering (Game, 2x, 4x, 8x, 16x), AMD FSR 1 upscaling and RCAS sharpening, VSync and graphics card selection
 - **Display**: Windowed and Borderless Fullscreen (**F11** switches while playing), monitor selection, and the 16:9 Original, 16:10, 21:9 Ultrawide, 32:9 Super Ultrawide, 4:3 and 5:4 shapes
@@ -50,6 +51,25 @@ off by default, makes it selectable immediately on the original GAME MODES scree
 without completing the campaign or entering the secret code. Turning the option off restores the original unlock
 requirement; the original cheat-code unlock and existing Hermes saves keep working. As in the original game, the selected
 game mode is stored with the save and cannot be changed afterwards.
+
+## Cheats
+
+The launcher's **Cheats** page holds the defaults for the next game, saved in `user\sons_of_sparta.ini`; every cheat is
+Off until you turn it on. While playing, **F10** opens the Cheats menu over the game, below the frame counter when it is shown. Keyboard, mouse
+and controller work in it (D-pad or left stick to move, A/Cross to change a row; F10, Escape or B/Circle close it). Changes made there apply to the current session only and are never saved; the next game starts from
+the launcher's values again.
+
+| Group | Cheat | Values |
+| --- | --- | --- |
+| Player | God Mode, Infinite Spartan Spirit, Infinite Magic | Off / On |
+| Combat | Damage Multiplier (the player's hits on enemies) | Off, 2x, 4x, 6x |
+| Movement | Movement Speed (the player's own walking and running) | Off, 2x |
+| Movement | Jump Height | Off, 2x, 4x, 6x |
+| Items (F10 only) | Add 1000 Blood Orbs, Add 10 Upgrade Materials | one-shot actions |
+
+Both CUSA57767 1.00 and 1.01 are supported. A cheat changes the game's code only while it is On; Off is the original
+code. See [docs/CHEATS.md](docs/CHEATS.md) for how each
+one works and its limits.
 
 ## What you need
 

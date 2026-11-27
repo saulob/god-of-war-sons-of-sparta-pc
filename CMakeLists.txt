@@ -108,6 +108,8 @@ set(SOS_RUNTIME_SOURCES
     src/sos_hermes_unlock.c
     src/sos_pit_unlock.c
     src/sos_exit_game.c
+    src/sos_cheat_patch.c
+    src/runtime_cheats.cpp
     src/runtime_module.c
     src/runtime_history.c
     src/dcp_keys.c

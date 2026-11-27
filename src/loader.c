@@ -24,6 +24,7 @@
 #include "sos_hermes_unlock.h"
 #include "sos_pit_unlock.h"
 #include "sos_exit_game.h"
+#include "runtime_cheats.h"
 #include "controller_prompts.h"
 #include "prompt_dialog.h"
 #include "image_glyphs.h"
@@ -1029,7 +1030,7 @@ int main(int argc, char **argv) {
     const int pit_unlock_wanted = sos_pit_unlock_from_file(settings_file);
     const size_t stub_area = round_page(SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES + SOS_PROMPT_DIALOG_STUB_BYTES +
                                         SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES + SOS_EXIT_GAME_STUB_BYTES +
-                                        SOS_IMAGE_GLYPHS_STUB_BYTES);
+                                        SOS_IMAGE_GLYPHS_STUB_BYTES + SOS_CHEAT_STUB_BYTES);
     char compat_key[64] = "";
     {
         SosGameBuild compat_build;
@@ -1346,6 +1347,15 @@ int main(int argc, char **argv) {
             sos_exit_game_arm(image, prompt_key, dcpgpu_request_close);
         printf("Exit Game: %s\n", exit_message);
     }
+    {
+        char cheat_message[600];
+        uint8_t *cheat_stubs = image + round_page(size) + SOS_SKIP_INTRO_STUB_BYTES + SOS_PROMPT_HOOK_STUB_BYTES +
+                               SOS_PROMPT_DIALOG_STUB_BYTES + SOS_PROMPT_MENUS * SOS_PROMPT_MENU_STUB_BYTES +
+                               SOS_EXIT_GAME_STUB_BYTES + SOS_IMAGE_GLYPHS_STUB_BYTES;
+        runtime_cheats_install(image, size, prompt_key[0] ? prompt_key : NULL, cheat_stubs, SOS_CHEAT_STUB_BYTES, cheat_message,
+                               sizeof(cheat_message));
+        printf("Cheats: hooks %s\n", cheat_message);
+    }
     protect(traps, round_page((import_count + 1) * 64), 5);
     protect(image, round_page(size), 0);
     protect(image + round_page(size), stub_area, 5);
@@ -1390,6 +1400,7 @@ int main(int argc, char **argv) {
         }
         sos_startup_milestone("linked modules initialized");
     }
+    runtime_cheats_start(settings_file);
     sos_startup_phase("guest entry");
     start_stall_watchdog();
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);

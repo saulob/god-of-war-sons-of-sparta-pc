@@ -349,7 +349,26 @@ def check_resolution(gate, builds, sources):
         gate.check(len(offsets) == 7 and len(set(offsets)) == 7, f"launcher/sos_resolution_sites.h: CUSA57767 {version} needs its 7 distinct SetResolution sites")
 
 
-FEATURES = [check_identity, check_contract, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution, check_cpu_compat]
+def cheat_site_rows(text):
+    """{build key: [(length, executed) per site]} of the generated cheat tables in src/sos_cheat_sites.h."""
+    rows = {}
+    for symbol, key, body in re.findall(r'static const SosCheatBuild (kCheatBuild_\d+_\d+) = \{\s*"(CUSA\d+-[\d.]+)",(.*?)\n\};', text, re.S):
+        if symbol.endswith("_" + key.rsplit("-", 1)[1].replace(".", "_")):
+            rows[key] = re.findall(r"\{0x[0-9a-f]+u, (\d+), (\d+), -?\d+, \d, \{", body)
+    return rows
+
+
+def check_cheats(gate, builds, sources):
+    gate.start("Cheats")
+    keys = {b["key"] for b in builds.values()}
+    rows = cheat_site_rows(sources["src/sos_cheat_sites.h"])
+    gate.same_builds(set(rows), keys, "src/sos_cheat_sites.h tables")
+    gate.check(all(len(r) == 8 for r in rows.values()), "src/sos_cheat_sites.h: every build needs its 8 cheat sites")
+    gate.check(len({tuple(r) for r in rows.values()}) <= 1, "src/sos_cheat_sites.h: the site instructions differ in length between builds")
+    dispatch = set(re.findall(r"&kCheatBuild_(\d+)_(\d+)", sources["src/sos_cheat_patch.c"]))
+    gate.same_builds({f"{TITLE}-{a}.{b}" for a, b in dispatch}, keys, "src/sos_cheat_patch.c build table")
+
+FEATURES = [check_identity, check_contract, check_skip_intro, check_hermes_unlock, check_pit_unlock, check_prompts, check_dialog, check_image_glyphs, check_exit_game, check_resolution, check_cpu_compat, check_cheats]
 
 # Sources that carry build-keyed data, with the feature that owns them.
 OWNERS = {
@@ -363,6 +382,7 @@ OWNERS = {
     "src/sos_exit_game.c": "Title menu Exit Game", "src/sos_exit_game_sites.h": "Title menu Exit Game",
     "launcher/sos_resolution_sites.h": "Render resolution and True Ultrawide",
     "src/cpu_compat_sites.inc": "CPU compatibility",
+    "src/sos_cheat_sites.h": "Cheats", "src/sos_cheat_patch.c": "Cheats",
 }
 # Host code with no build-specific data: one test covers it, not one per build.
 SHARED_HOST = {"src/loader.c": "passes the title id, not a build, to the save and redzone layers"}
@@ -381,6 +401,7 @@ COVERAGE = [
     ("tests/ultrawide_tests.cpp", "inventory"), ("scripts/ultrawide_check.py", "names"),
     ("scripts/graphics_import_check.py", "profiles"), ("scripts/graphics_state_check.py", "profiles"), ("tools/test_graphics_state.ps1", "profiles"),
     ("tools/test_cpu_compat.ps1", "names"), ("tools/cpu_compat_tests.c", "names"), ("tools/test_isa.ps1", "names"),
+    ("tests/cheats_tests.cpp", "names"), ("scripts/cheat_sites.py", "names"),
 ]
 
 
@@ -565,7 +586,7 @@ def read_sources():
         "launcher/controller_prompts.c", "launcher/controller_prompts_sites.h", "launcher/prompt_dialog.c", "launcher/prompt_dialog_sites.h",
         "launcher/image_glyphs.c", "launcher/image_glyphs_sites.h",
         "src/sos_exit_game.c", "src/sos_exit_game_sites.h", "launcher/sos_resolution_sites.h", "scripts/build_evidence.py", "scripts/il2cpp_index.py",
-        "src/cpu_compat_sites.inc")}
+        "src/cpu_compat_sites.inc", "src/sos_cheat_sites.h", "src/sos_cheat_patch.c")}
     for name in ("prompt_sites", "prompt_dialog", "exit_game_sites"):
         sources[name + ":BUILDS"] = ast_assignment(f"scripts/{name}.py", "BUILDS") or ()
     for path, _mode in COVERAGE:
@@ -629,6 +650,9 @@ def self_test():
     expect_failure("1.01 loses a SetResolution site", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITE(0x50f541cu)", "")}))
     expect_failure("1.01 routed to the 1.00 resolution sites", mutate=lambda s: s.update({"launcher/game_profile.cpp": s["launcher/game_profile.cpp"].replace(".resolution_sites = kResolutionSites_1_01", ".resolution_sites = kResolutionSites_1_00")}))
     expect_failure("1.01 dropped from the CPU compatibility tables", mutate=lambda s: s.update({"src/cpu_compat_sites.inc": re.sub(r'.*"CUSA57767-1\.01".*\n', "", s["src/cpu_compat_sites.inc"])}))
+    expect_failure("1.01 dropped from the cheat tables", mutate=lambda s: s.update({"src/sos_cheat_sites.h": s["src/sos_cheat_sites.h"].replace('"CUSA57767-1.01"', '"CUSA57767-9.99"')}))
+    expect_failure("1.01 routed to the 1.00 cheat table", mutate=lambda s: s.update({"src/sos_cheat_patch.c": s["src/sos_cheat_patch.c"].replace("&kCheatBuild_1_01", "&kCheatBuild_1_00")}))
+    expect_failure("a 1.01 cheat site of another length", mutate=lambda s: s.update({"src/sos_cheat_sites.h": re.sub(r"(kCheatBuild_1_01.*?\{0x[0-9a-f]+u, )5, 5", r"\g<1>6, 6", s["src/sos_cheat_sites.h"], count=1, flags=re.S)}))
     expect_failure("1.01 has fewer CPU compatibility sites", mutate=lambda s: s.update({"src/cpu_compat_sites.inc": re.sub(r'("CUSA57767-1\.01".*?, )(\d+)\}', lambda m: m.group(1) + str(int(m.group(2)) - 1) + "}", s["src/cpu_compat_sites.inc"])}))
     expect_failure("1.01 missing from the generated resolution sites", mutate=lambda s: s.update({"launcher/sos_resolution_sites.h": s["launcher/sos_resolution_sites.h"].replace("SOS_SET_RESOLUTION_SITES_1_01", "SOS_SET_RESOLUTION_SITES_X")}))
     expect_failure("the resolution table of 1.01 differs", mutate=lambda s: s.update({"launcher/game_profile.cpp": re.sub(r'(\.version = "1\.01".*?\.resolution_sites = )kResolutionSites', r"\1kOtherSites", s["launcher/game_profile.cpp"], count=1, flags=re.S)}))

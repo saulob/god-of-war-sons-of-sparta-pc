@@ -21,6 +21,7 @@
 #include "options.h"
 #include "page_icons.h"
 #include "settings.h"
+#include "sos_cheats.h"
 #include "sos_keys.h"
 #include "sos_launcher.h"
 #include "trg/layout.h"
@@ -75,15 +76,15 @@ std::vector<fs::path> SourceFiles(const fs::path& folder) {
 std::string Relative(const fs::path& path) { return path.lexically_relative(kRoot).generic_string(); }
 
 void TestPages() {
-    const std::vector<std::string> expected = {"Play",     "Display",  "Graphics",   "Gameplay",
+    const std::vector<std::string> expected = {"Play",     "Display",  "Graphics",   "Gameplay", "Cheats",
                                                "Controls", "Trophies", "Bug Report", "About"};
     std::vector<std::string> actual;
     for (const PageId page : kPageOrder) {
         actual.emplace_back(PageName(page));
     }
-    Check(actual == expected, "page order is Play, Display, Graphics, Gameplay, Controls, Trophies, Bug Report, About");
+    Check(actual == expected, "page order is Play, Display, Graphics, Gameplay, Cheats, Controls, Trophies, Bug Report, About");
     Check(std::count(actual.begin(), actual.end(), "Online") == 0, "no Online page");
-    Check(std::count(actual.begin(), actual.end(), "Cheats") == 0, "Cheats page absent");
+    Check(std::count(actual.begin(), actual.end(), "Cheats") == 1, "Cheats page present");
     Check(std::count(actual.begin(), actual.end(), "Bug Report") == 1, "Bug Report page present");
     Check(std::count(actual.begin(), actual.end(), "Trophies") == 1, "Trophies page present");
 }
@@ -461,6 +462,20 @@ void TestSettings() {
     }
     Check(hermes_default == "0", "the managed Hermes Mode default is off");
     Check(pit_default == "0", "the managed The Pit default is off");
+    for (const sos::cheats::ToggleInfo& info : sos::cheats::kToggles) {
+        bool found = false;
+        for (const ManagedSetting& setting : ManagedSettings()) found |= setting.key == info.key && setting.default_value == "0";
+        Check(found, std::string("saved cheat defaults to Off: ") + info.key);
+        Check(IsValidSetting(info.key, "1") && !IsValidSetting(info.key, "2"), std::string("saved cheat is 0 or 1: ") + info.key);
+    }
+    for (const sos::cheats::MultiplierInfo& info : sos::cheats::kMultipliers) {
+        bool found = false;
+        for (const ManagedSetting& setting : ManagedSettings()) found |= setting.key == info.key && setting.default_value == "1";
+        Check(found, std::string("saved multiplier defaults to Off: ") + info.key);
+        for (const sos::cheats::Choice& choice : info.choices) Check(IsValidSetting(info.key, choice.saved), std::string(info.key) + " accepts " + choice.saved);
+        Check(!IsValidSetting(info.key, "3") && !IsValidSetting(info.key, "x"), std::string(info.key) + " refuses an unlisted factor");
+    }
+    Check(!IsValidSetting("cheat_damage_multiplier", "5"), "Damage Multiplier 5x is not offered");
     for (const char* key : {kShowLauncherKey, kDisplayModeKey, kWindowWidthKey, kWindowHeightKey, kMonitorKey, kVSyncKey,
                             kPresentationKey, kUpscaleKey, kSharpenKey, kSharpenStrengthKey, kGraphicsCardKey,
                             kAntiAliasingKey, kAnisotropyKey, kFrameRateKey, kShowFpsTitleKey, kShowResolutionTitleKey,
@@ -671,7 +686,7 @@ void TestLauncherSource() {
     Check(pit != std::string::npos && hermes < pit && pit < overlay, "The Pit follows Hermes in Gameplay");
     Check(!Contains(source, "Asian Menu Buttons") && !Contains(source, "Local co-op") && !Contains(source, "kAsianMenuButtons"),
           "Controls has no Asian Menu Buttons or Local co-op");
-    Check(!Contains(source, "Not available") && !Contains(source, "Unavailable"), "no unavailable rows");
+    Check(!Contains(source, "\"Not available\"") && !Contains(source, "\"Unavailable\""), "no unavailable row text outside the cheat model");
     for (const char* label : {"\"Keyboard defaults\"", "\"Keyboard controls\"", "\"Port hotkeys\"", "\"Reset to defaults\"",
                               "ui.KeyBindRow", "\"Click a key, then press the new one. Esc cancels. A key can be used for more than one control.\"",
                               "\"Controller\"", "\"Keyboard\""}) {
@@ -687,11 +702,10 @@ void TestLauncherSource() {
                               "ui.StatusCard", "ui.TaskProgress(install_)", "\"Ready to play\"", "BuildMetadataText(*build_)"}) {
         has(label, std::string("Play page ") + label);
     }
-    Check(!Contains(source, "PageId::kCheats") && !Contains(source, "\"Cheats\""), "Cheats page and label are absent");
-    Check(!Contains(ReadFile(kRoot / "launcher" / "options.h"), "kCheats") &&
-              !Contains(ReadFile(kRoot / "launcher" / "page_icons.cpp"), "kCheats") &&
-              !Contains(ReadFile(kRoot / "launcher" / "page_icons.cpp"), "cheats.svg"),
-          "Cheats page id and icon are absent");
+    Check(Contains(source, "case PageId::kCheats:") && Contains(source, "PageCheats(ui)"), "the Cheats page is drawn by PageCheats");
+    Check(Contains(ReadFile(kRoot / "launcher" / "options.h"), "kCheats") &&
+              Contains(ReadFile(kRoot / "launcher" / "page_icons.cpp"), "{PageId::kCheats, \"cheats.svg\""),
+          "Cheats page id and icon are present");
     has("bug_report_page_->Draw(ui, facts)", "Bug Report page draws the bug report page");
     has("trophy_page_->Draw(ui)", "Trophies page draws the trophy page");
     has("trg::update::UpdateController", "updater is part of the launcher");

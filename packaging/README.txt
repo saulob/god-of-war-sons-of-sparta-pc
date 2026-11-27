@@ -51,6 +51,11 @@ Key Features
 - Optional Unlock The Pit Early (off by default): the game's own The Pit of
   Agonies entry appears in the title menu before the story is completed, and
   saves are never modified. The Pit keeps its original local two-player co-op
+- Optional cheats, all Off by default: God Mode, Infinite Spartan Spirit,
+  Infinite Magic, Damage Multiplier (2x/4x/6x), Movement Speed (2x) and Jump
+  Height (2x/4x/6x). The launcher's Cheats page saves the defaults; F10 while
+  playing changes them for that session only (not saved) and adds 1000 Blood
+  Orbs or 10 of each upgrade material
 - Native SaveData with atomic writes and backups, plus full Trophy support
 
 Save Data & Portable Files

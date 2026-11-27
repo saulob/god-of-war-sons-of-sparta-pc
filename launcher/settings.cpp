@@ -12,6 +12,7 @@
 
 #include "game_files.h"
 #include "game_process.h"
+#include "sos_cheats.h"
 #include "sos_keys.h"
 #include "sos_launcher.h"
 #include "sos_resolution.h"
@@ -48,6 +49,12 @@ constexpr ManagedSetting kBaseSettings[] = {
     {kSkipIntroKey, "0"},
     {kUnlockHermesModeKey, "0"},
     {kUnlockThePitKey, "0"},
+    {cheats::kToggles[0].key, "0"},
+    {cheats::kToggles[1].key, "0"},
+    {cheats::kToggles[2].key, "0"},
+    {cheats::kMultipliers[0].key, "1"},
+    {cheats::kMultipliers[1].key, "1"},
+    {cheats::kMultipliers[2].key, "1"},
     {kDetailedLoggingKey, "1"},
     {kAllowOverlayProgramsKey, "0"},
     {kLauncherXKey, ""},
@@ -108,6 +115,17 @@ bool IsValidSetting(std::string_view key, std::string_view value) {
     }
     if (key == kFrameRateKey) {
         return one_of({"30", "60", "90", "120", "144", "165", "240", "0"});
+    }
+    for (const cheats::MultiplierInfo& info : cheats::kMultipliers) {
+        if (key == info.key) {
+            return std::any_of(info.choices.begin(), info.choices.end(),
+                               [&](const cheats::Choice& choice) { return value == choice.saved; });
+        }
+    }
+    for (const cheats::ToggleInfo& info : cheats::kToggles) {
+        if (key == info.key) {
+            return one_of({"0", "1"});
+        }
     }
     if (key == kPresentationKey) {
         return std::any_of(std::begin(kPresentationChoices), std::end(kPresentationChoices),

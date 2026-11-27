@@ -61,6 +61,53 @@ private:
     bool armed_ = true;
 };
 
+// A menu's controller buttons, whatever controller they come from.
+inline constexpr uint32_t kPadUp = 1, kPadDown = 2, kPadActivate = 4, kPadClose = 8;
+inline constexpr uint32_t kPadMenuMask = kPadUp | kPadDown | kPadActivate | kPadClose;
+inline constexpr double kPadRepeatDelay = 0.4;
+inline constexpr double kPadRepeatInterval = 0.12;
+
+struct NavStep {
+    int move = 0; // -1 up, 1 down
+    bool activate = false;
+    bool close = false;
+};
+
+// Steps from the controller's buttons, polled once per frame. A button held when the menu opened is ignored until it is
+// released; a press acts once, and holding up or down repeats after a delay at a steady rate.
+class PadNav {
+public:
+    NavStep Poll(uint32_t buttons, double now) {
+        if (!started_) {
+            started_ = true;
+            ignored_ = buttons & kPadMenuMask;
+        }
+        ignored_ &= buttons;
+        const uint32_t current = buttons & kPadMenuMask & ~ignored_;
+        const uint32_t pressed = current & ~previous_;
+        previous_ = current;
+        NavStep step;
+        step.move = (pressed & kPadUp) ? -1 : (pressed & kPadDown) ? 1 : 0;
+        if (step.move) {
+            repeat_at_ = now + kPadRepeatDelay;
+        } else if ((current & (kPadUp | kPadDown)) && now >= repeat_at_) {
+            step.move = (current & kPadUp) ? -1 : 1;
+            repeat_at_ = now + kPadRepeatInterval;
+        }
+        step.activate = (pressed & kPadActivate) != 0;
+        step.close = (pressed & kPadClose) != 0;
+        return step;
+    }
+
+    // The menu buttons pressed since it opened and not yet released.
+    uint32_t Held() const { return previous_; }
+
+private:
+    bool started_ = false;
+    uint32_t ignored_ = 0, previous_ = 0;
+    double repeat_at_ = 0.0;
+};
+
 enum class ToggleAction { None, Open, Close };
 
 // A menu's key or chord: a held key repeats and only the first press counts. `busy` is another menu or a game dialog

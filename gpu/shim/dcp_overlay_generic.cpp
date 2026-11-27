@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Sons of Sparta's overlay: the frame counter, the start-up and background shader-cache notes and short notices, drawn
-// by the presenter into the swapchain image. The game has no menus or dialogs of its own here.
+// Sons of Sparta's overlay: the F10 cheat menu, the frame counter, the start-up and background shader-cache notes and
+// short notices, drawn by the presenter into the swapchain image.
 #include "dcp_overlay.h"
 
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -12,12 +13,15 @@
 #include <mutex>
 #include <string>
 
+#include <SDL3/SDL.h>
 #include "dcp_overlay_box.h"
 #include "dcp_settings.h"
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_vulkan.h"
+#include "runtime_cheats.h"
 #include "sos_accent.h"
+#include "sos_cheat_menu.h"
 #ifdef _WIN32
 #include "dcp_renderer.h"
 #include "imgui_impl_gles3.h"
@@ -41,6 +45,14 @@ std::chrono::steady_clock::time_point last_present{}, last_game_frame{};
 float frame_ms_avg = 0.0f;
 float last_interval_ms = 0.0f;
 std::atomic<u64> presented_frames{0};
+// The F10 menu: open, or closing and still holding the game's input until what the menu received is released.
+std::atomic<bool> cheat_open{false};
+sos::cheats::CloseGate menu_close;
+std::bitset<ImGuiKey_NamedKey_COUNT> menu_pressed;
+bool cheat_focused = false;
+sos::cheats::MenuList cheat_list;
+sos::cheats::PadNav cheat_pad;
+sos::cheats::PadState pad_state;
 
 struct Panel {
     DcpOverlayBox::Box box;
@@ -117,6 +129,233 @@ void BackgroundLoading() {
     ImGui::End();
 }
 
+ImVec4 Accent() {
+    return ImVec4(sos::kAccentRed / 255.0f, sos::kAccentGreen / 255.0f, sos::kAccentBlue / 255.0f, 1.0f);
+}
+
+ImGuiKey KeyFromSdl(SDL_Keycode key) {
+    switch (key) {
+    case SDLK_UP: return ImGuiKey_UpArrow;
+    case SDLK_DOWN: return ImGuiKey_DownArrow;
+    case SDLK_LEFT: return ImGuiKey_LeftArrow;
+    case SDLK_RIGHT: return ImGuiKey_RightArrow;
+    case SDLK_RETURN: return ImGuiKey_Enter;
+    case SDLK_KP_ENTER: return ImGuiKey_KeypadEnter;
+    case SDLK_SPACE: return ImGuiKey_Space;
+    case SDLK_ESCAPE: return ImGuiKey_Escape;
+    case SDLK_W: return ImGuiKey_W;
+    case SDLK_S: return ImGuiKey_S;
+    default: return ImGuiKey_None;
+    }
+}
+
+uint32_t PadBitOf(u8 button) {
+    switch (button) {
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return sos::menu::kPadUp;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return sos::menu::kPadDown;
+    case SDL_GAMEPAD_BUTTON_SOUTH: return sos::menu::kPadActivate;
+    case SDL_GAMEPAD_BUTTON_EAST: return sos::menu::kPadClose;
+    default: return 0;
+    }
+}
+
+float PixelDensity(SDL_WindowID id) {
+    SDL_Window* window = SDL_GetWindowFromID(id);
+    const float density = window ? SDL_GetWindowPixelDensity(window) : 1.0f;
+    return density > 0.0f ? density : 1.0f;
+}
+
+// The keys and buttons that went down while the menu was open, until they come up again.
+void TrackMenuKeys() {
+    for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_NamedKey_END; ++key) {
+        const size_t index = size_t(key - ImGuiKey_NamedKey_BEGIN);
+        if (ImGui::IsKeyPressed(ImGuiKey(key), false)) {
+            menu_pressed.set(index);
+        } else if (!ImGui::IsKeyDown(ImGuiKey(key))) {
+            menu_pressed.reset(index);
+        }
+    }
+}
+
+struct RowText {
+    const char* state;
+    bool lit;
+};
+
+RowText CheatRowText(const sos::cheats::MenuRow& row) {
+    using sos::cheats::RowKind;
+    using sos::cheats::RowState;
+    switch (row.kind) {
+    case RowKind::Heading: return {nullptr, false};
+    case RowKind::Toggle: {
+        const auto state = RowState(runtime_cheat_toggle_state(int(row.toggle)));
+        return {sos::cheats::StateText(state, "On"), state == RowState::On};
+    }
+    case RowKind::Multiplier: {
+        const auto state = RowState(runtime_cheat_multiplier_state(int(row.multiplier)));
+        const char* value = sos::cheats::ChoiceLabel(row.multiplier, runtime_cheat_multiplier_value(int(row.multiplier)));
+        return {sos::cheats::StateText(state, value), state == RowState::On};
+    }
+    case RowKind::Action: {
+        if (const char* notice = runtime_cheat_action_notice(int(row.action))) {
+            return {notice, true};
+        }
+        const auto state = RowState(runtime_cheat_action_state(int(row.action)));
+        return {state == RowState::Unavailable ? sos::cheats::kUnavailable
+                : state == RowState::Pending   ? sos::cheats::kBusy
+                                               : "",
+                false};
+    }
+    }
+    return {nullptr, false};
+}
+
+// True when the row was clicked.
+bool DrawCheatRow(const sos::cheats::MenuRow& row, int index, bool selected, float row_height, const ImVec4& accent,
+                  const ImVec4& focus, const ImVec4& dim) {
+    ImGui::PushID(index);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (row.kind == sos::cheats::RowKind::Heading) {
+        ImGui::Dummy(ImVec2(0.0f, row_height));
+        const ImVec2 min = ImGui::GetItemRectMin();
+        draw->AddText(ImVec2(min.x, min.y + (row_height - ImGui::GetFontSize()) * 0.5f), ImGui::GetColorU32(accent), row.label);
+        ImGui::PopID();
+        return false;
+    }
+    const bool pressed = ImGui::Selectable("##row", false, ImGuiSelectableFlags_None, ImVec2(0.0f, row_height));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    if (selected) {
+        draw->AddRectFilled(min, max, ImGui::GetColorU32(focus), 3.0f);
+    }
+    const float pad = ImGui::GetFontSize() * 0.4f;
+    const float y = min.y + (row_height - ImGui::GetFontSize()) * 0.5f;
+    draw->AddText(ImVec2(min.x + pad, y), ImGui::GetColorU32(ImGuiCol_Text), row.label);
+    const RowText text = CheatRowText(row);
+    if (text.state != nullptr && *text.state != '\0') {
+        draw->AddText(ImVec2(max.x - pad - ImGui::CalcTextSize(text.state).x, y), ImGui::GetColorU32(text.lit ? accent : dim),
+                      text.state);
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
+void CloseCheatMenu() {
+    cheat_open = false;
+    menu_close = {};
+    menu_pressed.reset();
+    cheat_pad = {};
+    cheat_focused = false;
+    ImGui::GetIO().ClearInputKeys();
+}
+
+void OpenCheatMenu() {
+    cheat_open = true;
+    menu_close = {};
+    menu_pressed.reset();
+    cheat_pad = {};
+    cheat_focused = false;
+    cheat_list.Open();
+}
+
+void CheatKeyboardInput() {
+    const auto pressed = [](ImGuiKey key, bool repeat) { return ImGui::IsKeyPressed(key, repeat); };
+    if (pressed(ImGuiKey_UpArrow, true) || pressed(ImGuiKey_W, true)) {
+        cheat_list.Step(-1);
+    }
+    if (pressed(ImGuiKey_DownArrow, true) || pressed(ImGuiKey_S, true)) {
+        cheat_list.Step(1);
+    }
+    if (pressed(ImGuiKey_Enter, false) || pressed(ImGuiKey_KeypadEnter, false) || pressed(ImGuiKey_Space, false)) {
+        sos::cheats::ActivateRow(sos::cheats::kMenuRows[size_t(cheat_list.selected)]);
+    }
+}
+
+sos::cheats::Box FpsBox() {
+    const DcpOverlayBox::Rect r = PlacePanel(FrameCounterText().c_str(), DcpSettings::Get().overlay_corner).box.rect;
+    return {r.x0, r.y0, r.x1, r.y1};
+}
+
+void CheatMenu() {
+    TrackMenuKeys();
+    const sos::cheats::NavStep step = cheat_pad.Poll(pad_state.Take(), ImGui::GetTime());
+    if (menu_close.requested()) {
+        if (menu_close.Step(menu_pressed.any() || cheat_pad.Held() != 0, ImGui::GetTime())) {
+            CloseCheatMenu();
+        }
+        return;
+    }
+    CheatKeyboardInput();
+    sos::cheats::ApplyPadStep(step, cheat_list, menu_close);
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec4 accent = Accent();
+    const ImVec4 dim(0.70f, 0.66f, 0.62f, 1.0f);
+    const ImVec4 focus(accent.x, accent.y, accent.z, 0.40f);
+    const float em = ImGui::GetFontSize();
+    const float margin = em * 0.8f;
+    const float row_height = em * 1.6f;
+    const float width = em * 20.0f;
+    const float right = io.DisplaySize.x - margin;
+    const bool fps_shown = DcpSettings::Get().show_fps && frame_ms_avg > 0.0f;
+    const float top = sos::cheats::MenuTop(margin, fps_shown, fps_shown ? FpsBox() : sos::cheats::Box{},
+                                           right - width, right, io.DisplaySize.y);
+    ImGui::SetNextWindowPos(ImVec2(right, top), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(io.DisplaySize.y - top - margin, em)));
+    if (!cheat_focused) {
+        cheat_focused = true;
+        ImGui::SetNextWindowFocus();
+    }
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.05f, 0.04f, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_Border, accent);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, focus);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, focus);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                                       ImGuiWindowFlags_AlwaysAutoResize;
+    if (ImGui::Begin("##sos_cheat_menu", nullptr, flags)) {
+        ImGui::TextColored(accent, "%s", sos::cheats::kMenuTitle);
+        ImGui::Separator();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const size_t count = sos::cheats::kMenuRows.size();
+        const float body = count * row_height + (count - 1) * style.ItemSpacing.y;
+        const float footer = 3.0f * (em + style.ItemSpacing.y) + 2.0f * style.WindowPadding.y;
+        const float room = std::max(io.DisplaySize.y - top - margin - footer - em, row_height);
+        ImGui::BeginChild("##cheat_rows", ImVec2(0.0f, std::min(body, room)), ImGuiChildFlags_None, ImGuiWindowFlags_NoNav);
+        const bool reveal = cheat_list.TakeReveal();
+        int clicked = -1;
+        for (size_t i = 0; i < count; ++i) {
+            const bool selected = int(i) == cheat_list.selected;
+            if (DrawCheatRow(sos::cheats::kMenuRows[i], int(i), selected, row_height, accent, focus, dim)) {
+                clicked = int(i);
+            }
+            if (selected && reveal && !ImGui::IsItemVisible()) {
+                ImGui::SetScrollHereY(0.5f);
+            }
+        }
+        ImGui::EndChild();
+        if (clicked >= 0) {
+            cheat_list.Click(clicked);
+            sos::cheats::ActivateRow(sos::cheats::kMenuRows[size_t(clicked)]);
+        }
+        ImGui::Separator();
+        ImGui::TextColored(dim, "%s", sos::cheats::kMenuCloseHint);
+        ImGui::TextColored(dim, "%s", sos::cheats::kMenuNote);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(1);
+    ImGui::PopStyleColor(4);
+}
+
+void PressCheatMenuKey(bool repeat) {
+    switch (sos::cheats::TogglePress(repeat, cheat_open, loading)) {
+    case sos::cheats::ToggleAction::Open: OpenCheatMenu(); break;
+    case sos::cheats::ToggleAction::Close: menu_close.Request(); break;
+    case sos::cheats::ToggleAction::None: break;
+    }
+}
+
 void CreateImGuiContext() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -124,6 +363,8 @@ void CreateImGuiContext() {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.BackendPlatformName = "dcp";
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     ImGui::StyleColorsDark();
     ImFontConfig font_config;
     font_config.SizePixels = 18.0f;
@@ -135,6 +376,7 @@ bool BeginPresent() {
     const float ms = std::chrono::duration<float, std::milli>(now - last_present).count();
     last_present = now;
     last_interval_ms = ms;
+    runtime_cheats_frame();
     return Visible();
 }
 
@@ -163,6 +405,9 @@ void BuildFrame(u32 width, u32 height, void (*new_frame)()) {
     if (NoticeShown()) {
         const int corner = DcpOverlayBox::NoticeCorner(DcpSettings::Get().overlay_corner);
         DrawPanel(PlacePanel(notice_text.c_str(), corner), notice_text.c_str());
+    }
+    if (cheat_open) {
+        CheatMenu();
     }
     ImGui::Render();
 }
@@ -228,7 +473,76 @@ void InitOpenGL() {
     initialized = true;
 }
 
-bool HandleEvent(const SDL_Event&) { return false; }
+// F10 opens and closes the cheat menu. While it is open it takes the keyboard, mouse and controller events; F11 and
+// every other window shortcut still reach the window.
+bool HandleEvent(const SDL_Event& event) {
+    std::scoped_lock lock{imgui_mutex};
+    if (!initialized) {
+        return false;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    switch (event.type) {
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (event.key.scancode == DcpSettings::Get().menu_key) {
+            if (down) {
+                PressCheatMenuKey(event.key.repeat);
+            }
+            return true;
+        }
+        if (!cheat_open || event.key.scancode == DcpSettings::Get().window_mode_key) {
+            return false;
+        }
+        if (event.key.key == SDLK_ESCAPE && down && !event.key.repeat) {
+            menu_close.Request();
+        }
+        if (const ImGuiKey key = KeyFromSdl(event.key.key); key != ImGuiKey_None) {
+            io.AddKeyEvent(key, down);
+        }
+        return true;
+    }
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if (const uint32_t bit = PadBitOf(event.gbutton.button)) {
+            pad_state.Button(event.gbutton.which, bit, event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+        }
+        return cheat_open;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if (event.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
+            pad_state.StickY(event.gaxis.which, event.gaxis.value);
+        }
+        return cheat_open;
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        pad_state.Remove(event.gdevice.which);
+        return false;
+    case SDL_EVENT_MOUSE_MOTION: {
+        if (!cheat_open) {
+            return false;
+        }
+        const float density = PixelDensity(event.motion.windowID);
+        io.AddMousePosEvent(event.motion.x * density, event.motion.y * density);
+        return true;
+    }
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (!cheat_open) {
+            return false;
+        }
+        if (event.button.button == SDL_BUTTON_LEFT) {
+            io.AddMouseButtonEvent(0, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+        }
+        return true;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (!cheat_open) {
+            return false;
+        }
+        io.AddMouseWheelEvent(event.wheel.x, event.wheel.y);
+        return true;
+    case SDL_EVENT_TEXT_INPUT: return cheat_open;
+    default: return false;
+    }
+}
 
 void SetLoading(bool active, u32 done, u32 total) {
     loading_done = done;
@@ -248,7 +562,7 @@ void ShowNotice(const std::string& text) {
 }
 
 bool Visible() {
-    return initialized && (loading || background_total || DcpSettings::Get().show_fps || NoticeShown());
+    return initialized && (loading || background_total || cheat_open || DcpSettings::Get().show_fps || NoticeShown());
 }
 
 void LogPresent() {
@@ -304,7 +618,7 @@ void RenderOpenGL(u32 width, u32 height) {
 }
 
 void SetDisplayScale(float) {}
-bool CapturesInput() { return false; }
+bool CapturesInput() { return cheat_open; }
 void SetChoiceInput(uint32_t (*)()) {}
 void PollChoiceInput() {}
 void SetTextEntry(bool, const std::string&, const std::string&) {}

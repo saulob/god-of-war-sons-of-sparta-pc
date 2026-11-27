@@ -50,6 +50,8 @@
 #include "problem_dialog.h"
 #include "settings.h"
 #include "shift_key.h"
+#include "sos_cheat_patch.h"
+#include "sos_cheats.h"
 #include "sos_displays.h"
 #include "sos_keys.h"
 #include "trophy_page.h"
@@ -752,6 +754,9 @@ private:
         case PageId::kGameplay:
             return {name, "Frame rate, readouts and startup options.", [this](trg::Ui& ui) { PageGameplay(ui); },
                     nullptr, nullptr};
+        case PageId::kCheats:
+            return {name, "Optional gameplay modifiers, all Off by default.", [this](trg::Ui& ui) { PageCheats(ui); },
+                    nullptr, nullptr};
         case PageId::kControls:
             return {name, "Controller and keyboard.", [this](trg::Ui& ui) { PageControls(ui); }, nullptr, nullptr};
         case PageId::kTrophies:
@@ -1134,6 +1139,43 @@ private:
         if (kSeparateGameProcessAvailable) {
             ui.Toggle("Allow overlay programs", kAllowOverlayProgramsHelp, kAllowOverlayProgramsKey, false, "Off", "On");
         }
+        ui.EndRows();
+    }
+
+    void CheatToggle(trg::Ui& ui, cheats::Toggle toggle) {
+        const cheats::ToggleInfo& info = cheats::Info(toggle);
+        ui.Toggle(info.label, info.help, info.key, false, "Off", "On");
+    }
+
+    void CheatChoice(trg::Ui& ui, cheats::Multiplier multiplier) {
+        const cheats::MultiplierInfo& info = cheats::Info(multiplier);
+        std::vector<trg::Option> options;
+        for (const cheats::Choice& choice : info.choices) {
+            options.push_back({choice.saved, choice.label});
+        }
+        ui.Combo(info.label, info.help, info.key, "1", options);
+    }
+
+    // The saved values are the defaults of the next game; F10 changes them for one session only.
+    void PageCheats(trg::Ui& ui) {
+        ui.Help(Tr(cheats::kLauncherHelp));
+        const bool available = build_ && sos_cheat_build(BuildKey(*build_).c_str()) != nullptr;
+        if (!available) {
+            ui.Help(Tr("Cheats are not available for this game build."));
+        }
+        ImGui::BeginDisabled(!available);
+        ui.Heading("PLAYER");
+        CheatToggle(ui, cheats::Toggle::GodMode);
+        CheatToggle(ui, cheats::Toggle::InfiniteSpirit);
+        CheatToggle(ui, cheats::Toggle::InfiniteMagic);
+        ui.Heading("COMBAT");
+        CheatChoice(ui, cheats::Multiplier::Damage);
+        ui.Heading("MOVEMENT");
+        CheatChoice(ui, cheats::Multiplier::MovementSpeed);
+        CheatChoice(ui, cheats::Multiplier::JumpHeight);
+        ImGui::EndDisabled();
+        ui.Heading("ITEMS");
+        ui.Help(Tr(cheats::kActionsHelp));
         ui.EndRows();
     }
 
