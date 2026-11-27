@@ -30,7 +30,7 @@ The player writes a description (10 to 500 characters) and chooses one recent lo
 | Field | Source |
 |---|---|
 | `description` | What the player wrote, trimmed and scrubbed |
-| `launcher_version` | The PC port version (`0.1.0`) |
+| `launcher_version` | The PC port version (`0.1.1`) |
 | `game_build`, `game_version`, `cusa` | The installed game build (`CUSA57767` 1.00 or 1.01) |
 | `operating_system` | Windows version or Linux distribution |
 | `log_file` | The selected `sons_of_sparta_NNN.log` |

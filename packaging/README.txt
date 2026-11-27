@@ -1,4 +1,4 @@
-God of War: Sons of Sparta — PC Port (v0.1.0)
+God of War: Sons of Sparta — PC Port (v0.1.1)
 ==============================================
 
 Native PC port of the PlayStation 4 release of God of War: Sons of Sparta
@@ -10,7 +10,7 @@ NO GAME FILES ARE INCLUDED. Bring your own legally obtained PS4 package.
 
 Supported Versions
 ------------------
-- PC Port Version: 0.1.0
+- PC Port Version: 0.1.1
 - Supported PS4 Game Builds:
     * CUSA57767 1.00 USA (base game)
     * CUSA57767 1.01 USA (official update 1.01)
@@ -20,16 +20,19 @@ Both 1.00 and 1.01 expose equivalent features.
 Requirements
 ------------
 - Windows x64 (Windows 10/11) or Linux x86_64 (glibc 2.31+ / Ubuntu 20.04+;
-  Linux and Steam Deck gameplay are experimental in v0.1.0)
+  Linux and Steam Deck remain experimental: v0.1.1 includes fixes from real
+  Linux and Steam Deck reports, but runtime coverage is still more limited
+  than on Windows)
 - Vulkan 1.3-capable GPU with current graphics drivers
 - x86-64 processor with AVX and POPCNT (Intel Core 2nd generation or newer,
-  AMD FX or newer); AVX2 is not required
+  AMD FX or newer); AVX2 is not required, processors without AVX are not
+  supported
 
 Quick Start
 -----------
 1. Extract this archive to a writable folder (Windows) or mark the .AppImage
    executable with `chmod +x` (Linux).
-2. Run `sons_of_sparta.exe` (Windows) or `SonsOfSpartaPC-v0.1.0-x86_64.AppImage`
+2. Run `sons_of_sparta.exe` (Windows) or `SonsOfSpartaPC-v0.1.1-x86_64.AppImage`
    (Linux).
 3. On the Play page, click "Install game..." and choose your CUSA57767 1.00 .pkg.
 4. (Optional) Click "Install update..." and choose your official CUSA57767 1.01

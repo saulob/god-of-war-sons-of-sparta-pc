@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(sons_of_sparta_pc VERSION 0.1.0 LANGUAGES C CXX)
+project(sons_of_sparta_pc VERSION 0.1.1 LANGUAGES C CXX)
 
 if (NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "Build with Clang: MSYS2 CLANG64 on Windows.")

@@ -154,11 +154,18 @@ try {
     $template = Get-Content -LiteralPath (Join-Path $root 'packaging\release-notes.md') -Raw -Encoding UTF8
     function Get-Section([string]$Title) { return [regex]::Match($template, '(?ms)^## ' + [regex]::Escape($Title) + '\r?\n(.*?)(?=^## |\z)').Groups[1].Value }
     Check ($template.StartsWith('# God of War: Sons of Sparta PC v@VERSION@')) 'the title is the port name and version'
-    Check ($template.Contains('First release of this unofficial PC port') -and $template -match 'not affiliated with or endorsed by Sony Interactive Entertainment, Santa Monica Studio') 'it calls the port unofficial and names who it is not affiliated with'
+    Check ($template -match 'unofficial PC port' -and $template -match 'not affiliated with or endorsed by Sony Interactive Entertainment, Santa Monica Studio') 'it calls the port unofficial and names who it is not affiliated with'
+    $released = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'CMakeLists.txt') -Raw), 'project\(sons_of_sparta_pc VERSION (\d+\.\d+\.\d+)').Groups[1].Value
+    Check ($released -ne '' -and $template -notmatch '(?i)first release') "the notes do not present v$released as the first release"
     Check ($template -notmatch '(?i)first PC release|\bofficial\b') 'it does not read as an official release'
     Check ($template -match '\*\*No game files are included\.\*\*' -and $template -match 'CUSA57767` USA \*\*1\.00\*\*' -and $template -match 'CUSA57767` USA \*\*1\.01\*\*') 'the no-game-files notice names both supported builds'
     $sections = @([regex]::Matches($template, '(?m)^## (.+)$') | ForEach-Object { $_.Groups[1].Value.Trim() })
-    Check (($sections -join '|') -eq 'Highlights|Also included|Validation|VirusTotal|Known limitations|Downloads|SHA-256|Credits') "the sections follow the Dragon release layout ($($sections -join ', '))"
+    Check (($sections -join '|') -eq "What's fixed in v$released|Highlights|Also included|Validation|VirusTotal|Known limitations|Downloads|SHA-256|Credits") "the changes since the previous release come first, then the Dragon release layout ($($sections -join ', '))"
+    $changes = Get-Section "What's fixed in v$released"
+    $fixedAt = $changes.IndexOf('### Fixed'); $diagnosticsAt = $changes.IndexOf('### Diagnostics improved')
+    Check ($fixedAt -ge 0 -and $diagnosticsAt -gt $fixedAt) 'confirmed fixes and improved diagnostics are separate lists'
+    Check ($diagnosticsAt -lt 0 -or $changes.Substring($diagnosticsAt) -match 'UHD 630[^\n]*\*\*that crash is not confirmed fixed yet\*\*') 'the Intel UHD 630 crash is listed as diagnostics, not as a fix'
+    Check ($fixedAt -lt 0 -or $diagnosticsAt -lt 0 -or $changes.Substring($fixedAt, $diagnosticsAt - $fixedAt) -notmatch 'UHD 630') 'no confirmed fix names the Intel UHD 630'
     $headline = Get-Section 'Highlights'
     $positions = @('True Ultrawide Hor+', 'Up to 4K', 'High frame rates', 'The Pit of Agonies from the beginning', 'Local two-player co-op in The Pit', 'Unlock The Pit Early', 'Unlock Hermes Mode', 'Skip Intro', 'Xbox and PlayStation controllers', 'Automatic controller prompts' | ForEach-Object { $headline.IndexOf("- **$_") })
     Check (($positions -notcontains -1) -and ((($positions | Sort-Object) -join ',') -eq ($positions -join ','))) 'the highlights are in the requested order'
@@ -174,7 +181,8 @@ try {
     $downloads = Get-Section 'Downloads'
     $base = 'https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/download/v@VERSION@/'
     Check ($downloads.Contains("($base@WINDOWS_ASSET@)") -and $downloads.Contains("($base@WINDOWS_ASSET@.sha256)") -and $downloads.Contains("($base@LINUX_ASSET@)") -and $downloads.Contains("($base@LINUX_ASSET@.sha256)") -and $downloads.Contains('**sons_of_sparta.exe**')) 'the downloads point at this repository and version'
-    Check ((Get-Section 'Known limitations') -match 'not been runtime-tested on real hardware' -and (Get-Section 'Validation') -match '75 of 75 groups' -and (Get-Section 'Validation') -match 'not yet been run on real Linux or Steam Deck hardware') 'the Linux status and the release gate are stated'
+    $groups = @([regex]::Matches((Get-Content -LiteralPath (Join-Path $root 'tools\test.ps1') -Raw), "(?m)^    @\{ Name = '")).Count
+    Check ((Get-Section 'Known limitations') -match 'Linux and Steam Deck remain experimental' -and (Get-Section 'Known limitations') -match 'runtime coverage is still more limited than on Windows' -and (Get-Section 'Validation') -match "$groups of $groups groups" -and (Get-Section 'Validation') -match 'not yet been confirmed on those systems') "the Linux status and the release gate of $groups groups are stated"
     Check ($template -notmatch '(?i)\b\d+\s+(malicious|suspicious|detections?|engines?)\b|no detections|virus.free|malware.free|100% safe|guaranteed|\bclean\b') 'it gives no detection count and no safety claim'
     Check ($template -notmatch '(?i)dragon|DragonsCrown') 'nothing in it names another port'
     foreach ($name in 'VERSION', 'WINDOWS_ASSET', 'WINDOWS_SHA256', 'WINDOWS_EXE_SHA256', 'UPDATER_EXE_SHA256', 'LINUX_ASSET', 'LINUX_SHA256', 'VIRUSTOTAL_STATUS', 'WINDOWS_VIRUSTOTAL', 'WINDOWS_EXE_VIRUSTOTAL', 'UPDATER_EXE_VIRUSTOTAL', 'LINUX_VIRUSTOTAL') {

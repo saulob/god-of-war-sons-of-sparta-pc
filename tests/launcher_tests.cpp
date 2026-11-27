@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -261,8 +262,29 @@ void TestVersion() {
     const size_t at = cmake.find("project(sons_of_sparta_pc VERSION ");
     Check(at != std::string::npos, "project version is declared");
     const std::string declared = at == std::string::npos ? "" : cmake.substr(at + 34, 5);
-    Check(declared == "0.1.0", "project version is 0.1.0");
+    Check(declared == "0.1.1", "project version is 0.1.1");
     Check(std::string(SOS_PORT_VERSION) == declared, "launcher version comes from the project version");
+    const std::string tagged = "v" + declared;
+    const std::string packaged = ReadFile(kRoot / "packaging" / "README.txt");
+    Check(Contains(packaged, "PC Port (" + tagged + ")") && Contains(packaged, "PC Port Version: " + declared) &&
+              Contains(packaged, "SonsOfSpartaPC-" + tagged + "-x86_64.AppImage"),
+          "packaged README names the project version and its AppImage");
+    Check(Contains(ReadFile(kRoot / "README.md"), "The PC port version (`" + declared + "`)"), "README names the project version");
+    Check(Contains(ReadFile(kRoot / "docs" / "LINUX.md"), "Runtime status (" + tagged + ")"), "LINUX.md names the project version");
+    Check(Contains(ReadFile(kRoot / "docs" / "BUG_REPORT.md"), "The PC port version (`" + declared + "`)"),
+          "BUG_REPORT.md names the project version");
+    Check(Contains(ReadFile(kRoot / "packaging" / "release-notes.md"), "## What's fixed in " + tagged),
+          "release notes describe the project version");
+    Check(Contains(ReadFile(kRoot / ".recomp.json"), "Public native PC release " + tagged + ","),
+          "recomp metadata names the project version");
+    // "release over vX.Y.Z" names the previous release on purpose.
+    const std::regex port_version(R"((release over )?[^\d.]v?(0\.\d+\.\d+)(?![\d.]))");
+    for (const char* doc : {"README.md", "packaging/README.txt", "docs/LINUX.md", "docs/BUG_REPORT.md", ".recomp.json"}) {
+        const std::string text = ReadFile(kRoot / doc);
+        for (std::sregex_iterator it(text.begin(), text.end(), port_version), end; it != end; ++it) {
+            Check((*it)[1].matched || (*it)[2].str() == declared, std::string(doc) + " has no stale port version " + (*it)[2].str());
+        }
+    }
     Check(Contains(cmake, "SOS_VERSION_STRING"), "Windows resource version is generated from the project version");
     Check(Contains(ReadFile(kRoot / "launcher" / "CMakeLists.txt"), "SOS_PORT_VERSION=\"${PROJECT_VERSION}\""),
           "launcher and updater definition comes from the project version");

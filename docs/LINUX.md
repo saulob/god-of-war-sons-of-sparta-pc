@@ -2,7 +2,7 @@
 
 God of War: Sons of Sparta PC targets **Linux x86_64** with a minimum baseline of **Ubuntu 20.04 (`glibc 2.31`)** so the AppImage runs across Ubuntu 20.04+, modern desktop distributions, and SteamOS / Steam Deck.
 
-> **Runtime status (v0.1.0):** Experimental. Linux builds, headless tests, ELF/glibc checks, and AppImage extraction checks are verified automatically; live graphical gameplay on Linux and Steam Deck requires manual runtime validation.
+> **Runtime status (v0.1.1):** Experimental. Linux builds, headless tests, ELF/glibc checks, and AppImage extraction checks are verified automatically. v0.1.1 includes fixes based on reports from real Linux and Steam Deck systems, but runtime coverage is still more limited than on Windows.
 
 ## Toolchain & Dependencies
 

@@ -57,7 +57,7 @@ game mode is stored with the save and cannot be changed afterwards.
 - **Or, experimental:** 64-bit Linux on x86-64, including the Steam Deck, with glibc 2.31 or newer (see [Linux and Steam Deck](#linux-and-steam-deck))
 - A graphics card and driver with **Vulkan 1.3**
 - An x86-64 processor with **AVX** and **POPCNT**: Intel Core 2nd generation (Sandy Bridge) or newer, or AMD FX or newer.
-  **AVX2 is not required.** The game's PS4 code also uses MOVBE, BMI1, LZCNT, F16C and SSE4a; on a processor without
+  **AVX2 is not required.** Processors without AVX are not supported. The game's PS4 code also uses MOVBE, BMI1, LZCNT, F16C and SSE4a; on a processor without
   them the port supplies them in software
 - **Your own legally obtained God of War: Sons of Sparta PS4 package** of a supported build:
 
@@ -66,7 +66,7 @@ game mode is stored with the save and cannot be changed afterwards.
 | `CUSA57767` USA **1.00** | The base game package |
 | `CUSA57767` USA **1.01** | The official 1.01 update, installed over 1.00 |
 
-Both builds have the same features. The PC port version (`0.1.0`) identifies the port, launcher, runtime and renderer; the
+Both builds have the same features. The PC port version (`0.1.1`) identifies the port, launcher, runtime and renderer; the
 game build (`1.00` or `1.01`) identifies the original game content installed from your own `.pkg` files.
 
 ## Installing
@@ -89,8 +89,9 @@ game build (`1.00` or `1.01`) identifies the original game content installed fro
 
 **Experimental.** This is a native Linux build, not Proton or Wine, with the same launcher and options as Windows; the only
 Windows-only option is **Allow overlay programs**. The AppImage is built on Ubuntu 20.04 and passes the automated Linux
-tests and packaging checks, but it has not yet been runtime-tested on real Linux or Steam Deck hardware. Please report
-Linux-specific problems with the log (see [Reporting problems](#reporting-problems)).
+tests and packaging checks. v0.1.1 includes fixes based on reports from real Linux and Steam Deck systems, but runtime
+coverage is still more limited than on Windows. Please report Linux-specific problems with the log (see
+[Reporting problems](#reporting-problems)).
 
 1. Download **SonsOfSpartaPC-v&lt;version&gt;-x86_64.AppImage** from the [latest release](https://github.com/saulob/god-of-war-sons-of-sparta-pc/releases/latest) and make it executable (right-click > **Properties** > **Permissions** > **Is executable**, or `chmod +x`).
 2. Run it. The launcher opens.
@@ -146,10 +147,11 @@ from the `logs` folder.
 
 ## Known limitations
 
-- **Linux and Steam Deck** are experimental: built and checked automatically, not yet runtime-tested on real hardware.
-- **Processors without AVX2** (Intel Sandy Bridge and Ivy Bridge, AMD FX): the instructions the port supplies are
-  checked instruction by instruction against the real game code, but the game has not yet been played on such a
-  processor. MOVBE and BMI1 are emulated as they run there, which may cost performance.
+- **Linux and Steam Deck** are experimental: built and checked automatically, with fixes from real Linux and Steam Deck
+  reports, but runtime coverage is still more limited than on Windows.
+- **Processors without AVX2** (Intel Sandy Bridge and Ivy Bridge, AMD FX): these are covered by compatibility tests
+  that check the supplied instructions one by one against the real game code, but the game has not yet been played on
+  such a processor. MOVBE and BMI1 are emulated as they run there, which may cost performance.
 - **Shapes other than 16:9** are labelled experimental in the launcher: the game was authored for 16:9, so some 2D scenes
   may show the edges of their original backgrounds. The boot splash video stays 16:9.
 - **4K and the other resolutions above 1080p** need a powerful graphics card.
